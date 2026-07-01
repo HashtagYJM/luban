@@ -29,3 +29,30 @@ def get_client() -> Any:
     except ModuleNotFoundError as exc:
         raise RuntimeError(_SETUP_HINT) from exc
     return local.build_client()
+
+
+def create_turn(client, *, model, max_tokens, system, messages, tools):
+    return client.messages.create(
+        model=model, max_tokens=max_tokens, system=system,
+        messages=messages, tools=tools,
+    )
+
+
+def stream_turn(client, *, model, max_tokens, system, messages, tools, on_text):
+    with client.messages.stream(
+        model=model, max_tokens=max_tokens, system=system,
+        messages=messages, tools=tools,
+    ) as stream:
+        for text in stream.text_stream:
+            on_text(text)
+        return stream.get_final_message()
+
+
+def message_to_blocks(message) -> list[dict]:
+    blocks: list[dict] = []
+    for b in message.content:
+        if b.type == "text":
+            blocks.append({"type": "text", "text": b.text})
+        elif b.type == "tool_use":
+            blocks.append({"type": "tool_use", "id": b.id, "name": b.name, "input": b.input})
+    return blocks

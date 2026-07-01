@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -131,3 +132,24 @@ def _edit_file(inp: dict, ctx: ToolContext) -> ToolResult:
         return ToolResult("User declined the edit.")
     target.write_text(new)
     return ToolResult(f"Edited {inp['path']}.")
+
+
+def _run_command(inp: dict, ctx: ToolContext) -> ToolResult:
+    command = inp["command"]
+    timeout = int(inp.get("timeout", 120))
+    ctx.render_command(command)
+    if not ctx.confirm(f"Run: {command}"):
+        return ToolResult("User declined the command.")
+    try:
+        proc = subprocess.run(
+            command,
+            shell=True,
+            cwd=str(ctx.project_root),
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        return ToolResult(f"Command timed out after {timeout}s.", is_error=True)
+    body = (proc.stdout or "") + (proc.stderr or "")
+    return ToolResult(_truncate(f"{body}\n[exit code: {proc.returncode}]"))

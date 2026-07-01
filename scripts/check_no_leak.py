@@ -3,8 +3,10 @@ from __future__ import annotations
 
 import subprocess
 import sys
+from pathlib import Path
 
 FORBIDDEN = ["dimsum_lite", "ApolloAnthropic", "Apollo", "UAT"]
+SELF_EXCLUDE = {"scripts/check_no_leak.py", "tests/test_no_leak.py"}
 
 
 def find_forbidden(files_text: dict[str, str]) -> list[str]:
@@ -21,8 +23,10 @@ def _tracked_files_text() -> dict[str, str]:
     ).stdout.split()
     result = {}
     for path in out:
+        if path in SELF_EXCLUDE:
+            continue
         try:
-            result[path] = open(path, encoding="utf-8", errors="ignore").read()
+            result[path] = Path(path).read_text(encoding="utf-8", errors="ignore")
         except OSError:
             continue
     return result

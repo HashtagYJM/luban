@@ -1,0 +1,12 @@
+# Company-specific client provider — NEVER commit
+luban/client_local.py
+
+# Internal design docs / plans — kept locally, not published
+docs/superpowers/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+.env
+.pytest_cache/

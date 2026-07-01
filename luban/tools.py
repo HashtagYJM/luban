@@ -153,3 +153,103 @@ def _run_command(inp: dict, ctx: ToolContext) -> ToolResult:
         return ToolResult(f"Command timed out after {timeout}s.", is_error=True)
     body = (proc.stdout or "") + (proc.stderr or "")
     return ToolResult(_truncate(f"{body}\n[exit code: {proc.returncode}]"))
+
+
+_DISPATCH = {
+    "list_dir": _list_dir,
+    "glob": _glob,
+    "grep": _grep,
+    "read_file": _read_file,
+    "write_file": _write_file,
+    "edit_file": _edit_file,
+    "run_command": _run_command,
+}
+
+TOOLS = [
+    {
+        "name": "list_dir",
+        "description": "List entries in a directory (relative to project root).",
+        "input_schema": {
+            "type": "object",
+            "properties": {"path": {"type": "string", "description": "Dir path, default '.'"}},
+        },
+    },
+    {
+        "name": "glob",
+        "description": "Find files by glob pattern across the project tree.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"pattern": {"type": "string"}},
+            "required": ["pattern"],
+        },
+    },
+    {
+        "name": "grep",
+        "description": "Search file contents by regex; returns file:line: text.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "pattern": {"type": "string"},
+                "path": {"type": "string", "description": "Dir/file to search, default '.'"},
+            },
+            "required": ["pattern"],
+        },
+    },
+    {
+        "name": "read_file",
+        "description": "Read a file live from disk. Optional start/end line numbers.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "start": {"type": "integer"},
+                "end": {"type": "integer"},
+            },
+            "required": ["path"],
+        },
+    },
+    {
+        "name": "write_file",
+        "description": "Create/overwrite a file with full content. Shows a diff and asks to confirm.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"path": {"type": "string"}, "content": {"type": "string"}},
+            "required": ["path", "content"],
+        },
+    },
+    {
+        "name": "edit_file",
+        "description": "Replace a unique old_string with new_string. Shows a diff and asks to confirm.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "old_string": {"type": "string"},
+                "new_string": {"type": "string"},
+            },
+            "required": ["path", "old_string", "new_string"],
+        },
+    },
+    {
+        "name": "run_command",
+        "description": "Run a shell command in the project root. Shows the command and asks to confirm.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "command": {"type": "string"},
+                "timeout": {"type": "integer", "description": "Seconds, default 120"},
+            },
+            "required": ["command"],
+        },
+    },
+]
+
+
+def run_tool(name: str, tool_input: dict, ctx: ToolContext) -> ToolResult:
+    fn = _DISPATCH.get(name)
+    if fn is None:
+        return ToolResult(f"Unknown tool: {name}", is_error=True)
+    try:
+        return fn(tool_input, ctx)
+    except Exception as exc:  # tools must never crash the loop
+        return ToolResult(f"Tool error: {exc}", is_error=True)

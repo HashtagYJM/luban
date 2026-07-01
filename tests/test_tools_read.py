@@ -38,3 +38,9 @@ def test_read_file(tmp_path):
 def test_read_file_missing(tmp_path):
     out = tools._read_file({"path": "nope.py"}, _ctx(tmp_path))
     assert out.is_error
+
+
+def test_read_file_bad_range(tmp_path):
+    (tmp_path / "f.py").write_text("a\nb\n")
+    out = tools._read_file({"path": "f.py", "start": "bad"}, _ctx(tmp_path))
+    assert out.is_error

@@ -57,7 +57,10 @@ def _read_file(inp: dict, ctx: ToolContext) -> ToolResult:
     except FileNotFoundError:
         return ToolResult(f"File not found: {inp['path']}", is_error=True)
     lines = text.splitlines()
-    start = int(inp.get("start", 1))
-    end = int(inp.get("end", len(lines)))
+    try:
+        start = int(inp.get("start", 1))
+        end = int(inp.get("end", len(lines)))
+    except (ValueError, TypeError):
+        return ToolResult("start/end must be integers.", is_error=True)
     numbered = "\n".join(f"{i}: {ln}" for i, ln in enumerate(lines[start - 1:end], start))
     return ToolResult(_truncate(numbered))

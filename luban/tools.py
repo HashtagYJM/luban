@@ -92,3 +92,42 @@ def _grep(inp: dict, ctx: ToolContext) -> ToolResult:
         except (UnicodeDecodeError, OSError):
             continue
     return ToolResult(_truncate("\n".join(hits) or "(no matches)"))
+
+
+def _write_file(inp: dict, ctx: ToolContext) -> ToolResult:
+    try:
+        target = resolve_in_root(ctx.project_root, inp["path"])
+    except (ValueError, KeyError) as exc:
+        return ToolResult(f"Bad request: {exc}", is_error=True)
+    old = target.read_text() if target.exists() else ""
+    new = inp["content"]
+    ctx.render_diff(inp["path"], old, new)
+    if not ctx.confirm(f"Write {inp['path']}?"):
+        return ToolResult("User declined the write.")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(new)
+    return ToolResult(f"Wrote {inp['path']} ({len(new)} chars).")
+
+
+def _edit_file(inp: dict, ctx: ToolContext) -> ToolResult:
+    try:
+        target = resolve_in_root(ctx.project_root, inp["path"])
+        old = target.read_text()
+    except (ValueError, KeyError) as exc:
+        return ToolResult(f"Bad request: {exc}", is_error=True)
+    except FileNotFoundError:
+        return ToolResult(f"File not found: {inp['path']}", is_error=True)
+    count = old.count(inp["old_string"])
+    if count == 0:
+        return ToolResult("old_string not found in file.", is_error=True)
+    if count > 1:
+        return ToolResult(
+            f"old_string is not unique ({count} matches); add more context.",
+            is_error=True,
+        )
+    new = old.replace(inp["old_string"], inp["new_string"])
+    ctx.render_diff(inp["path"], old, new)
+    if not ctx.confirm(f"Edit {inp['path']}?"):
+        return ToolResult("User declined the edit.")
+    target.write_text(new)
+    return ToolResult(f"Edited {inp['path']}.")

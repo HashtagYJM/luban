@@ -28,3 +28,20 @@ def render_diff(path: str, old: str, new: str) -> None:
             _console.print(Text(line, style="cyan"))
         else:
             _console.print(Text(line, style="dim"))
+
+
+def ask_confirm(prompt: str, input_fn=input) -> str:
+    raw = input_fn(f"{prompt} [y]es/[n]o/[a]ll: ").strip().lower()
+    if raw in ("y", "yes"):
+        return "yes"
+    if raw in ("a", "all"):
+        return "all"
+    return "no"
+
+
+def print_text(text: str) -> None:
+    _console.print(text, end="", soft_wrap=True)
+
+
+def render_command(command: str) -> None:
+    _console.print(Text(f"$ {command}", style="yellow"))

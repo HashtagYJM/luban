@@ -6,7 +6,8 @@ exposing `.messages.create(...)` and `.messages.stream(...)`.
 """
 from __future__ import annotations
 
-from typing import Any, Callable
+import types
+from typing import Any
 
 DEFAULT_MODEL = "claude-sonnet-5"
 
@@ -17,7 +18,7 @@ _SETUP_HINT = (
 )
 
 
-def _import_local():
+def _import_local() -> types.ModuleType:
     from luban import client_local  # noqa: PLC0415  (lazy on purpose)
     return client_local
 

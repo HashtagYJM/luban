@@ -28,4 +28,6 @@ python -m luban --no-stream     # if your client lacks streaming
 python -m luban --model <id>    # pick a model
 ```
 
+> **Warning:** `--auto` (and the `/auto` command) run file writes and shell commands WITHOUT asking. Only use it in a project directory you trust.
+
 In-session commands: `/auto`, `/model <id>`, `/clear`, `/exit`.

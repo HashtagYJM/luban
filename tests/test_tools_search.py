@@ -20,3 +20,11 @@ def test_grep(tmp_path):
     out = tools._grep({"pattern": "hello"}, _ctx(tmp_path))
     assert "a.py" in out.content and "1" in out.content
     assert "b.py" not in out.content
+
+
+def test_glob_no_escape(tmp_path):
+    (tmp_path / "inside.py").write_text("x")
+    (tmp_path.parent / "outside_secret.py").write_text("x")
+    out = tools._glob({"pattern": "../*.py"}, _ctx(tmp_path))
+    assert "outside_secret.py" not in out.content
+    assert ".." not in out.content

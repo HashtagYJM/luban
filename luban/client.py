@@ -27,7 +27,9 @@ def get_client() -> Any:
     try:
         local = _import_local()
     except ModuleNotFoundError as exc:
-        raise RuntimeError(_SETUP_HINT) from exc
+        if exc.name == "luban.client_local":
+            raise RuntimeError(_SETUP_HINT) from exc
+        raise  # a DIFFERENT missing module (e.g. inside client_local) — surface it
     return local.build_client()
 
 

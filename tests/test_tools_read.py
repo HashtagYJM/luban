@@ -44,3 +44,10 @@ def test_read_file_bad_range(tmp_path):
     (tmp_path / "f.py").write_text("a\nb\n")
     out = tools._read_file({"path": "f.py", "start": "bad"}, _ctx(tmp_path))
     assert out.is_error
+
+
+def test_read_file_start_zero_clamped(tmp_path):
+    (tmp_path / "f.py").write_text("a\nb\n")
+    out = tools._read_file({"path": "f.py", "start": 0}, _ctx(tmp_path))
+    assert not out.is_error
+    assert out.content.startswith("1:")

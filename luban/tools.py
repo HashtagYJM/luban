@@ -64,16 +64,22 @@ def _read_file(inp: dict, ctx: ToolContext) -> ToolResult:
         end = int(inp.get("end", len(lines)))
     except (ValueError, TypeError):
         return ToolResult("start/end must be integers.", is_error=True)
+    start = max(1, start)
     numbered = "\n".join(f"{i}: {ln}" for i, ln in enumerate(lines[start - 1:end], start))
     return ToolResult(_truncate(numbered))
 
 
 def _glob(inp: dict, ctx: ToolContext) -> ToolResult:
     root = Path(ctx.project_root).resolve()
-    matches = sorted(
-        str(p.relative_to(root)) for p in root.glob(inp["pattern"]) if p.is_file()
-    )
-    return ToolResult(_truncate("\n".join(matches) or "(no matches)"))
+    matches = []
+    for p in root.glob(inp["pattern"]):
+        if not p.is_file():
+            continue
+        rp = p.resolve()
+        if rp != root and root not in rp.parents:
+            continue  # drop matches that escape the project root
+        matches.append(str(rp.relative_to(root)))
+    return ToolResult(_truncate("\n".join(sorted(matches)) or "(no matches)"))
 
 
 def _grep(inp: dict, ctx: ToolContext) -> ToolResult:
@@ -90,7 +96,7 @@ def _grep(inp: dict, ctx: ToolContext) -> ToolResult:
             for n, line in enumerate(f.read_text().splitlines(), 1):
                 if rx.search(line):
                     hits.append(f"{f.relative_to(root)}:{n}: {line.strip()}")
-        except (UnicodeDecodeError, OSError):
+        except (UnicodeDecodeError, OSError, ValueError):
             continue
     return ToolResult(_truncate("\n".join(hits) or "(no matches)"))
 

@@ -17,12 +17,12 @@ class Session:
     messages: list = field(default_factory=list)
 
 
-def parse_args(argv=None) -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(prog="luban", description="Terminal coding agent.")
     p.add_argument("--dir", default=".", help="Project root (default: cwd).")
     p.add_argument("--model", default=client_mod.DEFAULT_MODEL)
     p.add_argument("--max-tokens", type=int, default=8192)
-    p.add_argument("--auto", action="store_true", help="Skip confirmation prompts.")
+    p.add_argument("--auto", action="store_true", help="Skip confirmation prompts (auto-approves ALL file writes and shell commands — use with care).")
     p.add_argument("--no-stream", dest="stream", action="store_false")
     p.set_defaults(stream=True)
     return p.parse_args(argv)
@@ -66,7 +66,7 @@ def handle_command(line: str, session: Session) -> str:
     return "handled"  # unknown /command: swallow rather than send to model
 
 
-def main(argv=None) -> None:
+def main(argv: list[str] | None = None) -> None:
     ns = parse_args(argv)
     project_root = Path(ns.dir).resolve()
     session = Session(
@@ -91,5 +91,10 @@ def main(argv=None) -> None:
         session.messages.append({"role": "user", "content": line})
         config = agent.AgentConfig(session.model, session.max_tokens, session.stream)
         ui.print_text("\nluban> ")
-        session.messages = agent.run_turn(client, config, session.messages, ctx, ui.print_text)
-        ui.print_text("\n")
+        try:
+            session.messages = agent.run_turn(client, config, session.messages, ctx, ui.print_text)
+        except KeyboardInterrupt:
+            session.messages.pop()  # drop the unanswered user turn so history stays valid
+            ui.print_text("\n[interrupted]\n")
+        else:
+            ui.print_text("\n")

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable
 
 from luban import client as client_mod
 from luban import tools as tools_mod
@@ -22,7 +21,7 @@ class AgentConfig:
     stream: bool
 
 
-def _final_message(client, config, messages, on_text):
+def _run_model_turn(client, config, messages, on_text):
     if config.stream:
         return client_mod.stream_turn(
             client, model=config.model, max_tokens=config.max_tokens,
@@ -42,7 +41,7 @@ def _final_message(client, config, messages, on_text):
 def run_turn(client, config: AgentConfig, messages: list[dict], ctx, on_text) -> list[dict]:
     messages = list(messages)
     while True:
-        msg = _final_message(client, config, messages, on_text)
+        msg = _run_model_turn(client, config, messages, on_text)
         messages.append({"role": "assistant", "content": client_mod.message_to_blocks(msg)})
         if msg.stop_reason != "tool_use":
             return messages
@@ -57,4 +56,8 @@ def run_turn(client, config: AgentConfig, messages: list[dict], ctx, on_text) ->
                 "content": out.content,
                 "is_error": out.is_error,
             })
+        if not results:
+            # stop_reason was tool_use but no tool_use blocks were present;
+            # returning avoids sending an empty tool_result message in a loop.
+            return messages
         messages.append({"role": "user", "content": results})

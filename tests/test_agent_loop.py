@@ -57,3 +57,10 @@ def test_multiple_tool_uses_in_one_turn(tmp_path):
     tr = [m for m in msgs if m["role"] == "user" and isinstance(m["content"], list)][-1]
     ids = {b["tool_use_id"] for b in tr["content"]}
     assert ids == {"t1", "t2"}
+
+
+def test_tool_use_stop_but_no_tool_blocks_terminates(tmp_path):
+    # Pathological: stop_reason says tool_use but there are no tool_use blocks.
+    fc = FakeClient([FakeMessage([FakeBlock("text", text="oops")], "tool_use")])
+    msgs = agent.run_turn(fc, _cfg(), [{"role": "user", "content": "hi"}], _ctx(tmp_path), lambda t: None)
+    assert msgs[-1]["role"] == "assistant"

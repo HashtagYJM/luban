@@ -4,6 +4,9 @@ luban/client_local.py
 # Internal design docs / plans — kept locally, not published
 docs/superpowers/
 
+# Local progress notes — may reference internal details, never publish
+CLAUDE.md
+
 # Python
 __pycache__/
 *.pyc

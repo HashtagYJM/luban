@@ -4,6 +4,23 @@ A small terminal coding agent. It reads and searches your project files,
 proposes edits (with a diff you confirm), and runs shell commands — all in a
 tool-use loop against an Anthropic-compatible client you provide.
 
+## Quick start
+
+```bash
+# 1. install (into the Python env that has your client package)
+pip install git+https://github.com/HashtagYJM/luban.git
+
+# 2. one-time: create ~/.luban/client_local.py with your build_client()
+#    (Windows: C:\Users\<you>\.luban\client_local.py) — see client_local.example.py
+
+# 3. run — a real command now, no `python -m`
+luban
+```
+
+At the `you>` prompt, type what you want in plain English; luban reads your
+files, shows a diff before any change (`y`/`n`), and can run commands. `/exit`
+to quit.
+
 ## Install
 
 Requires Python 3.11. Install into the environment that has your

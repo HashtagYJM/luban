@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "luban"
+version = "0.1.0"
+description = "A small terminal coding agent."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = ["rich>=13"]
+
+[project.scripts]
+luban = "luban.cli:main"
+
+[tool.setuptools]
+packages = ["luban"]

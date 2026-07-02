@@ -4,7 +4,7 @@ import argparse
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from luban import agent, tools, ui
+from luban import agent, config as config_mod, tools, ui
 from luban import client as client_mod
 
 
@@ -73,9 +73,13 @@ def main(argv: list[str] | None = None) -> None:
         model=ns.model, max_tokens=ns.max_tokens,
         auto=ns.auto, stream=ns.stream, messages=[],
     )
+    cfg = config_mod.load_config()
     client = client_mod.get_client()
     ctx = build_tool_context(session, project_root)
-    ui.print_text(f"luban — project: {project_root}  model: {session.model}\n")
+    ui.print_text(
+        f"luban — project: {project_root}  model: {session.model}  "
+        f"platform: {cfg.platform}\n"
+    )
     while True:
         try:
             line = input("\nyou> ").strip()
@@ -89,10 +93,12 @@ def main(argv: list[str] | None = None) -> None:
         if status == "handled":
             continue
         session.messages.append({"role": "user", "content": line})
-        config = agent.AgentConfig(session.model, session.max_tokens, session.stream)
+        agent_config = agent.AgentConfig(
+            session.model, session.max_tokens, session.stream, platform=cfg.platform
+        )
         ui.print_text("\nluban> ")
         try:
-            session.messages = agent.run_turn(client, config, session.messages, ctx, ui.print_text)
+            session.messages = agent.run_turn(client, agent_config, session.messages, ctx, ui.print_text)
         except KeyboardInterrupt:
             session.messages.pop()  # drop the unanswered user turn so history stays valid
             ui.print_text("\n[interrupted]\n")

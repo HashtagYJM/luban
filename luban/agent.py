@@ -13,24 +13,38 @@ SYSTEM_PROMPT = (
     "are relative to the project root."
 )
 
+_PLATFORM_LINE = {
+    "windows": "The user is on Windows: use cmd.exe-compatible shell commands "
+    "(e.g. `dir`, `type`, `del`) and Windows-style paths in run_command.",
+    "mac": "The user is on macOS: use POSIX shell commands in run_command.",
+    "linux": "The user is on Linux: use POSIX shell commands in run_command.",
+}
+
+
+def system_prompt_for(platform: str) -> str:
+    line = _PLATFORM_LINE.get(platform)
+    return f"{SYSTEM_PROMPT}\n\n{line}" if line else SYSTEM_PROMPT
+
 
 @dataclass
 class AgentConfig:
     model: str
     max_tokens: int
     stream: bool
+    platform: str = ""
 
 
 def _run_model_turn(client, config, messages, on_text):
+    system = system_prompt_for(config.platform)
     if config.stream:
         return client_mod.stream_turn(
             client, model=config.model, max_tokens=config.max_tokens,
-            system=SYSTEM_PROMPT, messages=messages, tools=tools_mod.TOOLS,
+            system=system, messages=messages, tools=tools_mod.TOOLS,
             on_text=on_text,
         )
     msg = client_mod.create_turn(
         client, model=config.model, max_tokens=config.max_tokens,
-        system=SYSTEM_PROMPT, messages=messages, tools=tools_mod.TOOLS,
+        system=system, messages=messages, tools=tools_mod.TOOLS,
     )
     for b in msg.content:
         if b.type == "text":

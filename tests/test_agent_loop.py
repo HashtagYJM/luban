@@ -11,6 +11,30 @@ def _cfg():
     return agent.AgentConfig(model="m", max_tokens=100, stream=False)
 
 
+def test_system_prompt_windows_mentions_cmd():
+    sp = agent.system_prompt_for("windows")
+    assert "Windows" in sp and "cmd" in sp.lower()
+    assert agent.SYSTEM_PROMPT in sp  # base prompt preserved
+
+
+def test_system_prompt_unknown_platform_is_base_only():
+    assert agent.system_prompt_for("") == agent.SYSTEM_PROMPT
+
+
+def test_config_passes_platform_into_prompt(tmp_path, monkeypatch):
+    # The streamed system prompt reflects config.platform.
+    seen = {}
+
+    def fake_create(client, *, model, max_tokens, system, messages, tools):
+        seen["system"] = system
+        return FakeMessage([FakeBlock("text", text="ok")], "end_turn")
+
+    monkeypatch.setattr(agent.client_mod, "create_turn", fake_create)
+    cfg = agent.AgentConfig(model="m", max_tokens=100, stream=False, platform="windows")
+    agent.run_turn(FakeClient([]), cfg, [{"role": "user", "content": "hi"}], _ctx(tmp_path), lambda t: None)
+    assert "Windows" in seen["system"]
+
+
 def test_plain_text_turn(tmp_path):
     fc = FakeClient([FakeMessage([FakeBlock("text", text="just answering")], "end_turn")])
     msgs = agent.run_turn(fc, _cfg(), [{"role": "user", "content": "hi"}], _ctx(tmp_path), lambda t: None)

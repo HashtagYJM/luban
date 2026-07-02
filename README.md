@@ -31,3 +31,9 @@ python -m luban --model <id>    # pick a model
 > **Warning:** `--auto` (and the `/auto` command) run file writes and shell commands WITHOUT asking. Only use it in a project directory you trust.
 
 In-session commands: `/auto`, `/model <id>`, `/clear`, `/exit`.
+
+## Troubleshooting
+
+- **No text appears (empty responses) in streaming mode?** Some reasoning
+  models stream only their internal "thinking" and no visible text. Run with
+  `--no-stream` — the full response is returned correctly without streaming.

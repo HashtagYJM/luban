@@ -54,3 +54,17 @@ def test_permissions_non_string_items_dropped(tmp_path):
     p.write_text('platform = "mac"\n[permissions]\nallow = ["ok", 3]\ndeny = []\n')
     cfg = config.load_config(p)
     assert cfg.allow == ["ok"]
+
+
+def test_permissions_non_table_never_raises(tmp_path):
+    p = tmp_path / "config.toml"
+    p.write_text('platform = "mac"\npermissions = "oops"\n')
+    cfg = config.load_config(p)
+    assert cfg.allow == [] and cfg.deny == []
+
+
+def test_permissions_string_value_not_iterated_as_chars(tmp_path):
+    p = tmp_path / "config.toml"
+    p.write_text('platform = "mac"\n[permissions]\nallow = "run_command"\n')
+    cfg = config.load_config(p)
+    assert cfg.allow == []

@@ -62,7 +62,16 @@ def load_config(path: Path = CONFIG_PATH) -> Config:
     plat = data.get("platform") or detect_platform()
     if plat not in _VALID_PLATFORMS:
         plat = detect_platform()
-    perms = data.get("permissions") or {}
-    allow = [r for r in perms.get("allow", []) if isinstance(r, str)]
-    deny = [r for r in perms.get("deny", []) if isinstance(r, str)]
+    perms = data.get("permissions")
+    if not isinstance(perms, dict):
+        perms = {}
+
+    def _rules(key: str) -> list[str]:
+        raw = perms.get(key)
+        if not isinstance(raw, list):
+            return []
+        return [r for r in raw if isinstance(r, str)]
+
+    allow = _rules("allow")
+    deny = _rules("deny")
     return Config(platform=plat, allow=allow, deny=deny)

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -9,6 +10,7 @@ from typing import Callable
 from luban import skills as skills_mod
 
 MAX_OUTPUT = 20000  # chars; truncate large tool output to protect context
+MAX_COMMAND_TIMEOUT = 600  # seconds; cap model-supplied run_command timeouts
 
 
 @dataclass
@@ -142,24 +144,46 @@ def _edit_file(inp: dict, ctx: ToolContext) -> ToolResult:
     return ToolResult(f"Edited {inp['path']}.")
 
 
+def _kill_tree(proc: subprocess.Popen) -> None:  # type: ignore
+    # shell=True spawns grandchildren; on Windows a plain kill leaves them
+    # holding the console. taskkill /T takes the whole tree down.
+    if sys.platform == "win32":
+        subprocess.run(
+            f"taskkill /F /T /PID {proc.pid}", shell=True, capture_output=True
+        )
+    else:
+        proc.kill()
+
+
 def _run_command(inp: dict, ctx: ToolContext) -> ToolResult:
     command = inp["command"]
-    timeout = int(inp.get("timeout", 120))
+    timeout = min(int(inp.get("timeout", 120)), MAX_COMMAND_TIMEOUT)
     ctx.render_command(command)
     if not ctx.confirm(f"Run: {command}"):
         return ToolResult("User declined the command.")
+    proc = subprocess.Popen(
+        command,
+        shell=True,
+        cwd=str(ctx.project_root),
+        stdin=subprocess.DEVNULL,  # interactive children EOF instead of hanging
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
     try:
-        proc = subprocess.run(
-            command,
-            shell=True,
-            cwd=str(ctx.project_root),
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
+        out, err = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
-        return ToolResult(f"Command timed out after {timeout}s.", is_error=True)
-    body = (proc.stdout or "") + (proc.stderr or "")
+        _kill_tree(proc)
+        try:
+            out, err = proc.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            out, err = "", ""
+        partial = _truncate((out or "") + (err or ""))
+        return ToolResult(
+            f"Command timed out after {timeout}s (process tree killed).\n{partial}",
+            is_error=True,
+        )
+    body = (out or "") + (err or "")
     return ToolResult(_truncate(f"{body}\n[exit code: {proc.returncode}]"))
 
 

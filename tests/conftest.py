@@ -66,6 +66,17 @@ class _FakeMessages:
         return FakeStream(final)
 
 
+class _FakeModels:
+    def __init__(self, ids):
+        self._ids = ids
+
+    def list(self):
+        if self._ids is None:
+            raise RuntimeError("models.list unsupported")
+        return [SimpleNamespace(id=i) for i in self._ids]
+
+
 class FakeClient:
-    def __init__(self, scripted):
+    def __init__(self, scripted, model_ids=None):
         self.messages = _FakeMessages(scripted)
+        self.models = _FakeModels(model_ids)

@@ -105,3 +105,14 @@ def message_to_blocks(message) -> list[dict]:
         elif b.type == "redacted_thinking":
             blocks.append({"type": "redacted_thinking", "data": b.data})
     return blocks
+
+
+def list_models(client) -> list[str] | None:
+    """Model ids the client offers, or None if it can't say (never raises)."""
+    try:
+        result = client.models.list()
+        items = getattr(result, "data", result)  # SDK may return a paginated page
+        ids = [m.id for m in items]
+        return ids or None
+    except Exception:
+        return None

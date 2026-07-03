@@ -19,7 +19,8 @@ COMPACT_PROMPT = (
     "current state, and open items or next steps. Reply with only the summary."
 )
 WARN_TOKENS = 60_000
-MEMORY_FILE = "LUBAN.md"
+# First match wins; a `memory_file` key in config.toml overrides the chain.
+MEMORY_FILES = ("LUBAN.md", "CLAUDE.md", "AGENTS.md")
 MEMORY_MAX_CHARS = 8000
 
 
@@ -123,15 +124,19 @@ def compose_user_message(session: Session, line: str) -> str:
     return "\n\n".join(parts)
 
 
-def read_project_memory(project_root: Path) -> str:
-    path = Path(project_root) / MEMORY_FILE
-    try:
-        text = path.read_text(encoding="utf-8", errors="replace").strip()
-    except OSError:
-        return ""
-    if len(text) > MEMORY_MAX_CHARS:
-        text = text[:MEMORY_MAX_CHARS] + "\n[LUBAN.md truncated]"
-    return text
+def read_project_memory(project_root: Path, memory_file: str = "") -> str:
+    # An explicit memory_file (from config.toml) is authoritative: no chain fallback.
+    names = (memory_file,) if memory_file else MEMORY_FILES
+    for name in names:
+        path = Path(project_root) / name
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace").strip()
+        except OSError:
+            continue
+        if len(text) > MEMORY_MAX_CHARS:
+            text = text[:MEMORY_MAX_CHARS] + "\n[memory file truncated]"
+        return text
+    return ""
 
 
 def estimate_tokens(messages: list) -> int:
@@ -355,7 +360,7 @@ def main(argv: list[str] | None = None) -> None:
         agent_config = agent.AgentConfig(
             session.model, session.max_tokens, session.stream, platform=cfg.platform,
             skills=skills_mod.list_skills(str(project_root)),
-            memory=read_project_memory(project_root),
+            memory=read_project_memory(project_root, cfg.memory_file),
         )
         ui.print_text("\nluban> ")
         try:

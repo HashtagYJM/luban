@@ -3,12 +3,12 @@ from luban import agent
 
 def test_memory_in_prompt():
     p = agent.system_prompt_for("mac", memory="Use output/raw_data for downloads.")
-    assert "Project instructions (from LUBAN.md):" in p
+    assert "Project instructions (from the project's memory file):" in p
     assert "output/raw_data" in p
 
 
 def test_no_memory_no_block():
-    assert "LUBAN.md" not in agent.system_prompt_for("mac")
+    assert "Project instructions" not in agent.system_prompt_for("mac")
 
 
 def test_ordering_platform_memory_skills():

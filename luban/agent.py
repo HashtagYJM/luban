@@ -27,7 +27,7 @@ def system_prompt_for(platform: str, skills: list[dict] | None = None, memory: s
     if line:
         prompt = f"{prompt}\n\n{line}"
     if memory:
-        prompt = f"{prompt}\n\nProject instructions (from LUBAN.md):\n{memory}"
+        prompt = f"{prompt}\n\nProject instructions (from the project's memory file):\n{memory}"
     if skills:
         catalog = "\n".join(
             f"- {s['name']}: {s['description']}"

@@ -22,6 +22,7 @@ class Config:
     platform: str
     allow: list[str] = field(default_factory=list)
     deny: list[str] = field(default_factory=list)
+    memory_file: str = ""  # "" = try LUBAN.md, CLAUDE.md, AGENTS.md in order
 
 
 def detect_platform() -> str:
@@ -35,6 +36,9 @@ def _default_text(plat: str) -> str:
     return (
         "# ~/.luban/config.toml — luban settings (edit me)\n"
         f'platform = "{plat}"   # windows | mac | linux\n'
+        "\n"
+        "# Project memory file (default: first of LUBAN.md, CLAUDE.md, AGENTS.md):\n"
+        '# memory_file = "CLAUDE.md"\n'
         "\n"
         "# Optional permission rules (deny > allow > ask; deny works even in --auto):\n"
         "# [permissions]\n"
@@ -74,4 +78,7 @@ def load_config(path: Path = CONFIG_PATH) -> Config:
 
     allow = _rules("allow")
     deny = _rules("deny")
-    return Config(platform=plat, allow=allow, deny=deny)
+    memory_file = data.get("memory_file")
+    if not isinstance(memory_file, str):
+        memory_file = ""
+    return Config(platform=plat, allow=allow, deny=deny, memory_file=memory_file)

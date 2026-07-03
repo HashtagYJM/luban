@@ -152,10 +152,19 @@ never in the project: a cloned repo can't grant itself permissions.
 
 ## Project memory
 
-If the project root contains a **`LUBAN.md`** file, its contents are injected
-into every turn as standing project instructions (conventions, layout, do's and
-don'ts). Commit it with the project — teammates get it automatically. Unlike
-skills (loaded on demand), LUBAN.md is always on.
+luban looks for a memory file in the project root — **`LUBAN.md`**, then
+**`CLAUDE.md`**, then **`AGENTS.md`** (first found wins) — and injects its
+contents into every turn as standing project instructions (conventions, layout,
+do's and don'ts). Already keeping a `CLAUDE.md` for Claude Code? It just works.
+Need luban-specific instructions? Add a `LUBAN.md`; it takes precedence. Commit
+the file with the project — teammates get it automatically. Unlike skills
+(loaded on demand), project memory is always on.
+
+To pin a specific file instead of the chain, set it in `~/.luban/config.toml`:
+
+```toml
+memory_file = "CLAUDE.md"   # exact file to use; no fallback
+```
 
 ## Audit log
 

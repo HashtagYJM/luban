@@ -68,3 +68,21 @@ def test_permissions_string_value_not_iterated_as_chars(tmp_path):
     p.write_text('platform = "mac"\n[permissions]\nallow = "run_command"\n')
     cfg = config.load_config(p)
     assert cfg.allow == []
+
+
+def test_memory_file_parsed(tmp_path):
+    p = tmp_path / "config.toml"
+    p.write_text('platform = "mac"\nmemory_file = "CLAUDE.md"\n')
+    assert config.load_config(p).memory_file == "CLAUDE.md"
+
+
+def test_memory_file_default_empty(tmp_path):
+    p = tmp_path / "config.toml"
+    p.write_text('platform = "mac"\n')
+    assert config.load_config(p).memory_file == ""
+
+
+def test_memory_file_non_string_ignored(tmp_path):
+    p = tmp_path / "config.toml"
+    p.write_text('platform = "mac"\nmemory_file = 3\n')
+    assert config.load_config(p).memory_file == ""

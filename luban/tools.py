@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
+from luban import skills as skills_mod
+
 MAX_OUTPUT = 20000  # chars; truncate large tool output to protect context
 
 
@@ -161,6 +163,17 @@ def _run_command(inp: dict, ctx: ToolContext) -> ToolResult:
     return ToolResult(_truncate(f"{body}\n[exit code: {proc.returncode}]"))
 
 
+def _load_skill(inp: dict, ctx: ToolContext) -> ToolResult:
+    name = inp["name"]
+    body = skills_mod.load_skill(name, ctx.project_root)
+    if body is None:
+        available = ", ".join(
+            s["name"] for s in skills_mod.list_skills(ctx.project_root)
+        ) or "(none)"
+        return ToolResult(f"Unknown skill: {name}. Available: {available}", is_error=True)
+    return ToolResult(_truncate(f"[skill: {name}]\n{body}"))
+
+
 _DISPATCH = {
     "list_dir": _list_dir,
     "glob": _glob,
@@ -169,6 +182,7 @@ _DISPATCH = {
     "write_file": _write_file,
     "edit_file": _edit_file,
     "run_command": _run_command,
+    "load_skill": _load_skill,
 }
 
 TOOLS = [
@@ -246,6 +260,15 @@ TOOLS = [
                 "timeout": {"type": "integer", "description": "Seconds, default 120"},
             },
             "required": ["command"],
+        },
+    },
+    {
+        "name": "load_skill",
+        "description": "Load a skill's full instructions by name. Available skills are listed in the system prompt.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"name": {"type": "string"}},
+            "required": ["name"],
         },
     },
 ]

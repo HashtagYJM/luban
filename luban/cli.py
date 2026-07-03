@@ -8,6 +8,7 @@ from pathlib import Path
 from luban import agent, config as config_mod, tools, ui
 from luban import client as client_mod
 from luban import sessions as sessions_mod
+from luban import skills as skills_mod
 
 
 @dataclass
@@ -21,6 +22,7 @@ class Session:
     session_id: str = ""
     created: str = ""
     title: str = ""
+    pending_context: list = field(default_factory=list)
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -83,6 +85,14 @@ def save_session(session: Session) -> None:
         })
     except OSError as exc:
         ui.print_text(f"warning: could not save session ({exc})\n")
+
+
+def compose_user_message(session: Session, line: str) -> str:
+    if not session.pending_context:
+        return line
+    parts = session.pending_context + [line]
+    session.pending_context.clear()
+    return "\n\n".join(parts)
 
 
 def _print_last_exchange(messages: list) -> None:
@@ -190,6 +200,32 @@ def handle_command(line: str, session: Session, client=None) -> str:
                 f"  ({h['message_count']} msgs)\n"
             )
         return "handled"
+    if cmd == "/skills":
+        catalog = skills_mod.list_skills(session.project or ".")
+        if not catalog:
+            ui.print_text(
+                "no skills found (put .md files in ~/.luban/skills/ or <project>/.luban/skills/).\n"
+            )
+            return "handled"
+        for s in catalog:
+            marker = " [project]" if s["scope"] == "project" else ""
+            ui.print_text(f"  {s['name']}: {s['description']}{marker}\n")
+        return "handled"
+    if cmd == "/skill":
+        name = arg.strip()
+        if not name:
+            ui.print_text("usage: /skill <name>\n")
+            return "handled"
+        body = skills_mod.load_skill(name, session.project or ".")
+        if body is None:
+            names = ", ".join(
+                s["name"] for s in skills_mod.list_skills(session.project or ".")
+            ) or "(none)"
+            ui.print_text(f"unknown skill: {name}\navailable: {names}\n")
+            return "handled"
+        session.pending_context.append(f"[skill: {name}]\n{body}")
+        ui.print_text(f"✓ skill queued: {name} (applies to your next message)\n")
+        return "handled"
     return "handled"  # unknown /command: swallow rather than send to model
 
 
@@ -230,9 +266,12 @@ def main(argv: list[str] | None = None) -> None:
             break
         if status == "handled":
             continue
-        session.messages.append({"role": "user", "content": line})
+        session.messages.append(
+            {"role": "user", "content": compose_user_message(session, line)}
+        )
         agent_config = agent.AgentConfig(
-            session.model, session.max_tokens, session.stream, platform=cfg.platform
+            session.model, session.max_tokens, session.stream, platform=cfg.platform,
+            skills=skills_mod.list_skills(str(project_root)),
         )
         ui.print_text("\nluban> ")
         try:

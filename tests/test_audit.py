@@ -28,3 +28,15 @@ def test_log_non_ascii_readable(tmp_path):
     p = tmp_path / "a.jsonl"
     audit.log({"target": "修复.py"}, path=p)
     assert "修复" in p.read_text(encoding="utf-8")
+
+
+def test_log_never_raises_on_unserializable_entry(tmp_path):
+    p = tmp_path / "a.jsonl"
+    audit.log({"bad": {1, 2, 3}}, path=p)  # a set is not JSON-serializable
+
+
+def test_default_path_resolves_at_call_time(tmp_path, monkeypatch):
+    p = tmp_path / "patched.jsonl"
+    monkeypatch.setattr(audit, "AUDIT_PATH", p)
+    audit.log({"tool": "x"})  # no path arg -> must use the patched AUDIT_PATH
+    assert p.exists()

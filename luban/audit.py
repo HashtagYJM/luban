@@ -22,5 +22,5 @@ def log(entry: dict, path: Path | None = None) -> None:
         )
         with p.open("a", encoding="utf-8") as f:
             f.write(line + "\n")
-    except OSError:
-        pass  # auditing must never break the agent loop
+    except Exception:
+        pass  # auditing is a side channel — it must never raise into the agent loop

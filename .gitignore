@@ -7,6 +7,12 @@ docs/superpowers/
 # Local progress notes — may reference internal details, never publish
 CLAUDE.md
 
+# Local scratch (screenshots, corporate error logs) — never publish
+_local/
+
+# macOS
+.DS_Store
+
 # Python
 __pycache__/
 *.pyc

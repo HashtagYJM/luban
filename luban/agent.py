@@ -21,9 +21,22 @@ _PLATFORM_LINE = {
 }
 
 
-def system_prompt_for(platform: str) -> str:
+def system_prompt_for(platform: str, skills: list[dict] | None = None) -> str:
+    prompt = SYSTEM_PROMPT
     line = _PLATFORM_LINE.get(platform)
-    return f"{SYSTEM_PROMPT}\n\n{line}" if line else SYSTEM_PROMPT
+    if line:
+        prompt = f"{prompt}\n\n{line}"
+    if skills:
+        catalog = "\n".join(
+            f"- {s['name']}: {s['description']}"
+            + (" [project]" if s["scope"] == "project" else "")
+            for s in skills
+        )
+        prompt = (
+            f"{prompt}\n\nSkills available (load full instructions with the "
+            f"load_skill tool when one is relevant to the task):\n{catalog}"
+        )
+    return prompt
 
 
 @dataclass
@@ -32,10 +45,11 @@ class AgentConfig:
     max_tokens: int
     stream: bool
     platform: str = ""
+    skills: list | None = None
 
 
 def _run_model_turn(client, config, messages, on_text, on_thinking):
-    system = system_prompt_for(config.platform)
+    system = system_prompt_for(config.platform, config.skills)
     if config.stream:
         return client_mod.stream_turn(
             client, model=config.model, max_tokens=config.max_tokens,

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import os
 import re
+import signal
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -145,14 +147,18 @@ def _edit_file(inp: dict, ctx: ToolContext) -> ToolResult:
 
 
 def _kill_tree(proc: subprocess.Popen) -> None:  # type: ignore
-    # shell=True spawns grandchildren; on Windows a plain kill leaves them
-    # holding the console. taskkill /T takes the whole tree down.
+    # shell=True spawns grandchildren; killing only the shell orphans them.
+    # Windows: taskkill /T takes the tree down. POSIX: the child was started
+    # in its own session (start_new_session), so kill its process group.
     if sys.platform == "win32":
         subprocess.run(
             f"taskkill /F /T /PID {proc.pid}", shell=True, capture_output=True
         )
-    else:
-        proc.kill()
+        return
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        proc.kill()  # group already gone or unreachable — kill the child directly
 
 
 def _run_command(inp: dict, ctx: ToolContext) -> ToolResult:
@@ -169,6 +175,7 @@ def _run_command(inp: dict, ctx: ToolContext) -> ToolResult:
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        start_new_session=(sys.platform != "win32"),  # POSIX: own process group so we can kill the whole tree
     )
     try:
         out, err = proc.communicate(timeout=timeout)

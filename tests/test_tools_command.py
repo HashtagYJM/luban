@@ -62,3 +62,18 @@ def test_run_command_still_returns_exit_code(tmp_path):
     out = tools._run_command({"command": "echo hardened"}, _ctx(tmp_path, True))
     assert "hardened" in out.content
     assert "[exit code: 0]" in out.content
+
+
+def test_run_command_timeout_kills_compound_grandchildren(tmp_path):
+    # A compound command makes the shell fork a real child; the tree-kill
+    # must take that grandchild down too, not just the shell.
+    py = sys.executable
+    marker = tmp_path / "survivor"
+    cmd = (
+        f'"{py}" -c "import time, pathlib; time.sleep(3); '
+        f'pathlib.Path(r\'{marker}\').touch()" && echo done'
+    )
+    out = tools._run_command({"command": cmd, "timeout": 1}, _ctx(tmp_path, True))
+    assert out.is_error
+    time.sleep(3.5)
+    assert not marker.exists()

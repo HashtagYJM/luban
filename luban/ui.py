@@ -1,11 +1,45 @@
+"""Terminal rendering — standard library only (no third-party deps).
+
+Colors use ANSI escape codes. On Windows 10+ the console needs virtual-terminal
+processing enabled once for them to render; we do that at import. Color is
+suppressed when stdout is not a TTY (e.g. piped/redirected) so captured output
+stays clean.
+"""
 from __future__ import annotations
 
 import difflib
+import sys
 
-from rich.console import Console
-from rich.text import Text
+_RESET = "\033[0m"
 
-_console = Console()
+
+def _enable_windows_ansi() -> None:
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.GetStdHandle(-11)  # STD_OUTPUT_HANDLE
+        mode = ctypes.c_uint32()
+        if kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
+            # ENABLE_VIRTUAL_TERMINAL_PROCESSING = 0x0004
+            kernel32.SetConsoleMode(handle, mode.value | 0x0004)
+    except Exception:
+        pass  # no color is fine; never crash the UI over it
+
+
+_enable_windows_ansi()
+_COLOR = sys.stdout.isatty()
+
+
+def _c(text: str, code: str) -> str:
+    return f"\033[{code}m{text}{_RESET}" if _COLOR else text
+
+
+def _emit(text: str) -> None:
+    sys.stdout.write(text)
+    sys.stdout.flush()
 
 
 def unified_diff_text(path: str, old: str, new: str) -> str:
@@ -21,13 +55,13 @@ def unified_diff_text(path: str, old: str, new: str) -> str:
 def render_diff(path: str, old: str, new: str) -> None:
     for line in unified_diff_text(path, old, new).splitlines():
         if line.startswith("+") and not line.startswith("+++"):
-            _console.print(Text(line, style="green"))
+            _emit(_c(line, "32") + "\n")  # green
         elif line.startswith("-") and not line.startswith("---"):
-            _console.print(Text(line, style="red"))
+            _emit(_c(line, "31") + "\n")  # red
         elif line.startswith("@@"):
-            _console.print(Text(line, style="cyan"))
+            _emit(_c(line, "36") + "\n")  # cyan
         else:
-            _console.print(Text(line, style="dim"))
+            _emit(_c(line, "2") + "\n")  # dim
 
 
 def ask_confirm(prompt: str, input_fn=input) -> str:
@@ -40,13 +74,13 @@ def ask_confirm(prompt: str, input_fn=input) -> str:
 
 
 def print_text(text: str) -> None:
-    _console.print(text, end="", soft_wrap=True)
+    _emit(text)
 
 
 def print_thinking(text: str) -> None:
-    # Reasoning/thinking output, rendered dim so it reads as secondary to the answer.
-    _console.print(Text(text, style="dim italic"), end="", soft_wrap=True)
+    # Reasoning/thinking output, dim + italic so it reads as secondary.
+    _emit(_c(text, "2;3"))
 
 
 def render_command(command: str) -> None:
-    _console.print(Text(f"$ {command}", style="yellow"))
+    _emit(_c(f"$ {command}", "33") + "\n")  # yellow

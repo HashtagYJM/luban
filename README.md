@@ -92,8 +92,8 @@ luban --no-stream           # if responses come back empty (some reasoning model
 luban --model <id>          # pick a model
 ```
 
-In-session commands: `/auto`, `/model` (list models / switch — e.g.
-`/model claude-fable-5`), `/sessions`, `/clear`, `/exit`.
+In-session commands: `/auto`, `/model` (list models / switch), `/skills`,
+`/skill <name>`, `/compact`, `/sessions`, `/clear`, `/exit`.
 
 > **Warning:** `--auto` (and the `/auto` command) run file writes and shell
 > commands WITHOUT asking. Only use it in a project directory you trust.
@@ -115,6 +115,31 @@ lists this folder's saved sessions; `/clear` starts a fresh session (the old
 one stays on disk). Resuming another folder's session (via --all) moves that
 session to your current folder.
 
+## Skills
+
+Teach luban your conventions with plain markdown files — no code. A skill is
+one `.md` file whose first line is a one-line description:
+
+```markdown
+description: How this project structures research outputs
+
+Raw downloads go in output/raw_data/, computed signals in output/signals/ ...
+```
+
+Put personal skills in `~/.luban/skills/` and project skills in
+`<project>/.luban/skills/` (commit those with the project — teammates get
+them automatically; a project skill overrides a global one with the same
+name). The model sees each skill's name and description and loads the full
+instructions itself when relevant; `/skills` lists them and `/skill <name>`
+applies one to your next message.
+
+## Compacting long conversations
+
+`/compact` asks the model to summarize the conversation, saves the full
+transcript to disk (still resumable via `--resume`), and continues in a fresh
+session seeded with the summary — keeping context small. luban suggests it
+when the conversation grows large.
+
 ## Config
 
 luban reads **`~/.luban/config.toml`**, created automatically on first run with
@@ -134,3 +159,6 @@ platform = "windows"   # windows | mac | linux
   ahead of the answer — so a model that reasons before replying no longer looks
   blank. If you'd rather not stream at all, `--no-stream` returns the full
   response in one go.
+- **Shell commands can't hang the session:** commands run with stdin closed
+  (interactive prompts end immediately) and are killed — including child
+  processes — after their timeout (default 120s, max 600s).

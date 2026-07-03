@@ -30,6 +30,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--max-tokens", type=int, default=8192)
     p.add_argument("--auto", action="store_true", help="Skip confirmation prompts (auto-approves ALL file writes and shell commands — use with care).")
     p.add_argument("--no-stream", dest="stream", action="store_false")
+    g = p.add_mutually_exclusive_group()
+    g.add_argument("--continue", "-c", dest="cont", action="store_true",
+                   help="Resume the most recent session for this folder.")
+    g.add_argument("--resume", "-r", action="store_true",
+                   help="Pick a past session to resume.")
+    p.add_argument("--all", action="store_true",
+                   help="With --resume: list sessions from all folders.")
     p.set_defaults(stream=True)
     return p.parse_args(argv)
 
@@ -78,6 +85,60 @@ def save_session(session: Session) -> None:
         ui.print_text(f"warning: could not save session ({exc})\n")
 
 
+def _print_last_exchange(messages: list) -> None:
+    last_user = next(
+        (m["content"] for m in reversed(messages)
+         if m["role"] == "user" and isinstance(m["content"], str)),
+        None,
+    )
+    last_texts: list[str] = []
+    for m in reversed(messages):
+        if m["role"] == "assistant":
+            last_texts = [b["text"] for b in m["content"]
+                          if isinstance(b, dict) and b.get("type") == "text"]
+            break
+    if last_user:
+        ui.print_text(f"\n(you) {last_user}\n")
+    if last_texts:
+        ui.print_text(f"(luban) {' '.join(last_texts)}\n")
+
+
+def restore_session(session: Session, data: dict) -> None:
+    session.messages = data["messages"]
+    session.model = data.get("model", session.model)
+    session.session_id = data["id"]
+    session.created = data.get("created", "")
+    session.title = data.get("title", "")
+    ui.print_text(
+        f'resumed {data["id"]} · "{session.title}" · {session.model} '
+        f"· {len(session.messages)} messages\n"
+    )
+    if data.get("project") and data["project"] != session.project:
+        ui.print_text(f"note: this conversation referenced another folder: {data['project']}\n")
+    _print_last_exchange(session.messages)
+
+
+def pick_session(project: str, all_projects: bool, input_fn=input) -> dict | None:
+    heads = sessions_mod.list_sessions(None if all_projects else project)
+    if not heads:
+        ui.print_text("no saved sessions found.\n")
+        return None
+    for i, h in enumerate(heads, 1):
+        prefix = f"[{Path(h['project']).name}] " if all_projects else ""
+        ui.print_text(
+            f'{i:3}. {prefix}{h["updated"]}  {h["model"]}  "{h["title"]}"'
+            f"  ({h['message_count']} msgs)\n"
+        )
+    raw = input_fn("resume which? (number, Enter to cancel): ").strip()
+    if not raw.isdigit() or not (1 <= int(raw) <= len(heads)):
+        return None
+    try:
+        return sessions_mod.load(heads[int(raw) - 1]["id"])
+    except Exception:
+        ui.print_text("could not read that session file — starting fresh.\n")
+        return None
+
+
 def handle_command(line: str, session: Session) -> str:
     if not line.startswith("/"):
         return "not_command"
@@ -112,6 +173,16 @@ def main(argv: list[str] | None = None) -> None:
     cfg = config_mod.load_config()
     client = client_mod.get_client()
     ctx = build_tool_context(session, project_root)
+    if ns.cont:
+        data = sessions_mod.latest(str(project_root))
+        if data is None:
+            ui.print_text("no previous session here — starting fresh.\n")
+        else:
+            restore_session(session, data)
+    elif ns.resume:
+        data = pick_session(str(project_root), ns.all)
+        if data is not None:
+            restore_session(session, data)
     ui.print_text(
         f"luban — project: {project_root}  model: {session.model}  "
         f"platform: {cfg.platform}\n"

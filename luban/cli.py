@@ -17,6 +17,8 @@ COMPACT_PROMPT = (
     "current state, and open items or next steps. Reply with only the summary."
 )
 WARN_TOKENS = 60_000
+MEMORY_FILE = "LUBAN.md"
+MEMORY_MAX_CHARS = 8000
 
 
 @dataclass
@@ -101,6 +103,17 @@ def compose_user_message(session: Session, line: str) -> str:
     parts = session.pending_context + [line]
     session.pending_context.clear()
     return "\n\n".join(parts)
+
+
+def read_project_memory(project_root: Path) -> str:
+    path = Path(project_root) / MEMORY_FILE
+    try:
+        text = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+    if len(text) > MEMORY_MAX_CHARS:
+        text = text[:MEMORY_MAX_CHARS] + "\n[LUBAN.md truncated]"
+    return text
 
 
 def estimate_tokens(messages: list) -> int:
@@ -324,6 +337,7 @@ def main(argv: list[str] | None = None) -> None:
         agent_config = agent.AgentConfig(
             session.model, session.max_tokens, session.stream, platform=cfg.platform,
             skills=skills_mod.list_skills(str(project_root)),
+            memory=read_project_memory(project_root),
         )
         ui.print_text("\nluban> ")
         try:

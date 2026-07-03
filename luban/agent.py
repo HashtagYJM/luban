@@ -21,11 +21,13 @@ _PLATFORM_LINE = {
 }
 
 
-def system_prompt_for(platform: str, skills: list[dict] | None = None) -> str:
+def system_prompt_for(platform: str, skills: list[dict] | None = None, memory: str = "") -> str:
     prompt = SYSTEM_PROMPT
     line = _PLATFORM_LINE.get(platform)
     if line:
         prompt = f"{prompt}\n\n{line}"
+    if memory:
+        prompt = f"{prompt}\n\nProject instructions (from LUBAN.md):\n{memory}"
     if skills:
         catalog = "\n".join(
             f"- {s['name']}: {s['description']}"
@@ -46,10 +48,11 @@ class AgentConfig:
     stream: bool
     platform: str = ""
     skills: list | None = None
+    memory: str = ""
 
 
 def _run_model_turn(client, config, messages, on_text, on_thinking):
-    system = system_prompt_for(config.platform, config.skills)
+    system = system_prompt_for(config.platform, config.skills, config.memory)
     if config.stream:
         return client_mod.stream_turn(
             client, model=config.model, max_tokens=config.max_tokens,

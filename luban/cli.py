@@ -139,7 +139,7 @@ def pick_session(project: str, all_projects: bool, input_fn=input) -> dict | Non
         return None
 
 
-def handle_command(line: str, session: Session) -> str:
+def handle_command(line: str, session: Session, client=None) -> str:
     if not line.startswith("/"):
         return "not_command"
     parts = line.split(maxsplit=1)
@@ -156,8 +156,36 @@ def handle_command(line: str, session: Session) -> str:
         session.title = ""
         session.created = ""
         return "handled"
-    if cmd == "/model" and arg:
-        session.model = arg.strip()
+    if cmd == "/model":
+        available = client_mod.list_models(client) if client is not None else None
+        if not arg:
+            if available:
+                ui.print_text("available models:\n")
+                for m in available:
+                    marker = "  (current)" if m == session.model else ""
+                    ui.print_text(f"  {m}{marker}\n")
+            else:
+                ui.print_text(f"current model: {session.model}\n")
+            return "handled"
+        wanted = arg.strip()
+        if available and wanted not in available:
+            ui.print_text(f"unknown model: {wanted}\navailable models:\n")
+            for m in available:
+                ui.print_text(f"  {m}\n")
+            return "handled"
+        session.model = wanted
+        ui.print_text(f"✓ model → {wanted}\n")
+        return "handled"
+    if cmd == "/sessions":
+        heads = sessions_mod.list_sessions(session.project or None)
+        if not heads:
+            ui.print_text("no saved sessions found.\n")
+            return "handled"
+        for h in heads:
+            ui.print_text(
+                f'  {h["id"]}  {h["updated"]}  {h["model"]}  "{h["title"]}"'
+                f"  ({h['message_count']} msgs)\n"
+            )
         return "handled"
     return "handled"  # unknown /command: swallow rather than send to model
 
@@ -194,7 +222,7 @@ def main(argv: list[str] | None = None) -> None:
             break
         if not line:
             continue
-        status = handle_command(line, session)
+        status = handle_command(line, session, client)
         if status == "exit":
             break
         if status == "handled":

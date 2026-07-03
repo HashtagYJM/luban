@@ -92,10 +92,27 @@ luban --no-stream           # if responses come back empty (some reasoning model
 luban --model <id>          # pick a model
 ```
 
-In-session commands: `/auto`, `/model <id>`, `/clear`, `/exit`.
+In-session commands: `/auto`, `/model` (list models / switch — e.g.
+`/model claude-fable-5`), `/sessions`, `/clear`, `/exit`.
 
 > **Warning:** `--auto` (and the `/auto` command) run file writes and shell
 > commands WITHOUT asking. Only use it in a project directory you trust.
+
+## Sessions
+
+Every session is saved automatically (after each completed turn) to
+`~/.luban/sessions/` — never inside your project folder.
+
+```bash
+luban --continue      # -c: reopen the most recent session for this folder
+luban --resume        # -r: pick a past session for this folder from a list
+luban --resume --all  # pick from every folder's sessions
+```
+
+Resuming restores the full conversation and the model it was using, and shows
+the last exchange so you remember where you were. In-session: `/sessions`
+lists this folder's saved sessions; `/clear` starts a fresh session (the old
+one stays on disk).
 
 ## Config
 

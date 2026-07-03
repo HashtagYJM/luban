@@ -63,3 +63,13 @@ def test_save_overwrites_same_id(tmp_path):
 def test_load_missing_raises(tmp_path):
     with pytest.raises(sessions.SessionNotFound):
         sessions.load("nope", sessions_dir=tmp_path)
+
+
+def test_save_load_non_ascii_round_trip(tmp_path):
+    d = _data()
+    d["messages"] = [{"role": "user", "content": "修复 utils.py 里的 bug"}]
+    sessions.save(d, sessions_dir=tmp_path)
+    loaded = sessions.load("2026-07-03-1400-abcd", sessions_dir=tmp_path)
+    assert loaded["messages"][0]["content"] == "修复 utils.py 里的 bug"
+    raw = (tmp_path / "2026-07-03-1400-abcd.json").read_text(encoding="utf-8")
+    assert "修复" in raw  # human-readable on disk, not \uXXXX escapes

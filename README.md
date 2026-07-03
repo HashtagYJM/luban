@@ -112,7 +112,8 @@ luban --resume --all  # pick from every folder's sessions
 Resuming restores the full conversation and the model it was using, and shows
 the last exchange so you remember where you were. In-session: `/sessions`
 lists this folder's saved sessions; `/clear` starts a fresh session (the old
-one stays on disk).
+one stays on disk). Resuming another folder's session (via --all) moves that
+session to your current folder.
 
 ## Config
 

@@ -129,7 +129,10 @@ def pick_session(project: str, all_projects: bool, input_fn=input) -> dict | Non
             f'{i:3}. {prefix}{h["updated"]}  {h["model"]}  "{h["title"]}"'
             f"  ({h['message_count']} msgs)\n"
         )
-    raw = input_fn("resume which? (number, Enter to cancel): ").strip()
+    try:
+        raw = input_fn("resume which? (number, Enter to cancel): ").strip()
+    except (EOFError, KeyboardInterrupt):
+        return None
     if not raw.isdigit() or not (1 <= int(raw) <= len(heads)):
         return None
     try:

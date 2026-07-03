@@ -38,7 +38,11 @@ def _c(text: str, code: str) -> str:
 
 
 def _emit(text: str) -> None:
-    sys.stdout.write(text)
+    try:
+        sys.stdout.write(text)
+    except UnicodeEncodeError:
+        enc = sys.stdout.encoding or "ascii"
+        sys.stdout.write(text.encode(enc, errors="replace").decode(enc))
     sys.stdout.flush()
 
 

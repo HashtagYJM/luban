@@ -35,7 +35,7 @@ def save(data: dict, sessions_dir: Path | None = None) -> Path:
     data["updated"] = datetime.now().isoformat(timespec="seconds")
     path = d / f"{data['id']}.json"
     tmp = d / f"{data['id']}.tmp"
-    tmp.write_text(json.dumps(data, indent=1), encoding="utf-8")
+    tmp.write_text(json.dumps(data, indent=1, ensure_ascii=False), encoding="utf-8")
     os.replace(tmp, path)
     return path
 

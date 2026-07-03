@@ -86,3 +86,13 @@ def test_pick_session_none_when_empty(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(sessions, "SESSIONS_DIR", tmp_path)
     assert cli.pick_session("/projA", all_projects=False, input_fn=lambda _: "1") is None
     assert "no saved sessions" in capsys.readouterr().out
+
+
+def test_pick_session_cancel_on_interrupt(tmp_path, monkeypatch):
+    monkeypatch.setattr(sessions, "SESSIONS_DIR", tmp_path)
+    _saved(tmp_path)
+
+    def raise_interrupt(_):
+        raise KeyboardInterrupt
+
+    assert cli.pick_session("/projA", all_projects=False, input_fn=raise_interrupt) is None

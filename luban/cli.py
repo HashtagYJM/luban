@@ -126,7 +126,7 @@ def compose_user_message(session: Session, line: str) -> str:
 def read_project_memory(project_root: Path) -> str:
     path = Path(project_root) / MEMORY_FILE
     try:
-        text = path.read_text(encoding="utf-8").strip()
+        text = path.read_text(encoding="utf-8", errors="replace").strip()
     except OSError:
         return ""
     if len(text) > MEMORY_MAX_CHARS:

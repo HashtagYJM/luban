@@ -71,3 +71,12 @@ def test_audit_receives_entries_including_deny(tmp_path):
     assert entries[0]["decision"] == "deny_rule"
     assert entries[0]["target"] == "del x"
     assert entries[0]["is_error"] is True
+
+
+def test_bare_deny_rule_blocks_malformed_run_command(tmp_path):
+    from luban import permissions as perms
+    def decide(name, tool_input):
+        return perms.evaluate(name, tool_input, [], ["run_command"], read_only=False)
+    ctx, _ = _ctx(tmp_path, decide=decide)
+    out = tools.run_tool("run_command", {}, ctx)  # missing "command" key
+    assert out.is_error and "Blocked" in out.content

@@ -70,6 +70,15 @@ def test_compact_via_handle_command(tmp_path, monkeypatch):
     assert "SUM" in s.messages[0]["content"]
 
 
+def test_compact_system_prompt_excludes_memory(tmp_path, monkeypatch):
+    monkeypatch.setattr(sessions, "SESSIONS_DIR", tmp_path)
+    fc = FakeClient([FakeMessage([FakeBlock("text", text="SUM")], "end_turn")])
+    s = _session()
+    cli.compact_session(s, fc)
+    sent_system = fc.messages.calls[0]["system"]
+    assert "LUBAN.md" not in sent_system  # memory & skills deliberately excluded
+
+
 def test_estimate_tokens():
     msgs = [{"role": "user", "content": "x" * 400}]
     assert cli.estimate_tokens(msgs) > 90  # ~ (400 + dict overhead) // 4

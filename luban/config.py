@@ -56,7 +56,7 @@ def load_config(path: Path = CONFIG_PATH) -> Config:
     if not path.exists():
         return Config(platform=write_default(path))
     try:
-        data = tomllib.loads(path.read_text())
+        data = tomllib.loads(path.read_text(encoding="utf-8", errors="replace"))
     except (tomllib.TOMLDecodeError, OSError):
         data = {}
     plat = data.get("platform") or detect_platform()

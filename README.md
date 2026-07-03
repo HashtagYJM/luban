@@ -96,7 +96,7 @@ In-session commands: `/auto`, `/model` (list models / switch), `/skills`,
 `/skill <name>`, `/compact`, `/sessions`, `/clear`, `/exit`.
 
 > **Warning:** `--auto` (and the `/auto` command) run file writes and shell
-> commands WITHOUT asking. Only use it in a project directory you trust.
+> commands WITHOUT asking. Only use it in a project directory you trust. Deny rules from `[permissions]` still apply under `--auto`.
 
 ## Sessions
 
@@ -132,6 +132,36 @@ them automatically; a project skill overrides a global one with the same
 name). The model sees each skill's name and description and loads the full
 instructions itself when relevant; `/skills` lists them and `/skill <name>`
 applies one to your next message.
+
+## Permissions
+
+Cut down confirmation prompts — and add guardrails — with rules in
+`~/.luban/config.toml`:
+
+```toml
+[permissions]
+allow = ["run_command:python *", "run_command:git status*"]
+deny  = ["run_command:del *", "write_file:*.env"]
+```
+
+A rule is `"<tool>"` (every call) or `"<tool>:<pattern>"` (glob matched against
+the command for `run_command`, the path for file tools). **deny > allow > ask**,
+and deny applies even in `--auto` mode. Allowed actions still show their
+diff/command — they just skip the prompt. Rules live only in your home config,
+never in the project: a cloned repo can't grant itself permissions.
+
+## Project memory
+
+If the project root contains a **`LUBAN.md`** file, its contents are injected
+into every turn as standing project instructions (conventions, layout, do's and
+don'ts). Commit it with the project — teammates get it automatically. Unlike
+skills (loaded on demand), LUBAN.md is always on.
+
+## Audit log
+
+Every tool call (including denials) is appended to `~/.luban/audit.jsonl` —
+timestamp, project, tool, target, decision, error flag. A compliance-friendly
+record of everything the agent did.
 
 ## Compacting long conversations
 

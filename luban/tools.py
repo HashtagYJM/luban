@@ -5,14 +5,16 @@ import re
 import signal
 import subprocess
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable
 
+from luban import permissions as permissions_mod
 from luban import skills as skills_mod
 
 MAX_OUTPUT = 20000  # chars; truncate large tool output to protect context
 MAX_COMMAND_TIMEOUT = 600  # seconds; cap model-supplied run_command timeouts
+READ_ONLY_TOOLS = {"list_dir", "glob", "grep", "read_file", "load_skill"}
 
 
 @dataclass
@@ -27,6 +29,8 @@ class ToolContext:
     confirm: Callable[[str], bool]
     render_diff: Callable[[str, str, str], None]
     render_command: Callable[[str], None]
+    decide: Callable[[str, dict], object] | None = None
+    audit: Callable[[dict], None] | None = None
 
 
 def _truncate(text: str) -> str:
@@ -305,11 +309,36 @@ TOOLS = [
 ]
 
 
+def _audit_call(ctx: ToolContext, name: str, tool_input: dict, decision: str, out: ToolResult) -> None:
+    if ctx.audit is None:
+        return
+    try:
+        ctx.audit({
+            "tool": name,
+            "target": permissions_mod.target_of(name, tool_input),
+            "decision": decision,
+            "is_error": out.is_error,
+        })
+    except Exception:
+        pass  # auditing must never break the loop
+
+
 def run_tool(name: str, tool_input: dict, ctx: ToolContext) -> ToolResult:
     fn = _DISPATCH.get(name)
     if fn is None:
         return ToolResult(f"Unknown tool: {name}", is_error=True)
+    decision = ctx.decide(name, tool_input) if ctx.decide is not None else None
+    if decision is not None and decision.action == "deny":
+        out = ToolResult(f"Blocked: {decision.reason}", is_error=True)
+        _audit_call(ctx, name, tool_input, "deny_rule", out)
+        return out
+    call_ctx = ctx
+    if decision is not None and decision.action == "allow" and name not in READ_ONLY_TOOLS:
+        # Rule-approved: skip the ask, but handlers still render the diff/command.
+        call_ctx = replace(ctx, confirm=lambda prompt: True)
     try:
-        return fn(tool_input, ctx)
+        out = fn(tool_input, call_ctx)
     except Exception as exc:  # tools must never crash the loop
-        return ToolResult(f"Tool error: {exc}", is_error=True)
+        out = ToolResult(f"Tool error: {exc}", is_error=True)
+    _audit_call(ctx, name, tool_input, decision.action if decision is not None else "", out)
+    return out

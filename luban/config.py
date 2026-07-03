@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import platform as _platform
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 CONFIG_DIR = Path.home() / ".luban"
@@ -20,6 +20,8 @@ _VALID_PLATFORMS = {"windows", "mac", "linux"}
 @dataclass
 class Config:
     platform: str
+    allow: list[str] = field(default_factory=list)
+    deny: list[str] = field(default_factory=list)
 
 
 def detect_platform() -> str:
@@ -33,6 +35,11 @@ def _default_text(plat: str) -> str:
     return (
         "# ~/.luban/config.toml — luban settings (edit me)\n"
         f'platform = "{plat}"   # windows | mac | linux\n'
+        "\n"
+        "# Optional permission rules (deny > allow > ask; deny works even in --auto):\n"
+        "# [permissions]\n"
+        '# allow = ["run_command:python *"]\n'
+        '# deny  = ["run_command:del *"]\n'
     )
 
 
@@ -55,4 +62,7 @@ def load_config(path: Path = CONFIG_PATH) -> Config:
     plat = data.get("platform") or detect_platform()
     if plat not in _VALID_PLATFORMS:
         plat = detect_platform()
-    return Config(platform=plat)
+    perms = data.get("permissions") or {}
+    allow = [r for r in perms.get("allow", []) if isinstance(r, str)]
+    deny = [r for r in perms.get("deny", []) if isinstance(r, str)]
+    return Config(platform=plat, allow=allow, deny=deny)

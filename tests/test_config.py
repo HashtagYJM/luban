@@ -30,3 +30,27 @@ def test_load_invalid_platform_falls_back(tmp_path):
     p = tmp_path / "config.toml"
     p.write_text('platform = "banana"\n')
     assert config.load_config(p).platform == config.detect_platform()
+
+
+def test_permissions_parsed(tmp_path):
+    p = tmp_path / "config.toml"
+    p.write_text(
+        'platform = "mac"\n[permissions]\nallow = ["run_command:python *"]\ndeny = ["run_command:del *"]\n'
+    )
+    cfg = config.load_config(p)
+    assert cfg.allow == ["run_command:python *"]
+    assert cfg.deny == ["run_command:del *"]
+
+
+def test_permissions_missing_section_empty(tmp_path):
+    p = tmp_path / "config.toml"
+    p.write_text('platform = "mac"\n')
+    cfg = config.load_config(p)
+    assert cfg.allow == [] and cfg.deny == []
+
+
+def test_permissions_non_string_items_dropped(tmp_path):
+    p = tmp_path / "config.toml"
+    p.write_text('platform = "mac"\n[permissions]\nallow = ["ok", 3]\ndeny = []\n')
+    cfg = config.load_config(p)
+    assert cfg.allow == ["ok"]

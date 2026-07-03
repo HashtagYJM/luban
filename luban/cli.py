@@ -6,7 +6,9 @@ from datetime import datetime
 from pathlib import Path
 
 from luban import agent, config as config_mod, tools, ui
+from luban import audit as audit_mod
 from luban import client as client_mod
+from luban import permissions as permissions_mod
 from luban import sessions as sessions_mod
 from luban import skills as skills_mod
 
@@ -53,7 +55,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return p.parse_args(argv)
 
 
-def build_tool_context(session: Session, project_root: Path) -> tools.ToolContext:
+def build_tool_context(
+    session: Session, project_root: Path, cfg: config_mod.Config | None = None
+) -> tools.ToolContext:
     def confirm(prompt: str) -> bool:
         if session.auto:
             return True
@@ -63,11 +67,25 @@ def build_tool_context(session: Session, project_root: Path) -> tools.ToolContex
             return True
         return decision == "yes"
 
+    decide = None
+    audit_cb = None
+    if cfg is not None:
+        def decide(tool_name: str, tool_input: dict) -> permissions_mod.Decision:
+            return permissions_mod.evaluate(
+                tool_name, tool_input, cfg.allow, cfg.deny,
+                read_only=tool_name in tools.READ_ONLY_TOOLS,
+            )
+
+        def audit_cb(entry: dict) -> None:
+            audit_mod.log({"project": session.project, **entry})
+
     return tools.ToolContext(
         project_root=Path(project_root),
         confirm=confirm,
         render_diff=ui.render_diff,
         render_command=ui.render_command,
+        decide=decide,
+        audit=audit_cb,
     )
 
 
@@ -304,7 +322,7 @@ def main(argv: list[str] | None = None) -> None:
     )
     cfg = config_mod.load_config()
     client = client_mod.get_client()
-    ctx = build_tool_context(session, project_root)
+    ctx = build_tool_context(session, project_root, cfg)
     if ns.cont:
         data = sessions_mod.latest(str(project_root))
         if data is None:

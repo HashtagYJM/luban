@@ -11,6 +11,14 @@ from luban import sessions as sessions_mod
 from luban import skills as skills_mod
 
 
+COMPACT_PROMPT = (
+    "Summarize this conversation comprehensively so a fresh session can continue "
+    "the work: key decisions and rationale, files created or changed and why, the "
+    "current state, and open items or next steps. Reply with only the summary."
+)
+WARN_TOKENS = 60_000
+
+
 @dataclass
 class Session:
     model: str
@@ -93,6 +101,44 @@ def compose_user_message(session: Session, line: str) -> str:
     parts = session.pending_context + [line]
     session.pending_context.clear()
     return "\n\n".join(parts)
+
+
+def estimate_tokens(messages: list) -> int:
+    return sum(len(str(m)) for m in messages) // 4
+
+
+def compact_session(session: Session, client) -> None:
+    if not session.messages:
+        ui.print_text("nothing to compact.\n")
+        return
+    save_session(session)  # preserve the full transcript on disk first
+    old_id = session.session_id
+    old_title = session.title
+    msgs = session.messages + [{"role": "user", "content": COMPACT_PROMPT}]
+    try:
+        msg = client_mod.create_turn(
+            client, model=session.model, max_tokens=session.max_tokens,
+            system=agent.SYSTEM_PROMPT, messages=msgs, tools=[],
+        )
+        summary = "".join(b.text for b in msg.content if b.type == "text").strip()
+    except Exception as exc:
+        ui.print_text(f"compact failed ({exc}) — session unchanged.\n")
+        return
+    if not summary:
+        ui.print_text("compact failed (empty summary) — session unchanged.\n")
+        return
+    ui.print_text(f"\n{summary}\n\n")
+    session.messages = [
+        {"role": "user",
+         "content": f"[conversation summary — compacted from {old_id}]\n{summary}"},
+        {"role": "assistant",
+         "content": [{"type": "text", "text": "Understood — continuing from the summary."}]},
+    ]
+    session.session_id = ""
+    session.created = ""
+    session.title = f"compacted: {old_title}"[:60] if old_title else ""
+    save_session(session)  # mint the new file now so the seed survives a crash
+    ui.print_text(f"✓ compacted — new session started (previous saved as {old_id})\n")
 
 
 def _print_last_exchange(messages: list) -> None:
@@ -226,6 +272,12 @@ def handle_command(line: str, session: Session, client=None) -> str:
         session.pending_context.append(f"[skill: {name}]\n{body}")
         ui.print_text(f"✓ skill queued: {name} (applies to your next message)\n")
         return "handled"
+    if cmd == "/compact":
+        if client is None:
+            ui.print_text("compact needs a client.\n")
+            return "handled"
+        compact_session(session, client)
+        return "handled"
     return "handled"  # unknown /command: swallow rather than send to model
 
 
@@ -283,4 +335,9 @@ def main(argv: list[str] | None = None) -> None:
             ui.print_text("\n[interrupted]\n")
         else:
             save_session(session)
+            est = estimate_tokens(session.messages)
+            if est > WARN_TOKENS:
+                ui.print_text(
+                    f"\nnote: conversation is large (~{est:,} tokens) — consider /compact\n"
+                )
             ui.print_text("\n")

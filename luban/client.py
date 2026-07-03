@@ -67,13 +67,23 @@ def create_turn(client, *, model, max_tokens, system, messages, tools):
     )
 
 
-def stream_turn(client, *, model, max_tokens, system, messages, tools, on_text):
+def stream_turn(client, *, model, max_tokens, system, messages, tools, on_text, on_thinking=None):
+    # Iterate raw stream events (not just .text_stream) so reasoning models that
+    # emit `thinking` deltas are surfaced too — otherwise a thinking-only turn
+    # streams nothing and the user sees a blank response.
     with client.messages.stream(
         model=model, max_tokens=max_tokens, system=system,
         messages=messages, tools=tools,
     ) as stream:
-        for text in stream.text_stream:
-            on_text(text)
+        for event in stream:
+            if getattr(event, "type", None) != "content_block_delta":
+                continue
+            delta = event.delta
+            dtype = getattr(delta, "type", None)
+            if dtype == "text_delta":
+                on_text(delta.text)
+            elif dtype == "thinking_delta" and on_thinking is not None:
+                on_thinking(delta.thinking)
         return stream.get_final_message()
 
 
@@ -84,4 +94,14 @@ def message_to_blocks(message) -> list[dict]:
             blocks.append({"type": "text", "text": b.text})
         elif b.type == "tool_use":
             blocks.append({"type": "tool_use", "id": b.id, "name": b.name, "input": b.input})
+        elif b.type == "thinking":
+            # Extended thinking + tool use requires echoing the *signed* thinking
+            # block back in the assistant turn, or the next request is rejected.
+            # Unsigned thinking (some non-Anthropic backends) is display-only —
+            # don't echo it back, as an unsigned block would fail validation.
+            signature = getattr(b, "signature", None)
+            if signature:
+                blocks.append({"type": "thinking", "thinking": b.thinking, "signature": signature})
+        elif b.type == "redacted_thinking":
+            blocks.append({"type": "redacted_thinking", "data": b.data})
     return blocks

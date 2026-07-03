@@ -98,7 +98,9 @@ def main(argv: list[str] | None = None) -> None:
         )
         ui.print_text("\nluban> ")
         try:
-            session.messages = agent.run_turn(client, agent_config, session.messages, ctx, ui.print_text)
+            session.messages = agent.run_turn(
+                client, agent_config, session.messages, ctx, ui.print_text, ui.print_thinking
+            )
         except KeyboardInterrupt:
             session.messages.pop()  # drop the unanswered user turn so history stays valid
             ui.print_text("\n[interrupted]\n")

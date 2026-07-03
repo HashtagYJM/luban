@@ -34,13 +34,13 @@ class AgentConfig:
     platform: str = ""
 
 
-def _run_model_turn(client, config, messages, on_text):
+def _run_model_turn(client, config, messages, on_text, on_thinking):
     system = system_prompt_for(config.platform)
     if config.stream:
         return client_mod.stream_turn(
             client, model=config.model, max_tokens=config.max_tokens,
             system=system, messages=messages, tools=tools_mod.TOOLS,
-            on_text=on_text,
+            on_text=on_text, on_thinking=on_thinking,
         )
     msg = client_mod.create_turn(
         client, model=config.model, max_tokens=config.max_tokens,
@@ -49,13 +49,15 @@ def _run_model_turn(client, config, messages, on_text):
     for b in msg.content:
         if b.type == "text":
             on_text(b.text)
+        elif b.type == "thinking" and on_thinking is not None:
+            on_thinking(b.thinking)
     return msg
 
 
-def run_turn(client, config: AgentConfig, messages: list[dict], ctx, on_text) -> list[dict]:
+def run_turn(client, config: AgentConfig, messages: list[dict], ctx, on_text, on_thinking=None) -> list[dict]:
     messages = list(messages)
     while True:
-        msg = _run_model_turn(client, config, messages, on_text)
+        msg = _run_model_turn(client, config, messages, on_text, on_thinking)
         messages.append({"role": "assistant", "content": client_mod.message_to_blocks(msg)})
         if msg.stop_reason != "tool_use":
             return messages

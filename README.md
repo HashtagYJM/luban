@@ -80,6 +80,7 @@ platform = "windows"   # windows | mac | linux
 
 ## Troubleshooting
 
-- **No text appears (empty responses) in streaming mode?** Some reasoning
-  models stream only their internal "thinking" and no visible text. Run with
-  `--no-stream` — the full response is returned correctly without streaming.
+- **Reasoning models:** their internal "thinking" is streamed live, dimmed,
+  ahead of the answer — so a model that reasons before replying no longer looks
+  blank. If you'd rather not stream at all, `--no-stream` returns the full
+  response in one go.

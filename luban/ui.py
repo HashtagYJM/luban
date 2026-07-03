@@ -43,5 +43,10 @@ def print_text(text: str) -> None:
     _console.print(text, end="", soft_wrap=True)
 
 
+def print_thinking(text: str) -> None:
+    # Reasoning/thinking output, rendered dim so it reads as secondary to the answer.
+    _console.print(Text(text, style="dim italic"), end="", soft_wrap=True)
+
+
 def render_command(command: str) -> None:
     _console.print(Text(f"$ {command}", style="yellow"))

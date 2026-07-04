@@ -99,6 +99,7 @@ def test_deny_rule_blocks_remember(mem, tmp_path):
         make_ctx(tmp_path, decide=decide),
     )
     assert out.is_error and "Blocked" in out.content
+    assert not (mem / "memory" / "x.md").exists()
 
 
 def test_recall_is_read_only():

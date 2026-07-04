@@ -8,6 +8,7 @@ from pathlib import Path
 from luban import agent, config as config_mod, tools, ui
 from luban import audit as audit_mod
 from luban import client as client_mod
+from luban import memory as memory_mod
 from luban import permissions as permissions_mod
 from luban import sessions as sessions_mod
 from luban import skills as skills_mod
@@ -17,6 +18,18 @@ COMPACT_PROMPT = (
     "Summarize this conversation comprehensively so a fresh session can continue "
     "the work: key decisions and rationale, files created or changed and why, the "
     "current state, and open items or next steps. Reply with only the summary."
+)
+FLUSH_PROMPT = (
+    "Before this conversation is compacted: (1) save any durable facts you learned "
+    "about the user or their practices using the remember tool — update existing "
+    "facts, don't duplicate; (2) write a 2-4 line journal entry about what happened "
+    "this session using the journal tool. Then reply with just: saved."
+)
+REFLECT_PROMPT = (
+    "Housekeeping for your long-term memory. Review the memory index and recent "
+    "journal in your context: use recall to inspect facts, promote durable items "
+    "from the journal into facts with remember, and merge or forget stale, "
+    "duplicate, or wrong facts. Then report briefly what you changed."
 )
 WARN_TOKENS = 60_000
 # First match wins; a `memory_file` key in config.toml overrides the chain.
@@ -139,14 +152,69 @@ def read_project_memory(project_root: Path, memory_file: str = "") -> str:
     return ""
 
 
+def build_agent_config(session: Session, cfg: config_mod.Config, project_root: Path) -> agent.AgentConfig:
+    return agent.AgentConfig(
+        session.model, session.max_tokens, session.stream, platform=cfg.platform,
+        skills=skills_mod.list_skills(str(project_root)),
+        memory=read_project_memory(project_root, cfg.memory_file),
+        global_memory=memory_mod.bootstrap_block() if cfg.memory_enabled else "",
+        tools=tools.active_tools(cfg.memory_enabled),
+    )
+
+
+def flush_memory(session: Session, client, ctx, cfg: config_mod.Config) -> None:
+    """Best-effort: let the model bank durable facts before compaction destroys context."""
+    if not cfg.memory_enabled or not session.messages:
+        return
+    ui.print_text("(memory flush…)\n")
+    msgs = session.messages + [{"role": "user", "content": FLUSH_PROMPT}]
+    config = agent.AgentConfig(
+        session.model, session.max_tokens, stream=False, platform=cfg.platform,
+        global_memory=memory_mod.bootstrap_block(), tools=tools.active_tools(True),
+    )
+    try:
+        agent.run_turn(client, config, msgs, ctx, lambda t: None)
+    except Exception as exc:
+        ui.print_text(f"(memory flush skipped: {exc})\n")
+
+
+def reflect_session(session: Session, client, ctx, cfg: config_mod.Config) -> None:
+    """Isolated consolidation turn; the live conversation is never touched."""
+    if not cfg.memory_enabled:
+        ui.print_text("memory is disabled (memory_enabled = false in config.toml).\n")
+        return
+    config = agent.AgentConfig(
+        session.model, session.max_tokens, session.stream, platform=cfg.platform,
+        global_memory=memory_mod.bootstrap_block(), tools=tools.active_tools(True),
+    )
+    ui.print_text("\nluban> ")
+    try:
+        agent.run_turn(client, config, [{"role": "user", "content": REFLECT_PROMPT}],
+                       ctx, ui.print_text, ui.print_thinking)
+    except Exception as exc:
+        ui.print_text(f"reflect failed ({exc}) — memory unchanged.\n")
+    ui.print_text("\n")
+
+
+def exit_journal(session: Session, cfg: config_mod.Config, project_root: Path) -> None:
+    if not cfg.memory_enabled or not session.messages:
+        return
+    memory_mod.journal_append(
+        f"[{Path(project_root).name}] '{session.title or 'untitled'}' — "
+        f"{len(session.messages)} messages ({session.model})"
+    )
+
+
 def estimate_tokens(messages: list) -> int:
     return sum(len(str(m)) for m in messages) // 4
 
 
-def compact_session(session: Session, client) -> None:
+def compact_session(session: Session, client, ctx=None, cfg=None) -> None:
     if not session.messages:
         ui.print_text("nothing to compact.\n")
         return
+    if ctx is not None and cfg is not None:
+        flush_memory(session, client, ctx, cfg)
     save_session(session)  # preserve the full transcript on disk first
     old_id = session.session_id
     old_title = session.title
@@ -234,7 +302,7 @@ def pick_session(project: str, all_projects: bool, input_fn=input) -> dict | Non
         return None
 
 
-def handle_command(line: str, session: Session, client=None) -> str:
+def handle_command(line: str, session: Session, client=None, ctx=None, cfg=None) -> str:
     if not line.startswith("/"):
         return "not_command"
     parts = line.split(maxsplit=1)
@@ -312,7 +380,13 @@ def handle_command(line: str, session: Session, client=None) -> str:
         if client is None:
             ui.print_text("compact needs a client.\n")
             return "handled"
-        compact_session(session, client)
+        compact_session(session, client, ctx, cfg)
+        return "handled"
+    if cmd == "/reflect":
+        if client is None or ctx is None or cfg is None:
+            ui.print_text("reflect needs a client.\n")
+            return "handled"
+        reflect_session(session, client, ctx, cfg)
         return "handled"
     return "handled"  # unknown /command: swallow rather than send to model
 
@@ -326,6 +400,8 @@ def main(argv: list[str] | None = None) -> None:
         project=str(project_root),
     )
     cfg = config_mod.load_config()
+    if cfg.memory_enabled:
+        memory_mod.ensure_scaffold()
     client = client_mod.get_client()
     ctx = build_tool_context(session, project_root, cfg)
     if ns.cont:
@@ -349,7 +425,7 @@ def main(argv: list[str] | None = None) -> None:
             break
         if not line:
             continue
-        status = handle_command(line, session, client)
+        status = handle_command(line, session, client, ctx, cfg)
         if status == "exit":
             break
         if status == "handled":
@@ -357,11 +433,7 @@ def main(argv: list[str] | None = None) -> None:
         session.messages.append(
             {"role": "user", "content": compose_user_message(session, line)}
         )
-        agent_config = agent.AgentConfig(
-            session.model, session.max_tokens, session.stream, platform=cfg.platform,
-            skills=skills_mod.list_skills(str(project_root)),
-            memory=read_project_memory(project_root, cfg.memory_file),
-        )
+        agent_config = build_agent_config(session, cfg, project_root)
         ui.print_text("\nluban> ")
         try:
             session.messages = agent.run_turn(
@@ -378,3 +450,4 @@ def main(argv: list[str] | None = None) -> None:
                     f"\nnote: conversation is large (~{est:,} tokens) — consider /compact\n"
                 )
             ui.print_text("\n")
+    exit_journal(session, cfg, project_root)

@@ -84,3 +84,87 @@ def test_bootstrap_block_skips_empty_sections(mem):
     out = memory.bootstrap_block()  # nothing scaffolded
     assert "SOUL.md" not in out and "Recent journal" not in out
     assert "remember" in out  # hygiene still there
+
+
+def test_valid_slug():
+    assert memory.valid_slug("prefers-plotly")
+    assert memory.valid_slug("a1")
+    assert not memory.valid_slug("../evil")
+    assert not memory.valid_slug("Has Space")
+    assert not memory.valid_slug("UPPER")
+    assert not memory.valid_slug("")
+    assert not memory.valid_slug("x" * 65)
+
+
+def test_remember_creates_fact_and_index(mem):
+    msg = memory.remember("prefers-plotly", "plotting default", "Use plotly express.")
+    assert "prefers-plotly" in msg
+    fact = (mem / "memory" / "prefers-plotly.md").read_text(encoding="utf-8")
+    assert fact.startswith("description: plotting default")
+    assert "Use plotly express." in fact
+    index = (mem / "memory" / "MEMORY.md").read_text(encoding="utf-8")
+    assert "- [prefers-plotly] plotting default" in index
+
+
+def test_remember_update_replaces_not_duplicates(mem):
+    memory.remember("fact-a", "old desc", "old")
+    memory.remember("fact-a", "new desc", "new")
+    index = (mem / "memory" / "MEMORY.md").read_text(encoding="utf-8")
+    assert index.count("fact-a") == 1 and "new desc" in index and "old desc" not in index
+
+
+def test_remember_invalid_slug(mem):
+    msg = memory.remember("../evil", "d", "b")
+    assert msg.startswith("Invalid") and not (mem / "evil.md").exists()
+
+
+def test_read_fact(mem):
+    memory.remember("f1", "d", "body text")
+    assert "body text" in memory.read_fact("f1")
+    assert memory.read_fact("nope") is None
+    assert memory.read_fact("../evil") is None
+
+
+def test_forget_removes_fact_and_index_line(mem):
+    memory.remember("f1", "d1", "b1")
+    memory.remember("f2", "d2", "b2")
+    msg = memory.forget("f1")
+    assert "f1" in msg
+    assert not (mem / "memory" / "f1.md").exists()
+    index = (mem / "memory" / "MEMORY.md").read_text(encoding="utf-8")
+    assert "f1" not in index and "f2" in index
+
+
+def test_forget_missing(mem):
+    assert memory.forget("ghost").startswith("No memory")
+
+
+def test_recall_hits_fact_name_body_and_journal(mem):
+    memory.remember("plotly-pref", "plotting", "Always use plotly.")
+    memory.journal_append("debugged the SQL wrapper")
+    out = memory.recall("plotly")
+    assert "Always use plotly." in out
+    out2 = memory.recall("sql wrapper")
+    assert "debugged the SQL wrapper" in out2
+    assert memory.recall("zzz-nothing") == "(no matches)"
+
+
+def test_recall_capped(mem):
+    memory.remember("big", "big fact", "y" * 20000)
+    out = memory.recall("big")
+    assert len(out) <= memory.RECALL_MAX + 40 and "[recall truncated]" in out
+
+
+def test_journal_append_creates_and_stamps(mem):
+    import datetime as dt
+    memory.journal_append("did a thing")
+    path = mem / "memory" / "journal" / f"{dt.date.today().isoformat()}.md"
+    line = path.read_text(encoding="utf-8")
+    assert "did a thing" in line and line.startswith("[")
+
+
+def test_journal_append_never_raises(mem):
+    # Make the journal dir path unusable: a FILE where the dir should be.
+    (mem / "memory").mkdir(exist_ok=True)
+    (mem / "memory" / "journal").write_text("not a dir", encoding="utf-8")
+    memory.journal_append("must not raise")  # swallowed

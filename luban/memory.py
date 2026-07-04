@@ -106,3 +106,106 @@ def bootstrap_block() -> str:
     if journal:
         parts.append(f"Recent journal:\n{journal}")
     return "\n\n".join(parts)
+
+
+def valid_slug(name: str) -> bool:
+    return bool(_SLUG_RX.match(name))
+
+
+def _fact_path(name: str) -> Path:
+    return MEMORY_DIR / f"{name}.md"
+
+
+def _fact_description(text: str) -> str:
+    first = text.splitlines()[0] if text.splitlines() else ""
+    if first.lower().startswith("description:"):
+        return first[len("description:"):].strip()
+    return first.strip()[:80]
+
+
+def _rebuild_index() -> None:
+    lines = ["# Long-term memory index"]
+    try:
+        facts = sorted(p for p in MEMORY_DIR.glob("*.md") if p.name != "MEMORY.md")
+        for p in facts:
+            text = p.read_text(encoding="utf-8", errors="replace")
+            lines.append(f"- [{p.stem}] {_fact_description(text)}")
+        (MEMORY_DIR / "MEMORY.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    except OSError:
+        pass  # index rebuild is best-effort; facts on disk stay authoritative
+
+
+def read_fact(name: str) -> str | None:
+    if not valid_slug(name):
+        return None
+    try:
+        return _fact_path(name).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+
+
+def remember(name: str, description: str, body: str) -> str:
+    if not valid_slug(name):
+        return f"Invalid memory name: {name!r} (kebab-case: a-z, 0-9, dashes, max 64)."
+    try:
+        MEMORY_DIR.mkdir(parents=True, exist_ok=True)
+        _fact_path(name).write_text(
+            f"description: {description.strip()}\n\n{body.strip()}\n", encoding="utf-8"
+        )
+        _rebuild_index()
+    except OSError as exc:
+        return f"Could not save memory: {exc}"
+    return f"Remembered '{name}'."
+
+
+def forget(name: str) -> str:
+    if not valid_slug(name):
+        return f"Invalid memory name: {name!r}."
+    path = _fact_path(name)
+    if not path.exists():
+        return f"No memory named '{name}'."
+    try:
+        path.unlink()
+        _rebuild_index()
+    except OSError as exc:
+        return f"Could not delete memory: {exc}"
+    return f"Forgot '{name}'."
+
+
+def recall(query: str) -> str:
+    q = query.lower().strip()
+    hits: list[str] = []
+    if MEMORY_DIR.is_dir():
+        for p in sorted(MEMORY_DIR.glob("*.md")):
+            if p.name == "MEMORY.md":
+                continue
+            try:
+                text = p.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            if q in p.stem.lower() or q in text.lower():
+                hits.append(f"[{p.stem}]\n{text.strip()}")
+    journal_dir = MEMORY_DIR / "journal"
+    if journal_dir.is_dir():
+        for p in sorted(journal_dir.glob("*.md")):
+            try:
+                lines = p.read_text(encoding="utf-8", errors="replace").splitlines()
+            except OSError:
+                continue
+            hits.extend(f"{p.stem}: {ln.strip()}" for ln in lines if q in ln.lower())
+    out = "\n\n".join(hits) or "(no matches)"
+    if len(out) > RECALL_MAX:
+        out = out[:RECALL_MAX] + "\n[recall truncated]"
+    return out
+
+
+def journal_append(text: str) -> None:
+    try:
+        journal_dir = MEMORY_DIR / "journal"
+        journal_dir.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now().strftime("%H:%M")
+        path = journal_dir / f"{date.today().isoformat()}.md"
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(f"[{stamp}] {text.strip()}\n")
+    except Exception:
+        pass  # journaling must never break the loop

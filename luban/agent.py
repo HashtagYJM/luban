@@ -21,11 +21,13 @@ _PLATFORM_LINE = {
 }
 
 
-def system_prompt_for(platform: str, skills: list[dict] | None = None, memory: str = "") -> str:
+def system_prompt_for(platform: str, skills: list[dict] | None = None, memory: str = "", global_memory: str = "") -> str:
     prompt = SYSTEM_PROMPT
     line = _PLATFORM_LINE.get(platform)
     if line:
         prompt = f"{prompt}\n\n{line}"
+    if global_memory:
+        prompt = f"{prompt}\n\n{global_memory}"
     if memory:
         prompt = f"{prompt}\n\nProject instructions (from the project's memory file):\n{memory}"
     if skills:
@@ -49,19 +51,22 @@ class AgentConfig:
     platform: str = ""
     skills: list | None = None
     memory: str = ""
+    global_memory: str = ""
+    tools: list | None = None
 
 
 def _run_model_turn(client, config, messages, on_text, on_thinking):
-    system = system_prompt_for(config.platform, config.skills, config.memory)
+    system = system_prompt_for(config.platform, config.skills, config.memory, config.global_memory)
+    tool_schemas = config.tools if config.tools is not None else tools_mod.TOOLS
     if config.stream:
         return client_mod.stream_turn(
             client, model=config.model, max_tokens=config.max_tokens,
-            system=system, messages=messages, tools=tools_mod.TOOLS,
+            system=system, messages=messages, tools=tool_schemas,
             on_text=on_text, on_thinking=on_thinking,
         )
     msg = client_mod.create_turn(
         client, model=config.model, max_tokens=config.max_tokens,
-        system=system, messages=messages, tools=tools_mod.TOOLS,
+        system=system, messages=messages, tools=tool_schemas,
     )
     for b in msg.content:
         if b.type == "text":

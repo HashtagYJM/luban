@@ -86,3 +86,21 @@ def test_memory_file_non_string_ignored(tmp_path):
     p = tmp_path / "config.toml"
     p.write_text('platform = "mac"\nmemory_file = 3\n')
     assert config.load_config(p).memory_file == ""
+
+
+def test_memory_enabled_default_true(tmp_path):
+    p = tmp_path / "config.toml"
+    p.write_text('platform = "mac"\n')
+    assert config.load_config(p).memory_enabled is True
+
+
+def test_memory_enabled_false_parsed(tmp_path):
+    p = tmp_path / "config.toml"
+    p.write_text('platform = "mac"\nmemory_enabled = false\n')
+    assert config.load_config(p).memory_enabled is False
+
+
+def test_memory_enabled_non_bool_ignored(tmp_path):
+    p = tmp_path / "config.toml"
+    p.write_text('platform = "mac"\nmemory_enabled = "yes"\n')
+    assert config.load_config(p).memory_enabled is True

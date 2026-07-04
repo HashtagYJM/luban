@@ -23,6 +23,7 @@ class Config:
     allow: list[str] = field(default_factory=list)
     deny: list[str] = field(default_factory=list)
     memory_file: str = ""  # "" = try LUBAN.md, CLAUDE.md, AGENTS.md in order
+    memory_enabled: bool = True  # long-term memory (SOUL.md, remember/recall, journal)
 
 
 def detect_platform() -> str:
@@ -39,6 +40,9 @@ def _default_text(plat: str) -> str:
         "\n"
         "# Project memory file (default: first of LUBAN.md, CLAUDE.md, AGENTS.md):\n"
         '# memory_file = "CLAUDE.md"\n'
+        "\n"
+        "# Long-term memory (SOUL.md, remember/recall tools, journal). Default on:\n"
+        "# memory_enabled = true\n"
         "\n"
         "# Optional permission rules (deny > allow > ask; deny works even in --auto):\n"
         "# [permissions]\n"
@@ -81,4 +85,13 @@ def load_config(path: Path = CONFIG_PATH) -> Config:
     memory_file = data.get("memory_file")
     if not isinstance(memory_file, str):
         memory_file = ""
-    return Config(platform=plat, allow=allow, deny=deny, memory_file=memory_file)
+    memory_enabled = data.get("memory_enabled")
+    if not isinstance(memory_enabled, bool):
+        memory_enabled = True
+    return Config(
+        platform=plat,
+        allow=allow,
+        deny=deny,
+        memory_file=memory_file,
+        memory_enabled=memory_enabled,
+    )

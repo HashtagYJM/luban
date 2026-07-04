@@ -28,6 +28,10 @@ _TARGET_KEY = {
     "grep": "path",
     "glob": "pattern",
     "load_skill": "name",
+    "remember": "name",
+    "forget": "name",
+    "recall": "query",
+    "journal": "text",
 }
 
 

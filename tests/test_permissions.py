@@ -49,3 +49,11 @@ def test_target_of_mapping():
     assert permissions.target_of("glob", {"pattern": "*.py"}) == "*.py"
     assert permissions.target_of("load_skill", {"name": "conv"}) == "conv"
     assert permissions.target_of("unknown_tool", {"x": 1}) == ""
+
+
+def test_target_of_memory_tools():
+    from luban.permissions import target_of
+    assert target_of("remember", {"name": "n"}) == "n"
+    assert target_of("forget", {"name": "n"}) == "n"
+    assert target_of("recall", {"query": "q"}) == "q"
+    assert target_of("journal", {"text": "t"}) == "t"

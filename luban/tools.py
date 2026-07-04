@@ -9,12 +9,13 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable
 
+from luban import memory as memory_mod
 from luban import permissions as permissions_mod
 from luban import skills as skills_mod
 
 MAX_OUTPUT = 20000  # chars; truncate large tool output to protect context
 MAX_COMMAND_TIMEOUT = 600  # seconds; cap model-supplied run_command timeouts
-READ_ONLY_TOOLS = {"list_dir", "glob", "grep", "read_file", "load_skill"}
+READ_ONLY_TOOLS = {"list_dir", "glob", "grep", "read_file", "load_skill", "recall"}
 
 
 @dataclass
@@ -209,6 +210,51 @@ def _load_skill(inp: dict, ctx: ToolContext) -> ToolResult:
     return ToolResult(_truncate(f"[skill: {name}]\n{body}"))
 
 
+def _remember(inp: dict, ctx: ToolContext) -> ToolResult:
+    name = inp.get("name", "")
+    description = inp.get("description", "")
+    body = inp.get("body", "")
+    if not memory_mod.valid_slug(name):
+        return ToolResult(
+            f"Invalid memory name: {name!r} (kebab-case: a-z, 0-9, dashes, max 64).",
+            is_error=True,
+        )
+    old = memory_mod.read_fact(name) or ""
+    new = f"description: {description.strip()}\n\n{body.strip()}\n"
+    ctx.render_diff(f"~/.luban/memory/{name}.md", old, new)
+    if not ctx.confirm(f"Remember '{name}'?"):
+        return ToolResult("User declined the memory write.")
+    msg = memory_mod.remember(name, description, body)
+    return ToolResult(msg, is_error=msg.startswith(("Invalid", "Could not")))
+
+
+def _forget(inp: dict, ctx: ToolContext) -> ToolResult:
+    name = inp.get("name", "")
+    old = memory_mod.read_fact(name)
+    if old is None:
+        return ToolResult(f"No memory named '{name}'.", is_error=True)
+    ctx.render_diff(f"~/.luban/memory/{name}.md", old, "")
+    if not ctx.confirm(f"Forget '{name}'?"):
+        return ToolResult("User declined the memory delete.")
+    msg = memory_mod.forget(name)
+    return ToolResult(msg, is_error=msg.startswith(("Invalid", "No memory", "Could not")))
+
+
+def _recall(inp: dict, ctx: ToolContext) -> ToolResult:
+    return ToolResult(memory_mod.recall(inp.get("query", "")))
+
+
+def _journal(inp: dict, ctx: ToolContext) -> ToolResult:
+    text = inp.get("text", "").strip()
+    if not text:
+        return ToolResult("Empty journal entry.", is_error=True)
+    ctx.render_command(f"journal += {text}")
+    if not ctx.confirm("Append to journal?"):
+        return ToolResult("User declined the journal entry.")
+    memory_mod.journal_append(text)
+    return ToolResult("Journal updated.")
+
+
 _DISPATCH = {
     "list_dir": _list_dir,
     "glob": _glob,
@@ -218,6 +264,10 @@ _DISPATCH = {
     "edit_file": _edit_file,
     "run_command": _run_command,
     "load_skill": _load_skill,
+    "remember": _remember,
+    "forget": _forget,
+    "recall": _recall,
+    "journal": _journal,
 }
 
 TOOLS = [
@@ -306,7 +356,60 @@ TOOLS = [
             "required": ["name"],
         },
     },
+    {
+        "name": "remember",
+        "description": "Save or update a durable long-term memory fact about the user, "
+        "their practices, or standing decisions (persists across sessions and projects). "
+        "Update existing facts rather than creating near-duplicates.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "kebab-case slug, e.g. 'prefers-plotly'"},
+                "description": {"type": "string", "description": "one-line summary for the memory index"},
+                "body": {"type": "string", "description": "the full fact"},
+            },
+            "required": ["name", "description", "body"],
+        },
+    },
+    {
+        "name": "recall",
+        "description": "Search long-term memory (facts and journal) for details behind "
+        "the memory index shown in the system prompt.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"query": {"type": "string"}},
+            "required": ["query"],
+        },
+    },
+    {
+        "name": "forget",
+        "description": "Delete a stale or wrong long-term memory fact by name.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"name": {"type": "string"}},
+            "required": ["name"],
+        },
+    },
+    {
+        "name": "journal",
+        "description": "Append a short note to today's journal: what happened, "
+        "decisions made, progress. Keep entries to a few lines.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"text": {"type": "string"}},
+            "required": ["text"],
+        },
+    },
 ]
+
+MEMORY_TOOL_NAMES = {"remember", "forget", "recall", "journal"}
+
+
+def active_tools(memory_enabled: bool = True) -> list[dict]:
+    """Tool schemas to offer the model; memory tools hidden when disabled."""
+    if memory_enabled:
+        return TOOLS
+    return [t for t in TOOLS if t["name"] not in MEMORY_TOOL_NAMES]
 
 
 def _audit_call(ctx: ToolContext, name: str, tool_input: dict, decision: str, out: ToolResult) -> None:

@@ -93,7 +93,7 @@ luban --model <id>          # pick a model
 ```
 
 In-session commands: `/auto`, `/model` (list models / switch), `/skills`,
-`/skill <name>`, `/compact`, `/sessions`, `/clear`, `/exit`.
+`/skill <name>`, `/compact`, `/reflect`, `/sessions`, `/clear`, `/exit`.
 
 > **Warning:** `--auto` (and the `/auto` command) run file writes and shell
 > commands WITHOUT asking. Only use it in a project directory you trust. Deny rules from `[permissions]` still apply under `--auto`.
@@ -166,6 +166,37 @@ To pin a specific file instead of the chain, set it in `~/.luban/config.toml`:
 memory_file = "CLAUDE.md"   # exact file to use; no fallback
 ```
 
+## Long-term memory & SOUL.md
+
+Unlike project memory (per-repo), long-term memory follows *you*. It lives in
+your home directory and is loaded at the start of every session, in every
+project:
+
+- **`~/.luban/SOUL.md`** — luban's identity when working with you: who you
+  are, how it should behave, conventions to always follow. Created with a
+  template on first run; it's your file — edit it freely (luban never
+  rewrites it).
+- **`~/.luban/memory/`** — durable facts, one small `.md` file each, with an
+  always-loaded one-line index in `MEMORY.md`.
+- **`~/.luban/memory/journal/`** — daily notes; today's and yesterday's are
+  loaded automatically.
+
+luban maintains this itself with four tools: `remember` (save/update a fact —
+you see a diff and confirm, like any write), `recall` (search memory),
+`forget` (delete a stale fact) and `journal` (note what happened). Before
+`/compact` summarizes a long conversation, luban first banks anything durable
+to memory — so compaction never loses what it learned. Type **`/reflect`**
+occasionally to consolidate: it promotes journal items into facts and prunes
+stale ones, with your confirmation on every change.
+
+Trust it? Cut the prompts with permission rules:
+`allow = ["remember", "journal"]`. Want none of it? `memory_enabled = false`
+in `~/.luban/config.toml` turns the whole feature off.
+
+> Note: memory writes are confirmed by default on purpose — text in a cloned
+> repo could try to talk the model into planting bad "facts". The confirm
+> plus the audit log is your guard.
+
 ## Audit log
 
 Every tool call (including denials) is appended to `~/.luban/audit.jsonl` —
@@ -187,6 +218,7 @@ your detected platform. Edit it any time:
 ```toml
 # ~/.luban/config.toml — luban settings (edit me)
 platform = "windows"   # windows | mac | linux
+memory_enabled = true
 ```
 
 `platform` tells the assistant which shell conventions to use (e.g. Windows

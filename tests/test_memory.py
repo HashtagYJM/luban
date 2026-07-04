@@ -94,6 +94,7 @@ def test_valid_slug():
     assert not memory.valid_slug("UPPER")
     assert not memory.valid_slug("")
     assert not memory.valid_slug("x" * 65)
+    assert not memory.valid_slug("evil\n")
 
 
 def test_remember_creates_fact_and_index(mem):

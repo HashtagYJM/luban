@@ -20,7 +20,7 @@ INDEX_MAX = 4000
 JOURNAL_MAX = 3000
 RECALL_MAX = 8000
 
-_SLUG_RX = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
+_SLUG_RX = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}\Z")
 
 _SOUL_TEMPLATE = (
     "# SOUL.md — who luban is when working with you\n"

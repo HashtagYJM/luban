@@ -90,6 +90,7 @@ luban --dir path/to/project # operate on another folder
 luban --auto                # skip confirmations
 luban --no-stream           # if responses come back empty (some reasoning models)
 luban --model <id>          # pick a model
+luban --version             # print the installed version and exit
 ```
 
 In-session commands: `/auto`, `/model` (list models / switch), `/skills`,
@@ -114,6 +115,12 @@ the last exchange so you remember where you were. In-session: `/sessions`
 lists this folder's saved sessions; `/clear` starts a fresh session (the old
 one stays on disk). Resuming another folder's session (via --all) moves that
 session to your current folder.
+
+luban can look this up itself, too: the read-only `sessions` tool lists this
+folder's saved sessions (or every folder's, with `all: true`) so you can ask
+it what you were working on recently. Full transcripts are plain JSON files
+under `~/.luban/sessions/` — nothing stops the model from reading one
+directly with `read_file` if you ask it to look closer.
 
 ## Skills
 
@@ -204,6 +211,29 @@ and deny applies even in `--auto` mode. Allowed actions still show their
 diff/command — they just skip the prompt. Rules live only in your home config,
 never in the project: a cloned repo can't grant itself permissions.
 
+## Trust model
+
+The project-root jail on the file tools (`read_file`, `write_file`, `edit_file`,
+`list_dir`, `glob`, `grep`) is blast-radius control and visible-diff UX, **not**
+a security boundary. It keeps ordinary edits confined to the folder you pointed
+luban at and makes every change show up as a diff you confirm. `run_command` is
+the deliberate escape hatch: it can do anything you could do from a shell,
+anywhere on the machine — same as it always could — behind its own confirm (or
+a permission rule).
+
+File tools can also reach **`~/.luban`** — memory, skills, `config.toml` — so
+luban maintains its own files the same visible-diff, confirm-first way instead
+of falling back to blind shell one-liners. Two things stay off-limits even
+there: Python files (`client_local.py`, `tools_local.py` — matched
+case-insensitively, so `.PY`/`.Py` are caught too) can never be read or written
+by file tools, since one holds your credentials and the other executes code at
+startup; and `~/.luban/audit.jsonl` can be read but never written through file
+tools, so the trail can't be edited away.
+
+Want it stricter? Permission rules apply to `~/.luban` paths too —
+`deny = ["write_file:~/.luban/*"]` stops the agent from touching its own files
+at all — and, as above, deny beats `--auto`.
+
 ## Project memory
 
 luban looks for a memory file in the project root — **`LUBAN.md`**, then
@@ -234,6 +264,12 @@ project:
   always-loaded one-line index in `MEMORY.md`.
 - **`~/.luban/memory/journal/`** — daily notes; today's and yesterday's are
   loaded automatically.
+- **`~/.luban/memory/enhancements.md`** — a self-improvement tracker,
+  scaffolded automatically on first run: an **Open** table for issues seen in
+  the field (with a suggested fix) and a **Resolved** table for ones confirmed
+  fixed in a later release. It's indexed in `MEMORY.md` like any other fact,
+  and edits go through the same file-tool diff/confirm as everything else
+  under `~/.luban` — nothing lands in it silently.
 
 luban maintains this itself with four tools: `remember` (save/update a fact —
 you see a diff and confirm, like any write), `recall` (search memory),
@@ -242,6 +278,12 @@ you see a diff and confirm, like any write), `recall` (search memory),
 to memory — so compaction never loses what it learned. Type **`/reflect`**
 occasionally to consolidate: it promotes journal items into facts and prunes
 stale ones, with your confirmation on every change.
+
+When luban notices its own installed version changed since the last run, it
+prints a one-line nudge asking the agent to reconcile the Open rows in
+`enhancements.md` against that release's notes and move the confirmed-fixed
+ones to Resolved — so field-reported issues get revisited on upgrade instead
+of sitting there forgotten.
 
 Trust it? Cut the prompts with permission rules:
 `allow = ["remember", "journal"]`. Want none of it? `memory_enabled = false`
@@ -271,12 +313,15 @@ your detected platform. Edit it any time:
 
 ```toml
 # ~/.luban/config.toml — luban settings (edit me)
-platform = "windows"   # windows | mac | linux
+platform = "windows"     # windows | mac | linux
+model = "your-model-id"  # default model to use
 memory_enabled = true
 ```
 
 `platform` tells the assistant which shell conventions to use (e.g. Windows
-`dir`/`type` vs. POSIX `ls`/`cat`).
+`dir`/`type` vs. POSIX `ls`/`cat`). `model` sets the default model; precedence
+is **`--model` flag > `model` in config.toml > luban's built-in default** —
+leave it unset (or commented out) to fall back to the built-in.
 
 ## Troubleshooting
 

@@ -183,8 +183,9 @@ TOOLS = [
   running; `deny` rules block them even in `--auto`.
 - The file is **user-owned only** — luban never loads tools from a project
   directory, so a cloned repo can't inject executable code.
-- Any error in the file means luban starts without custom tools (one-line
-  warning), never a crash.
+- A malformed tool entry is skipped with a warning while the rest still
+  load; a broken file (syntax error, `TOOLS` not a list) disables custom
+  tools entirely — either way luban starts, never a crash.
 
 ## Permissions
 

@@ -42,3 +42,14 @@ def test_last_version_dotfile_invisible_to_memory(tmp_path, monkeypatch):
     mem.mkdir(parents=True)
     (mem / ".last-version").write_text("0.0.1", encoding="utf-8")
     assert "0.0.1" not in memory.recall("0.0.1")  # *.md globs skip the dotfile
+
+
+def test_nudge_survives_non_utf8_state_file(tmp_path, monkeypatch):
+    mem = _mem(tmp_path, monkeypatch)
+    mem.mkdir(parents=True)
+    (mem / ".last-version").write_bytes(b"\xff\xfe\x00garbage")
+    # must not raise; corrupt prev != current version, so it treats it as changed
+    note = cli.version_nudge()
+    assert isinstance(note, str)  # no crash
+    # and it recovered by rewriting valid state
+    assert (mem / ".last-version").read_text(encoding="utf-8") == luban.__version__

@@ -172,7 +172,7 @@ def version_nudge() -> str:
     """
     state = memory_mod.MEMORY_DIR / ".last-version"
     try:
-        prev = state.read_text(encoding="utf-8").strip()
+        prev = state.read_text(encoding="utf-8", errors="replace").strip()
     except OSError:
         prev = ""
     if prev == __version__:

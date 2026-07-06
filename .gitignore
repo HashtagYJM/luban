@@ -7,6 +7,10 @@ tools_local.py
 # Internal design docs / plans — kept locally, not published
 docs/superpowers/
 
+# Subagent-driven-development scratch (task briefs, reports, review diffs,
+# ledger) — internal, may reference internal identifiers; NEVER publish
+.superpowers/
+
 # Local progress notes — may reference internal details, never publish
 CLAUDE.md
 

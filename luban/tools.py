@@ -412,6 +412,63 @@ def active_tools(memory_enabled: bool = True) -> list[dict]:
     return [t for t in TOOLS if t["name"] not in MEMORY_TOOL_NAMES]
 
 
+_CUSTOM_NAMES: set[str] = set()
+_PREVIEW_MAX = 200  # chars of input preview rendered before confirming
+
+
+def _wrap_custom(spec: dict) -> Callable[[dict, ToolContext], ToolResult]:
+    handler = spec["handler"]
+    name = spec["name"]
+    read_only = spec.get("read_only") is True
+
+    def call(inp: dict, ctx: ToolContext) -> ToolResult:
+        if not read_only:
+            preview = ", ".join(f"{k}={v!r}" for k, v in sorted(inp.items()))
+            ctx.render_command(f"{name}({preview[:_PREVIEW_MAX]})")
+            if not ctx.confirm(f"Run {name}?"):
+                return ToolResult(f"User declined {name}.")
+        # Handler exceptions deliberately propagate: run_tool's catch turns
+        # them into the standard "Tool error:" is_error result.
+        return ToolResult(_truncate(str(handler(inp, ctx.project_root))))
+
+    return call
+
+
+def register_custom(specs: list[dict]) -> list[str]:
+    """Merge validated custom tool specs (see custom_tools.py) into the dispatch."""
+    registered = []
+    for spec in specs:
+        name = spec["name"]
+        if name in _DISPATCH:
+            print(f"warning: custom tool {name!r} collides with an existing tool; skipped",
+                  file=sys.stderr)
+            continue
+        _DISPATCH[name] = _wrap_custom(spec)
+        TOOLS.append({
+            "name": name,
+            "description": spec["description"],
+            "input_schema": spec["input_schema"],
+        })
+        if spec.get("read_only") is True:
+            READ_ONLY_TOOLS.add(name)
+        target = spec.get("permission_target")
+        if isinstance(target, str) and target:
+            permissions_mod._TARGET_KEY[name] = target
+        _CUSTOM_NAMES.add(name)
+        registered.append(name)
+    return registered
+
+
+def reset_custom() -> None:
+    """Remove every registered custom tool (test isolation hook)."""
+    for name in _CUSTOM_NAMES:
+        _DISPATCH.pop(name, None)
+        READ_ONLY_TOOLS.discard(name)
+        permissions_mod._TARGET_KEY.pop(name, None)
+    TOOLS[:] = [t for t in TOOLS if t["name"] not in _CUSTOM_NAMES]
+    _CUSTOM_NAMES.clear()
+
+
 def _audit_call(ctx: ToolContext, name: str, tool_input: dict, decision: str, out: ToolResult) -> None:
     if ctx.audit is None:
         return

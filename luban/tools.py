@@ -48,9 +48,35 @@ def resolve_in_root(root: Path, path: str) -> Path:
     return target
 
 
+LUBAN_HOME = Path.home() / ".luban"  # call-time resolution (tests monkeypatch this)
+
+
+def resolve_tool_path(root: Path, path: str, writing: bool = False) -> Path:
+    """Resolve a tool-supplied path.
+
+    Relative paths stay jailed to the project root. Absolute (or ~) paths are
+    allowed only under the user's own ~/.luban area so the agent can maintain
+    its memory, skills, and config — with two guardrails: Python files there
+    (client_local.py holds credentials, tools_local.py executes at startup)
+    are off-limits entirely, and the audit log is never writable.
+    """
+    expanded = Path(path).expanduser()
+    if not expanded.is_absolute():
+        return resolve_in_root(root, path)
+    home = LUBAN_HOME.resolve()
+    target = expanded.resolve()
+    if not (target == home or home in target.parents):
+        raise ValueError(f"Absolute paths must stay under ~/.luban: {path}")
+    if target.suffix == ".py":
+        raise ValueError(f"Python files under ~/.luban are off-limits to file tools: {path}")
+    if writing and target.name == "audit.jsonl":
+        raise ValueError(f"The audit log is not writable via file tools: {path}")
+    return target
+
+
 def _list_dir(inp: dict, ctx: ToolContext) -> ToolResult:
     try:
-        target = resolve_in_root(ctx.project_root, inp.get("path", "."))
+        target = resolve_tool_path(ctx.project_root, inp.get("path", "."))
         if not target.is_dir():
             return ToolResult(f"Not a directory: {inp.get('path', '.')}", is_error=True)
         names = sorted(
@@ -63,7 +89,7 @@ def _list_dir(inp: dict, ctx: ToolContext) -> ToolResult:
 
 def _read_file(inp: dict, ctx: ToolContext) -> ToolResult:
     try:
-        target = resolve_in_root(ctx.project_root, inp["path"])
+        target = resolve_tool_path(ctx.project_root, inp["path"])
         text = target.read_text()
     except (ValueError, KeyError) as exc:
         return ToolResult(f"Bad request: {exc}", is_error=True)
@@ -114,7 +140,7 @@ def _grep(inp: dict, ctx: ToolContext) -> ToolResult:
 
 def _write_file(inp: dict, ctx: ToolContext) -> ToolResult:
     try:
-        target = resolve_in_root(ctx.project_root, inp["path"])
+        target = resolve_tool_path(ctx.project_root, inp["path"], writing=True)
     except (ValueError, KeyError) as exc:
         return ToolResult(f"Bad request: {exc}", is_error=True)
     old = target.read_text() if target.exists() else ""
@@ -129,7 +155,7 @@ def _write_file(inp: dict, ctx: ToolContext) -> ToolResult:
 
 def _edit_file(inp: dict, ctx: ToolContext) -> ToolResult:
     try:
-        target = resolve_in_root(ctx.project_root, inp["path"])
+        target = resolve_tool_path(ctx.project_root, inp["path"], writing=True)
         old = target.read_text()
     except (ValueError, KeyError) as exc:
         return ToolResult(f"Bad request: {exc}", is_error=True)

@@ -293,9 +293,17 @@ section only shows up once you've actually written something into it.
 
 luban maintains this itself with four tools: `remember` (save/update a fact —
 you see a diff and confirm, like any write), `recall` (search memory),
-`forget` (delete a stale fact) and `journal` (note what happened). Before
-`/compact` summarizes a long conversation, luban first banks anything durable
-to memory — so compaction never loses what it learned. Type **`/reflect`**
+`forget` (delete a stale fact) and `journal` (note what happened). Durable
+facts are only ever written by an explicit `remember` or during `/reflect` —
+compaction itself never saves facts. Before `/compact` discards the old
+conversation, luban runs a flush turn that writes one short journal entry
+summarizing the session; that turn is offered *only* the `journal` tool, and
+luban enforces the offered set at dispatch (any other tool call comes back
+"Tool not available in this turn"), so compaction is structurally unable to
+touch the fact store. Each session segment gets exactly one journal entry:
+the flush writes it if you compact, otherwise a single line is written when
+you exit — never both. `/compact` resets that per-segment flag, so the next
+segment (after the summary) earns its own entry too. Type **`/reflect`**
 occasionally to consolidate: it promotes journal items into facts and prunes
 stale ones, with your confirmation on every change.
 

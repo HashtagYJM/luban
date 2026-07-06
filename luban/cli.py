@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-from luban import agent, config as config_mod, tools, ui
+from luban import __version__, agent, config as config_mod, tools, ui
 from luban import audit as audit_mod
 from luban import client as client_mod
 from luban import custom_tools as custom_tools_mod
@@ -55,10 +55,11 @@ class Session:
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(prog="luban", description="Terminal coding agent.")
     p.add_argument("--dir", default=".", help="Project root (default: cwd).")
-    p.add_argument("--model", default=client_mod.DEFAULT_MODEL)
+    p.add_argument("--model", default=None)
     p.add_argument("--max-tokens", type=int, default=8192)
     p.add_argument("--auto", action="store_true", help="Skip confirmation prompts (auto-approves ALL file writes and shell commands — use with care).")
     p.add_argument("--no-stream", dest="stream", action="store_false")
+    p.add_argument("--version", action="version", version=f"luban {__version__}")
     g = p.add_mutually_exclusive_group()
     g.add_argument("--continue", "-c", dest="cont", action="store_true",
                    help="Resume the most recent session for this folder.")
@@ -157,6 +158,10 @@ def setup_custom_tools() -> list[str]:
     """Load user-owned tools_local.py and merge its tools into the toolbox."""
     specs = custom_tools_mod.load_custom_tools()
     return tools.register_custom(specs) if specs else []
+
+
+def resolve_model(flag_model: str | None, cfg: config_mod.Config) -> str:
+    return flag_model or cfg.model or client_mod.DEFAULT_MODEL
 
 
 def build_agent_config(session: Session, cfg: config_mod.Config, project_root: Path) -> agent.AgentConfig:
@@ -402,12 +407,12 @@ def handle_command(line: str, session: Session, client=None, ctx=None, cfg=None)
 def main(argv: list[str] | None = None) -> None:
     ns = parse_args(argv)
     project_root = Path(ns.dir).resolve()
+    cfg = config_mod.load_config()
     session = Session(
-        model=ns.model, max_tokens=ns.max_tokens,
+        model=resolve_model(ns.model, cfg), max_tokens=ns.max_tokens,
         auto=ns.auto, stream=ns.stream, messages=[],
         project=str(project_root),
     )
-    cfg = config_mod.load_config()
     custom_names = setup_custom_tools()
     if cfg.memory_enabled:
         memory_mod.ensure_scaffold()

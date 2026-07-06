@@ -104,3 +104,21 @@ def test_memory_enabled_non_bool_ignored(tmp_path):
     p = tmp_path / "config.toml"
     p.write_text('platform = "mac"\nmemory_enabled = "yes"\n')
     assert config.load_config(p).memory_enabled is True
+
+
+def test_model_key_parsed(tmp_path):
+    p = tmp_path / "config.toml"
+    p.write_text('platform = "mac"\nmodel = "my-model"\n')
+    assert config.load_config(p).model == "my-model"
+
+
+def test_model_key_default_empty(tmp_path):
+    p = tmp_path / "config.toml"
+    p.write_text('platform = "mac"\n')
+    assert config.load_config(p).model == ""
+
+
+def test_model_key_non_str_ignored(tmp_path):
+    p = tmp_path / "config.toml"
+    p.write_text('platform = "mac"\nmodel = 3\n')
+    assert config.load_config(p).model == ""

@@ -8,7 +8,7 @@ def _session():
 
 def test_parse_args_defaults():
     ns = cli.parse_args([])
-    assert ns.model == "claude-sonnet-5"
+    assert ns.model is None
     assert ns.auto is False
     assert ns.max_tokens == 8192
     assert ns.stream is True

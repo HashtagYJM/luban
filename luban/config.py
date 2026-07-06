@@ -20,6 +20,7 @@ _VALID_PLATFORMS = {"windows", "mac", "linux"}
 @dataclass
 class Config:
     platform: str
+    model: str = ""  # default model id; "" = built-in default (--model flag wins)
     allow: list[str] = field(default_factory=list)
     deny: list[str] = field(default_factory=list)
     memory_file: str = ""  # "" = try LUBAN.md, CLAUDE.md, AGENTS.md in order
@@ -37,6 +38,9 @@ def _default_text(plat: str) -> str:
     return (
         "# ~/.luban/config.toml — luban settings (edit me)\n"
         f'platform = "{plat}"   # windows | mac | linux\n'
+        "\n"
+        "# Default model (the --model flag wins). Uncomment to override the built-in:\n"
+        '# model = "your-model-id"\n'
         "\n"
         "# Project memory file (default: first of LUBAN.md, CLAUDE.md, AGENTS.md):\n"
         '# memory_file = "CLAUDE.md"\n'
@@ -70,6 +74,9 @@ def load_config(path: Path = CONFIG_PATH) -> Config:
     plat = data.get("platform") or detect_platform()
     if plat not in _VALID_PLATFORMS:
         plat = detect_platform()
+    model = data.get("model")
+    if not isinstance(model, str):
+        model = ""
     perms = data.get("permissions")
     if not isinstance(perms, dict):
         perms = {}
@@ -90,6 +97,7 @@ def load_config(path: Path = CONFIG_PATH) -> Config:
         memory_enabled = True
     return Config(
         platform=plat,
+        model=model,
         allow=allow,
         deny=deny,
         memory_file=memory_file,

@@ -8,6 +8,7 @@ from pathlib import Path
 from luban import agent, config as config_mod, tools, ui
 from luban import audit as audit_mod
 from luban import client as client_mod
+from luban import custom_tools as custom_tools_mod
 from luban import memory as memory_mod
 from luban import permissions as permissions_mod
 from luban import sessions as sessions_mod
@@ -150,6 +151,12 @@ def read_project_memory(project_root: Path, memory_file: str = "") -> str:
             text = text[:MEMORY_MAX_CHARS] + "\n[memory file truncated]"
         return text
     return ""
+
+
+def setup_custom_tools() -> list[str]:
+    """Load user-owned tools_local.py and merge its tools into the toolbox."""
+    specs = custom_tools_mod.load_custom_tools()
+    return tools.register_custom(specs) if specs else []
 
 
 def build_agent_config(session: Session, cfg: config_mod.Config, project_root: Path) -> agent.AgentConfig:
@@ -400,6 +407,7 @@ def main(argv: list[str] | None = None) -> None:
         project=str(project_root),
     )
     cfg = config_mod.load_config()
+    custom_names = setup_custom_tools()
     if cfg.memory_enabled:
         memory_mod.ensure_scaffold()
     client = client_mod.get_client()
@@ -418,6 +426,8 @@ def main(argv: list[str] | None = None) -> None:
         f"luban — project: {project_root}  model: {session.model}  "
         f"platform: {cfg.platform}\n"
     )
+    if custom_names:
+        ui.print_text(f"custom tools: {', '.join(custom_names)}\n")
     while True:
         try:
             line = input("\nyou> ").strip()

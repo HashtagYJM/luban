@@ -117,21 +117,74 @@ session to your current folder.
 
 ## Skills
 
-Teach luban your conventions with plain markdown files — no code. A skill is
-one `.md` file whose first line is a one-line description:
+Teach luban your conventions with plain markdown files — no code. Two
+layouts, mixable in the same directory:
 
-```markdown
-description: How this project structures research outputs
+- **Flat file** — `<name>.md` whose first line is a one-line description:
 
-Raw downloads go in output/raw_data/, computed signals in output/signals/ ...
-```
+  ```markdown
+  description: How this project structures research outputs
+
+  Raw downloads go in output/raw_data/, computed signals in output/signals/ ...
+  ```
+
+- **Folder skill** — `<name>/SKILL.md`, the Claude Code Agent Skills
+  convention, so skills written for Claude Code drop in unchanged. The skill
+  name is the folder's name; an optional leading `---`-delimited YAML
+  frontmatter block holds a single-line `description:` that feeds the catalog
+  (quotes are stripped automatically, and it's capped at 240 characters), and
+  any supporting files can sit alongside `SKILL.md` in the folder — when
+  luban loads a folder skill it tells the model the folder's path so it can
+  read those files itself (via `run_command`).
 
 Put personal skills in `~/.luban/skills/` and project skills in
 `<project>/.luban/skills/` (commit those with the project — teammates get
-them automatically; a project skill overrides a global one with the same
-name). The model sees each skill's name and description and loads the full
-instructions itself when relevant; `/skills` lists them and `/skill <name>`
-applies one to your next message.
+them automatically). Same name, two tie-breakers: a project skill overrides
+a global one, and within a single directory a flat `<name>.md` file wins
+over a `<name>/SKILL.md` folder. The model sees each skill's name and
+description and loads the full instructions itself when relevant; `/skills`
+lists them and `/skill <name>` applies one to your next message.
+
+## Custom tools (`tools_local.py`)
+
+Teach luban your own in-process tools — no MCP, no plugins, just a Python file
+you own. Create `~/.luban/tools_local.py` (or point `LUBAN_TOOLS_LOCAL` at a
+file) defining a `TOOLS` list:
+
+```python
+from my_company_lib import run_query  # your installed internal package
+
+def query_sql(inp, project_root):
+    return run_query(inp["sql"], limit=inp.get("limit", 100))
+
+TOOLS = [
+    {
+        "name": "query_sql",
+        "description": "Run a read-only SQL query against the research database.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "sql": {"type": "string"},
+                "limit": {"type": "integer", "description": "row cap, default 100"},
+            },
+            "required": ["sql"],
+        },
+        "handler": query_sql,          # callable(inp: dict, project_root: Path) -> str
+        "read_only": True,             # optional: skips the confirm prompt
+        "permission_target": "sql",    # optional: lets rules match e.g. "query_sql:DROP*"
+    },
+]
+```
+
+- Keep the lengthy company code in an installed internal package;
+  `tools_local.py` should be thin wrappers over its entry points.
+- Custom tools go through the same permission rules, confirmation prompts, and
+  audit trail as built-ins. Mutating tools show their input and ask before
+  running; `deny` rules block them even in `--auto`.
+- The file is **user-owned only** — luban never loads tools from a project
+  directory, so a cloned repo can't inject executable code.
+- Any error in the file means luban starts without custom tools (one-line
+  warning), never a crash.
 
 ## Permissions
 

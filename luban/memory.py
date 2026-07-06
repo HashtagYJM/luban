@@ -83,6 +83,7 @@ _HYGIENE = (
     "files like the enhancements tracker, skills, config.toml) — every write shows a "
     "diff and asks. Never edit ~/.luban/memory/MEMORY.md itself: it is a machine-"
     "rebuilt index; edit the component files instead."
+    " The journal is for what happened; facts are for what stays true."
 )
 
 

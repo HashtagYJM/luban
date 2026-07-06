@@ -21,10 +21,9 @@ COMPACT_PROMPT = (
     "current state, and open items or next steps. Reply with only the summary."
 )
 FLUSH_PROMPT = (
-    "Before this conversation is compacted: (1) save any durable facts you learned "
-    "about the user or their practices using the remember tool — update existing "
-    "facts, don't duplicate; (2) write a 2-4 line journal entry about what happened "
-    "this session using the journal tool. Then reply with just: saved."
+    "Before this conversation is compacted, write a short journal entry with the "
+    "journal tool: 2-4 lines on what happened, what was decided, and what's next. "
+    "Then reply with just: saved."
 )
 REFLECT_PROMPT = (
     "Housekeeping for your long-term memory. Review the memory index and recent "
@@ -50,6 +49,7 @@ class Session:
     created: str = ""
     title: str = ""
     pending_context: list = field(default_factory=list)
+    journaled: bool = False
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -203,17 +203,25 @@ def build_agent_config(session: Session, cfg: config_mod.Config, project_root: P
 
 
 def flush_memory(session: Session, client, ctx, cfg: config_mod.Config) -> None:
-    """Best-effort: let the model bank durable facts before compaction destroys context."""
-    if not cfg.memory_enabled or not session.messages:
+    """Best-effort: capture a journal entry before compaction destroys context.
+
+    Structural guarantee: the flush turn is offered ONLY the journal tool, so it
+    cannot write facts (remember/forget) — session narrative belongs in the
+    journal and the compact summary, never in the permanent fact store. Runs at
+    most once per session; exit_journal is the fallback when it never runs.
+    """
+    if not cfg.memory_enabled or not session.messages or session.journaled:
         return
     ui.print_text("(memory flush…)\n")
+    journal_only = [t for t in tools.active_tools(True) if t["name"] == "journal"]
     msgs = session.messages + [{"role": "user", "content": FLUSH_PROMPT}]
     config = agent.AgentConfig(
         session.model, session.max_tokens, stream=False, platform=cfg.platform,
-        global_memory=memory_mod.bootstrap_block(), tools=tools.active_tools(True),
+        global_memory=memory_mod.bootstrap_block(), tools=journal_only,
     )
     try:
         agent.run_turn(client, config, msgs, ctx, lambda t: None)
+        session.journaled = True  # this session's one journal entry is written
     except Exception as exc:
         ui.print_text(f"(memory flush skipped: {exc})\n")
 
@@ -237,10 +245,10 @@ def reflect_session(session: Session, client, ctx, cfg: config_mod.Config) -> No
 
 
 def exit_journal(session: Session, cfg: config_mod.Config, project_root: Path) -> None:
-    if not cfg.memory_enabled or not session.messages:
+    if not cfg.memory_enabled or not session.messages or session.journaled:
         return
     memory_mod.journal_append(
-        f"[{Path(project_root).name}] '{session.title or 'untitled'}' — "
+        f"[{session.project or Path(project_root).name}] '{session.title or 'untitled'}' — "
         f"{len(session.messages)} messages ({session.model})"
     )
 

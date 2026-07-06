@@ -13,9 +13,11 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 
 SOUL_PATH = Path.home() / ".luban" / "SOUL.md"
+USER_PATH = Path.home() / ".luban" / "USER.md"
 MEMORY_DIR = Path.home() / ".luban" / "memory"
 
 SOUL_MAX = 4000
+USER_MAX = 2000
 INDEX_MAX = 4000
 JOURNAL_MAX = 3000
 RECALL_MAX = 8000
@@ -23,17 +25,32 @@ RECALL_MAX = 8000
 _SLUG_RX = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}\Z")
 
 _SOUL_TEMPLATE = (
-    "# SOUL.md — who luban is when working with you\n"
-    "# Edit freely; luban reads this at the start of every session.\n"
-    "\n"
-    "## Who I'm working with\n"
-    "# (your role, expertise, preferences)\n"
+    "<!-- SOUL.md — luban's character and standing behavior when working with you. -->\n"
+    "<!-- Edit freely; luban reads this at the start of every session. -->\n"
+    "<!-- Facts about you personally go in USER.md instead. -->\n"
     "\n"
     "## How I should work\n"
-    "# (standing behavior, e.g. 'add type hints', 'ask before installing')\n"
+    "<!-- standing behavior, e.g. 'add type hints', 'ask before installing', 'keep changes minimal' -->\n"
     "\n"
     "## Conventions\n"
-    "# (company/team practices to always follow)\n"
+    "<!-- company/team practices to always follow -->\n"
+    "\n"
+    "## Boundaries\n"
+    "<!-- things to never do -->\n"
+)
+
+_USER_TEMPLATE = (
+    "<!-- USER.md — who luban is working with. luban reads this every session and -->\n"
+    "<!-- may update it (with your confirmation) as it learns about you. -->\n"
+    "\n"
+    "## About me\n"
+    "<!-- your name, role, team -->\n"
+    "\n"
+    "## Expertise & preferences\n"
+    "<!-- languages and tools you use; how you like work presented -->\n"
+    "\n"
+    "## Environment\n"
+    "<!-- OS, key tools, anything luban should assume about your setup -->\n"
 )
 
 _ENHANCEMENTS_TEMPLATE = (
@@ -76,6 +93,9 @@ def ensure_scaffold() -> None:
         if not SOUL_PATH.exists():
             SOUL_PATH.parent.mkdir(parents=True, exist_ok=True)
             SOUL_PATH.write_text(_SOUL_TEMPLATE, encoding="utf-8")
+        if not USER_PATH.exists():
+            USER_PATH.parent.mkdir(parents=True, exist_ok=True)
+            USER_PATH.write_text(_USER_TEMPLATE, encoding="utf-8")
         index = MEMORY_DIR / "MEMORY.md"
         if not index.exists():
             index.write_text("# Long-term memory index\n", encoding="utf-8")
@@ -99,6 +119,10 @@ def _read_capped(path: Path, cap: int, label: str) -> str:
 
 def read_soul() -> str:
     return _read_capped(SOUL_PATH, SOUL_MAX, "SOUL.md")
+
+
+def read_user() -> str:
+    return _read_capped(USER_PATH, USER_MAX, "USER.md")
 
 
 def read_index() -> str:
@@ -128,6 +152,9 @@ def bootstrap_block() -> str:
     soul = read_soul()
     if soul:
         parts.append(f"Identity & standing instructions (SOUL.md):\n{soul}")
+    user = read_user()
+    if user:
+        parts.append(f"Who you are working with (USER.md):\n{user}")
     index = read_index()
     if index:
         parts.append(f"Long-term memory index (use recall for details):\n{index}")

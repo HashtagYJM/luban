@@ -192,3 +192,64 @@ def test_scaffold_never_overwrites_tracker(tmp_path, monkeypatch):
     tracker.write_text("MY FIELD NOTES", encoding="utf-8")
     memory.ensure_scaffold()
     assert tracker.read_text(encoding="utf-8") == "MY FIELD NOTES"
+
+
+def test_user_md_scaffolded_and_read(tmp_path, monkeypatch):
+    monkeypatch.setattr(memory, "SOUL_PATH", tmp_path / ".luban" / "SOUL.md")
+    monkeypatch.setattr(memory, "USER_PATH", tmp_path / ".luban" / "USER.md")
+    monkeypatch.setattr(memory, "MEMORY_DIR", tmp_path / ".luban" / "memory")
+    memory.ensure_scaffold()
+    user = tmp_path / ".luban" / "USER.md"
+    assert user.exists()
+    assert memory.read_user() == memory._USER_TEMPLATE.strip()
+
+
+def test_scaffold_never_overwrites_user_md(tmp_path, monkeypatch):
+    monkeypatch.setattr(memory, "SOUL_PATH", tmp_path / ".luban" / "SOUL.md")
+    monkeypatch.setattr(memory, "USER_PATH", tmp_path / ".luban" / "USER.md")
+    monkeypatch.setattr(memory, "MEMORY_DIR", tmp_path / ".luban" / "memory")
+    memory.ensure_scaffold()
+    (tmp_path / ".luban" / "USER.md").write_text("MY FACTS", encoding="utf-8")
+    memory.ensure_scaffold()
+    assert (tmp_path / ".luban" / "USER.md").read_text(encoding="utf-8") == "MY FACTS"
+
+
+def test_read_user_capped(tmp_path, monkeypatch):
+    monkeypatch.setattr(memory, "USER_PATH", tmp_path / "USER.md")
+    (tmp_path / "USER.md").write_text("x" * (memory.USER_MAX + 500), encoding="utf-8")
+    out = memory.read_user()
+    assert out.endswith("[USER.md truncated]")
+    assert len(out) <= memory.USER_MAX + len("\n[USER.md truncated]")
+
+
+def test_read_user_missing_is_empty(tmp_path, monkeypatch):
+    monkeypatch.setattr(memory, "USER_PATH", tmp_path / "absent.md")
+    assert memory.read_user() == ""
+
+
+def test_bootstrap_includes_user_section(tmp_path, monkeypatch):
+    monkeypatch.setattr(memory, "SOUL_PATH", tmp_path / "SOUL.md")
+    monkeypatch.setattr(memory, "USER_PATH", tmp_path / "USER.md")
+    monkeypatch.setattr(memory, "MEMORY_DIR", tmp_path / "memory")
+    (tmp_path / "SOUL.md").write_text("I ask before installing.", encoding="utf-8")
+    (tmp_path / "USER.md").write_text("Name: Sam. Prefers Plotly.", encoding="utf-8")
+    block = memory.bootstrap_block()
+    assert "Who you are working with (USER.md):" in block
+    assert "Name: Sam. Prefers Plotly." in block
+    # USER section comes after the SOUL section
+    assert block.index("SOUL.md):") < block.index("USER.md):")
+
+
+def test_templates_have_no_hash_comment_lines(tmp_path):
+    # F3: guidance must be HTML comments, not '#'-prefixed lines that render as H1.
+    for tmpl in (memory._SOUL_TEMPLATE, memory._USER_TEMPLATE):
+        for line in tmpl.splitlines():
+            s = line.strip()
+            if s.startswith("#") and not s.startswith("##"):
+                raise AssertionError(f"single-# line renders as H1: {line!r}")
+
+
+def test_soul_template_no_longer_has_user_section(tmp_path):
+    # F1: personal facts moved to USER.md; SOUL is character/behavior only.
+    assert "Who I'm working with" not in memory._SOUL_TEMPLATE
+    assert "## How I should work" in memory._SOUL_TEMPLATE

@@ -113,6 +113,28 @@ def test_relative_paths_still_project_jailed(env):
     assert out.is_error
 
 
+def test_python_files_blocked_case_insensitive(env):
+    home, proj, ctx = env
+    out = tools.run_tool(
+        "write_file", {"path": str(home / "TOOLS_LOCAL.PY"), "content": "EVIL"}, ctx
+    )
+    assert out.is_error
+    assert not (home / "TOOLS_LOCAL.PY").exists()
+    out = tools.run_tool(
+        "read_file", {"path": str(home / "Client_Local.Py")}, ctx
+    )
+    assert out.is_error
+
+
+def test_audit_log_write_blocked_case_insensitive(env):
+    home, proj, ctx = env
+    out = tools.run_tool(
+        "write_file", {"path": str(home / "AUDIT.JSONL"), "content": "x"}, ctx
+    )
+    assert out.is_error
+    assert not (home / "AUDIT.JSONL").exists()
+
+
 def test_write_into_luban_home_still_confirms(env):
     home, proj, ctx = env
     from dataclasses import replace

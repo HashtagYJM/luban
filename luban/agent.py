@@ -11,6 +11,10 @@ SYSTEM_PROMPT = (
     "edit_file over rewriting whole files; keep changes minimal and targeted. "
     "Briefly say what you are about to do before calling mutating tools. All paths "
     "are relative to the project root."
+    " The user drives the session with slash-commands you can point them to when "
+    "relevant: /compact (summarize a long conversation and keep going), /reflect "
+    "(tidy your long-term memory), /model (show or switch the model), and /sessions "
+    "(list saved sessions)."
 )
 
 _PLATFORM_LINE = {

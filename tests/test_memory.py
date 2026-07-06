@@ -261,3 +261,50 @@ def test_soul_template_no_longer_has_user_section(tmp_path):
     # F1: personal facts moved to USER.md; SOUL is character/behavior only.
     assert "Who I'm working with" not in memory._SOUL_TEMPLATE
     assert "## How I should work" in memory._SOUL_TEMPLATE
+
+
+def test_untouched_soul_template_omitted_from_bootstrap(tmp_path, monkeypatch):
+    monkeypatch.setattr(memory, "SOUL_PATH", tmp_path / "SOUL.md")
+    monkeypatch.setattr(memory, "USER_PATH", tmp_path / "USER.md")
+    monkeypatch.setattr(memory, "MEMORY_DIR", tmp_path / "memory")
+    memory.ensure_scaffold()  # writes untouched templates
+    block = memory.bootstrap_block()
+    # both templates are pristine -> neither section injected
+    assert "SOUL.md):" not in block
+    assert "USER.md):" not in block
+
+
+def test_edited_soul_reappears_in_bootstrap(tmp_path, monkeypatch):
+    monkeypatch.setattr(memory, "SOUL_PATH", tmp_path / "SOUL.md")
+    monkeypatch.setattr(memory, "USER_PATH", tmp_path / "USER.md")
+    monkeypatch.setattr(memory, "MEMORY_DIR", tmp_path / "memory")
+    memory.ensure_scaffold()
+    (tmp_path / "SOUL.md").write_text(
+        memory._SOUL_TEMPLATE + "\nI always run the tests.", encoding="utf-8"
+    )
+    block = memory.bootstrap_block()
+    assert "SOUL.md):" in block and "I always run the tests." in block
+    # USER.md still pristine -> still omitted
+    assert "USER.md):" not in block
+
+
+def test_index_with_no_entries_omitted(tmp_path, monkeypatch):
+    monkeypatch.setattr(memory, "SOUL_PATH", tmp_path / "SOUL.md")
+    monkeypatch.setattr(memory, "USER_PATH", tmp_path / "USER.md")
+    monkeypatch.setattr(memory, "MEMORY_DIR", tmp_path / "memory")
+    (tmp_path / "memory").mkdir()
+    (tmp_path / "memory" / "MEMORY.md").write_text("# Long-term memory index\n", encoding="utf-8")
+    block = memory.bootstrap_block()
+    assert "Long-term memory index" not in block
+
+
+def test_index_with_entries_kept(tmp_path, monkeypatch):
+    monkeypatch.setattr(memory, "SOUL_PATH", tmp_path / "SOUL.md")
+    monkeypatch.setattr(memory, "USER_PATH", tmp_path / "USER.md")
+    monkeypatch.setattr(memory, "MEMORY_DIR", tmp_path / "memory")
+    (tmp_path / "memory").mkdir()
+    (tmp_path / "memory" / "MEMORY.md").write_text(
+        "# Long-term memory index\n- [prefs] likes plotly\n", encoding="utf-8"
+    )
+    block = memory.bootstrap_block()
+    assert "Long-term memory index" in block and "[prefs]" in block

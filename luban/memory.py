@@ -146,17 +146,22 @@ def read_recent_journal() -> str:
     return combined
 
 
+def _is_untouched(text: str, template: str) -> bool:
+    """True when the file is still the shipped template (nothing user-authored yet)."""
+    return text.strip() == template.strip()
+
+
 def bootstrap_block() -> str:
     """The global-memory block injected into the system prompt each turn."""
     parts = [_HYGIENE]
     soul = read_soul()
-    if soul:
+    if soul and not _is_untouched(soul, _SOUL_TEMPLATE):
         parts.append(f"Identity & standing instructions (SOUL.md):\n{soul}")
     user = read_user()
-    if user:
+    if user and not _is_untouched(user, _USER_TEMPLATE):
         parts.append(f"Who you are working with (USER.md):\n{user}")
     index = read_index()
-    if index:
+    if index and any(line.lstrip().startswith("- [") for line in index.splitlines()):
         parts.append(f"Long-term memory index (use recall for details):\n{index}")
     journal = read_recent_journal()
     if journal:

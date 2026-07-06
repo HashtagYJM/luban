@@ -250,7 +250,7 @@ To pin a specific file instead of the chain, set it in `~/.luban/config.toml`:
 memory_file = "CLAUDE.md"   # exact file to use; no fallback
 ```
 
-## Long-term memory & SOUL.md
+## Long-term memory, SOUL.md & USER.md
 
 Unlike project memory (per-repo), long-term memory follows *you*. It lives in
 your home directory and is loaded at the start of every session, in every

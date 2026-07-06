@@ -219,11 +219,14 @@ def flush_memory(session: Session, client, ctx, cfg: config_mod.Config) -> None:
         session.model, session.max_tokens, stream=False, platform=cfg.platform,
         global_memory=memory_mod.bootstrap_block(), tools=journal_only,
     )
+    before = memory_mod._journal_writes
     try:
         agent.run_turn(client, config, msgs, ctx, lambda t: None)
-        session.journaled = True  # this session's one journal entry is written
     except Exception as exc:
         ui.print_text(f"(memory flush skipped: {exc})\n")
+        return
+    if memory_mod._journal_writes > before:
+        session.journaled = True  # a journal entry was actually written this segment
 
 
 def reflect_session(session: Session, client, ctx, cfg: config_mod.Config) -> None:

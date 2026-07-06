@@ -60,17 +60,53 @@ def test_flush_prompt_has_no_remember_instruction():
     assert "journal" in cli.FLUSH_PROMPT.lower()
 
 
-def test_flush_sets_journaled_flag(tmp_path):
+def test_flush_without_journal_call_leaves_flag_false(tmp_path):
     stub = _Stub([[_text("saved.")]])
     sess = _session([{"role": "user", "content": "hi"}])
     assert sess.journaled is False
     cli.flush_memory(sess, stub, _ctx(tmp_path), _cfg())
+    assert sess.journaled is False
+
+
+def test_flush_with_journal_call_sets_flag(tmp_path):
+    def _tool(id_, name, inp):
+        return types.SimpleNamespace(type="tool_use", id=id_, name=name, input=inp)
+    script = [
+        [_tool("j1", "journal", {"text": "did stuff; decided X; next Y"})],
+        [_text("saved.")],
+    ]
+    class _S:
+        def __init__(self): self.n = 0; self.messages = self
+        def create(self, **kw):
+            self.n += 1
+            if self.n == 1:
+                return types.SimpleNamespace(content=script[0], stop_reason="tool_use")
+            return types.SimpleNamespace(content=script[1], stop_reason="end_turn")
+    sess = _session([{"role": "user", "content": "hi"}])
+    cli.flush_memory(sess, _S(), _ctx(tmp_path), _cfg())
     assert sess.journaled is True
+    # and the journal file actually got the entry
+    files = list((tmp_path / "memory" / "journal").glob("*.md"))
+    assert files and "did stuff" in files[0].read_text(encoding="utf-8")
 
 
 def test_second_flush_is_skipped(tmp_path):
-    stub = _Stub([[_text("saved.")]])
+    def _tool(id_, name, inp):
+        return types.SimpleNamespace(type="tool_use", id=id_, name=name, input=inp)
+    script = [
+        [_tool("j1", "journal", {"text": "did stuff"})],
+        [_text("saved.")],
+    ]
+    class _S:
+        def __init__(self): self.n = 0; self.calls = []; self.messages = self
+        def create(self, **kw):
+            self.calls.append(kw)
+            self.n += 1
+            if self.n == 1:
+                return types.SimpleNamespace(content=script[0], stop_reason="tool_use")
+            return types.SimpleNamespace(content=script[1], stop_reason="end_turn")
     sess = _session([{"role": "user", "content": "hi"}])
+    stub = _S()
     cli.flush_memory(sess, stub, _ctx(tmp_path), _cfg())
     n = len(stub.calls)
     cli.flush_memory(sess, stub, _ctx(tmp_path), _cfg())  # already journaled

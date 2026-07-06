@@ -74,6 +74,8 @@ _ENHANCEMENTS_TEMPLATE = (
     "|----|----------|-------|\n"
 )
 
+_journal_writes = 0
+
 _HYGIENE = (
     "Long-term memory: you have remember/recall/forget/journal tools. Save durable "
     "facts about the user and their practices with remember (update or forget stale "
@@ -262,6 +264,7 @@ def recall(query: str) -> str:
 
 
 def journal_append(text: str) -> None:
+    global _journal_writes
     try:
         journal_dir = MEMORY_DIR / "journal"
         journal_dir.mkdir(parents=True, exist_ok=True)
@@ -269,5 +272,6 @@ def journal_append(text: str) -> None:
         path = journal_dir / f"{date.today().isoformat()}.md"
         with path.open("a", encoding="utf-8") as fh:
             fh.write(f"[{stamp}] {text.strip()}\n")
+        _journal_writes += 1
     except Exception:
         pass  # journaling must never break the loop

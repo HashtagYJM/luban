@@ -36,11 +36,36 @@ _SOUL_TEMPLATE = (
     "# (company/team practices to always follow)\n"
 )
 
+_ENHANCEMENTS_TEMPLATE = (
+    "description: Self-improvement tracker — luban issues seen in the field, to ship to the maintainer\n"
+    "\n"
+    "# Luban — Self-Improvement Tracker\n"
+    "\n"
+    "Runtime/tooling issues to flag but NOT fix locally. Share Open items with the\n"
+    "maintainer (screenshot or text). Lifecycle: OPEN -> SHARED (sent to maintainer)\n"
+    "-> FIXED (confirmed working in a release). After an upgrade, review Open items\n"
+    "against the release notes and MOVE fixed rows to Resolved (keep the audit trail).\n"
+    "\n"
+    "## Open\n"
+    "\n"
+    "| ID | Sev | Area | Status | Issue -> suggested fix |\n"
+    "|----|-----|------|--------|------------------------|\n"
+    "\n"
+    "## Resolved\n"
+    "\n"
+    "| ID | Fixed in | Notes |\n"
+    "|----|----------|-------|\n"
+)
+
 _HYGIENE = (
     "Long-term memory: you have remember/recall/forget/journal tools. Save durable "
     "facts about the user and their practices with remember (update or forget stale "
     "facts instead of duplicating); use recall to fetch details behind the index; "
-    "do not store what the project's own files already record."
+    "do not store what the project's own files already record. You may also read and "
+    "edit your own files under ~/.luban directly with the file tools (memory component "
+    "files like the enhancements tracker, skills, config.toml) — every write shows a "
+    "diff and asks. Never edit ~/.luban/memory/MEMORY.md itself: it is a machine-"
+    "rebuilt index; edit the component files instead."
 )
 
 
@@ -54,6 +79,10 @@ def ensure_scaffold() -> None:
         index = MEMORY_DIR / "MEMORY.md"
         if not index.exists():
             index.write_text("# Long-term memory index\n", encoding="utf-8")
+        tracker = MEMORY_DIR / "enhancements.md"
+        if not tracker.exists():
+            tracker.write_text(_ENHANCEMENTS_TEMPLATE, encoding="utf-8")
+            _rebuild_index()  # index the new component immediately
     except Exception:
         pass  # memory must never break startup
 

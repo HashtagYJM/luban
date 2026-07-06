@@ -169,3 +169,26 @@ def test_journal_append_never_raises(mem):
     (mem / "memory").mkdir(exist_ok=True)
     (mem / "memory" / "journal").write_text("not a dir", encoding="utf-8")
     memory.journal_append("must not raise")  # swallowed
+
+
+def test_scaffold_creates_enhancements_tracker(tmp_path, monkeypatch):
+    monkeypatch.setattr(memory, "SOUL_PATH", tmp_path / ".luban" / "SOUL.md")
+    monkeypatch.setattr(memory, "MEMORY_DIR", tmp_path / ".luban" / "memory")
+    memory.ensure_scaffold()
+    tracker = tmp_path / ".luban" / "memory" / "enhancements.md"
+    assert tracker.exists()
+    text = tracker.read_text(encoding="utf-8")
+    assert text.startswith("description: Self-improvement tracker")
+    assert "## Open" in text and "## Resolved" in text
+    index = (tmp_path / ".luban" / "memory" / "MEMORY.md").read_text(encoding="utf-8")
+    assert "- [enhancements] Self-improvement tracker" in index
+
+
+def test_scaffold_never_overwrites_tracker(tmp_path, monkeypatch):
+    monkeypatch.setattr(memory, "SOUL_PATH", tmp_path / ".luban" / "SOUL.md")
+    monkeypatch.setattr(memory, "MEMORY_DIR", tmp_path / ".luban" / "memory")
+    memory.ensure_scaffold()
+    tracker = tmp_path / ".luban" / "memory" / "enhancements.md"
+    tracker.write_text("MY FIELD NOTES", encoding="utf-8")
+    memory.ensure_scaffold()
+    assert tracker.read_text(encoding="utf-8") == "MY FIELD NOTES"

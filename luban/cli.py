@@ -164,6 +164,34 @@ def resolve_model(flag_model: str | None, cfg: config_mod.Config) -> str:
     return flag_model or cfg.model or client_mod.DEFAULT_MODEL
 
 
+def version_nudge() -> str:
+    """One line when the installed luban version changed since the last run.
+
+    State lives in a dotfile so the memory globs (*.md) never see it. Never
+    raises — a broken state file just means no nudge.
+    """
+    state = memory_mod.MEMORY_DIR / ".last-version"
+    try:
+        prev = state.read_text(encoding="utf-8").strip()
+    except OSError:
+        prev = ""
+    if prev == __version__:
+        return ""
+    try:
+        state.parent.mkdir(parents=True, exist_ok=True)
+        state.write_text(__version__, encoding="utf-8")
+    except OSError:
+        return ""
+    if not prev:
+        return ""  # first run ever — nothing to review yet
+    return (
+        f"[luban upgraded {prev} -> {__version__}] Review the Open items in "
+        "~/.luban/memory/enhancements.md against this release's notes "
+        "(github.com/HashtagYJM/luban/releases) and move confirmed-fixed rows "
+        "to Resolved."
+    )
+
+
 def build_agent_config(session: Session, cfg: config_mod.Config, project_root: Path) -> agent.AgentConfig:
     return agent.AgentConfig(
         session.model, session.max_tokens, session.stream, platform=cfg.platform,
@@ -416,6 +444,10 @@ def main(argv: list[str] | None = None) -> None:
     custom_names = setup_custom_tools()
     if cfg.memory_enabled:
         memory_mod.ensure_scaffold()
+        note = version_nudge()
+        if note:
+            ui.print_text(note + "\n")
+            session.pending_context.append(note)
     client = client_mod.get_client()
     ctx = build_tool_context(session, project_root, cfg)
     if ns.cont:

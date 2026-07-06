@@ -361,7 +361,8 @@ def handle_command(line: str, session: Session, client=None, ctx=None, cfg=None)
         catalog = skills_mod.list_skills(session.project or ".")
         if not catalog:
             ui.print_text(
-                "no skills found (put .md files in ~/.luban/skills/ or <project>/.luban/skills/).\n"
+                "no skills found (put <name>.md files or <name>/SKILL.md folders "
+                "in ~/.luban/skills/ or <project>/.luban/skills/).\n"
             )
             return "handled"
         for s in catalog:

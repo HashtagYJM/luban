@@ -143,3 +143,23 @@ def test_write_into_luban_home_still_confirms(env):
         "write_file", {"path": str(home / "note.md"), "content": "x"}, declined
     )
     assert "declined" in out.content and not (home / "note.md").exists()
+
+
+@pytest.mark.parametrize("bad", [
+    "client_local.py ", "client_local.py.", "TOOLS_LOCAL.PY ", "tools_local.py.",
+])
+def test_trailing_dot_space_py_blocked(env, bad):
+    home, proj, ctx = env
+    # read attempt
+    out = tools.run_tool("read_file", {"path": str(home / bad)}, ctx)
+    assert out.is_error
+    # write attempt must not create anything
+    out = tools.run_tool("write_file", {"path": str(home / bad), "content": "x"}, ctx)
+    assert out.is_error
+
+
+@pytest.mark.parametrize("bad", ["audit.jsonl ", "audit.jsonl.", "AUDIT.JSONL "])
+def test_trailing_dot_space_audit_write_blocked(env, bad):
+    home, proj, ctx = env
+    out = tools.run_tool("write_file", {"path": str(home / bad), "content": "x"}, ctx)
+    assert out.is_error

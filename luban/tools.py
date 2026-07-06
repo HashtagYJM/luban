@@ -68,11 +68,15 @@ def resolve_tool_path(root: Path, path: str, writing: bool = False) -> Path:
     target = expanded.resolve()
     if not (target == home or home in target.parents):
         raise ValueError(f"Absolute paths must stay under ~/.luban: {path}")
-    # Case-insensitive: NTFS/macOS resolve TOOLS_LOCAL.PY to tools_local.py.
-    # Only ".py" is blocked because nothing adds ~/.luban to sys.path.
-    if target.suffix.lower() == ".py":
+    # Windows strips trailing dots/spaces from the final component at open time,
+    # so "client_local.py " and "tools_local.py." reach the real .py file while
+    # pathlib keeps the tail lexically. Normalize before classifying. Case-folded:
+    # NTFS/macOS resolve TOOLS_LOCAL.PY to tools_local.py. Only ".py" is blocked
+    # because nothing adds ~/.luban to sys.path.
+    stem_name = target.name.rstrip(" .").lower()
+    if stem_name.endswith(".py"):
         raise ValueError(f"Python files under ~/.luban are off-limits to file tools: {path}")
-    if writing and target.name.lower() == "audit.jsonl":
+    if writing and stem_name == "audit.jsonl":
         raise ValueError(f"The audit log is not writable via file tools: {path}")
     return target
 

@@ -256,10 +256,30 @@ Unlike project memory (per-repo), long-term memory follows *you*. It lives in
 your home directory and is loaded at the start of every session, in every
 project:
 
-- **`~/.luban/SOUL.md`** — luban's identity when working with you: who you
-  are, how it should behave, conventions to always follow. Created with a
-  template on first run; it's your file — edit it freely (luban never
-  rewrites it).
+- **`~/.luban/SOUL.md`** — luban's character and standing behavior: how it
+  should work, conventions to always follow, boundaries it should never
+  cross. This one's *not* about you — it's shareable as-is, a starter a
+  colleague could drop into their own `~/.luban/` verbatim.
+- **`~/.luban/USER.md`** — who you are: name, role, expertise, environment —
+  the personal facts that used to live in SOUL.md. Both files are created
+  with a template on first run and are yours to edit freely; luban also
+  reads and can update USER.md itself via the file tools as it learns things
+  about you, with the usual diff-and-confirm on every write. luban never
+  rewrites SOUL.md on its own.
+
+Both templates now guide with HTML comments (`<!-- like this -->`) instead of
+placeholder headings, so an untouched file doesn't render as a wall of empty
+sections in a markdown editor. And an untouched template isn't injected into
+the system prompt at all — no "blank slate" noise on a fresh install. A
+section only shows up once you've actually written something into it.
+
+> **Upgrading from before USER.md?** Your existing `SOUL.md` is left exactly
+> as it is — nothing is deleted or migrated automatically. A fresh `USER.md`
+> is scaffolded alongside it on your next run. Move any personal facts you'd
+> written into SOUL.md over to USER.md whenever it's convenient, or ask luban
+> to do it for you — it'll propose the split as a diff for you to confirm,
+> same as any other file edit.
+
 - **`~/.luban/memory/`** — durable facts, one small `.md` file each, with an
   always-loaded one-line index in `MEMORY.md`.
 - **`~/.luban/memory/journal/`** — daily notes; today's and yesterday's are

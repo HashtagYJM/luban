@@ -1,6 +1,9 @@
 # Company-specific client provider — NEVER commit
 luban/client_local.py
 
+# User-owned custom tools — lives in ~/.luban/, never commit a copy
+tools_local.py
+
 # Internal design docs / plans — kept locally, not published
 docs/superpowers/
 

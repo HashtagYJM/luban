@@ -90,7 +90,10 @@ def test_exit_journal_writes_when_never_flushed(tmp_path):
     assert sess.journaled is False
     cli.exit_journal(sess, _cfg(), tmp_path)
     files = list((tmp_path / "memory" / "journal").glob("*.md"))
-    assert files and "proj" in files[0].read_text(encoding="utf-8")
+    assert files
+    # exit_journal uses the basename of project_root, not session.project
+    text = files[0].read_text(encoding="utf-8")
+    assert f"[{tmp_path.name}]" in text
 
 
 def test_flush_failure_does_not_set_flag_or_crash(tmp_path):
@@ -104,3 +107,32 @@ def test_flush_failure_does_not_set_flag_or_crash(tmp_path):
 
 def test_hygiene_mentions_journal_vs_facts():
     assert "The journal is for what happened; facts are for what stays true." in memory._HYGIENE
+
+
+def test_exit_journal_uses_project_basename(tmp_path):
+    sess = cli.Session(model="m", max_tokens=100, auto=True, stream=False,
+                       messages=[{"role": "user", "content": "hi"}],
+                       project="/Users/alice/Developer/luban", title="t")
+    cli.exit_journal(sess, config_mod.Config(platform="mac"),
+                     "/Users/alice/Developer/luban")
+    files = list((tmp_path / "memory" / "journal").glob("*.md"))
+    assert files, "expected journal file to be created"
+    text = files[0].read_text(encoding="utf-8")
+    assert "[luban]" in text and "/Users/alice" not in text
+
+
+def test_compact_resets_journaled_flag():
+    # after a compaction reseed, journaled must be False so the next segment journals
+    sess = cli.Session(model="m", max_tokens=100, auto=True, stream=False,
+                       messages=[{"role": "user", "content": "hi"}], project="proj", title="t")
+    sess.journaled = True
+    # minimal fake client whose create returns a text summary
+    import types
+    class _C:
+        def __init__(self): self.messages = self
+        def create(self, **kw):
+            return types.SimpleNamespace(
+                content=[types.SimpleNamespace(type="text", text="a summary")],
+                stop_reason="end_turn")
+    cli.compact_session(sess, _C())  # 2-arg form: no flush, just summarize+reseed
+    assert sess.journaled is False

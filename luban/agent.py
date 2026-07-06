@@ -87,11 +87,19 @@ def run_turn(client, config: AgentConfig, messages: list[dict], ctx, on_text, on
         messages.append({"role": "assistant", "content": client_mod.message_to_blocks(msg)})
         if msg.stop_reason != "tool_use":
             return messages
+        offered = {
+            t["name"] for t in (config.tools if config.tools is not None else tools_mod.TOOLS)
+        }
         results = []
         for block in msg.content:
             if block.type != "tool_use":
                 continue
-            out = tools_mod.run_tool(block.name, block.input, ctx)
+            if block.name not in offered:
+                out = tools_mod.ToolResult(
+                    f"Tool not available in this turn: {block.name}", is_error=True
+                )
+            else:
+                out = tools_mod.run_tool(block.name, block.input, ctx)
             results.append({
                 "type": "tool_result",
                 "tool_use_id": block.id,

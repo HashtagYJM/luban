@@ -248,7 +248,7 @@ def exit_journal(session: Session, cfg: config_mod.Config, project_root: Path) -
     if not cfg.memory_enabled or not session.messages or session.journaled:
         return
     memory_mod.journal_append(
-        f"[{session.project or Path(project_root).name}] '{session.title or 'untitled'}' — "
+        f"[{Path(project_root).name}] '{session.title or 'untitled'}' — "
         f"{len(session.messages)} messages ({session.model})"
     )
 
@@ -289,6 +289,7 @@ def compact_session(session: Session, client, ctx=None, cfg=None) -> None:
     session.session_id = ""
     session.created = ""
     session.title = f"compacted: {old_title}"[:60] if old_title else ""
+    session.journaled = False  # the post-compaction segment can journal again
     save_session(session)  # mint the new file now so the seed survives a crash
     ui.print_text(f"✓ compacted — new session started (previous saved as {old_id})\n")
 

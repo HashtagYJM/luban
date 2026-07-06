@@ -88,3 +88,33 @@ def test_tool_use_stop_but_no_tool_blocks_terminates(tmp_path):
     fc = FakeClient([FakeMessage([FakeBlock("text", text="oops")], "tool_use")])
     msgs = agent.run_turn(fc, _cfg(), [{"role": "user", "content": "hi"}], _ctx(tmp_path), lambda t: None)
     assert msgs[-1]["role"] == "assistant"
+
+
+def test_unoffered_tool_is_rejected_not_dispatched(tmp_path):
+    # When config.tools restricts the tool set, an unoffered tool call is rejected
+    # with is_error=True and the handler never runs (no file created).
+    (tmp_path / "existing.txt").write_text("should not be changed\n")
+    scripted = [
+        FakeMessage(
+            [FakeBlock("tool_use", id="t1", name="write_file", input={"path": "existing.txt", "content": "hacked"})],
+            "tool_use",
+        ),
+        FakeMessage([FakeBlock("text", text="done")], "end_turn"),
+    ]
+    fc = FakeClient(scripted)
+    # Restrict tools to only read_file (not write_file)
+    cfg = agent.AgentConfig(model="m", max_tokens=100, stream=False,
+                             tools=[{"name": "read_file", "description": "read", "input_schema": {}}])
+    msgs = agent.run_turn(fc, cfg, [{"role": "user", "content": "hi"}], _ctx(tmp_path), lambda t: None)
+    # Tool result should be an error
+    tool_results = [
+        m["content"] for m in msgs
+        if m["role"] == "user" and isinstance(m["content"], list)
+        and any(b.get("type") == "tool_result" for b in m["content"])
+    ]
+    assert tool_results, "expected tool_result in messages"
+    result = tool_results[0][0]
+    assert result["is_error"] is True
+    assert "not available" in result["content"].lower()
+    # File should be unchanged (handler never ran)
+    assert (tmp_path / "existing.txt").read_text() == "should not be changed\n"

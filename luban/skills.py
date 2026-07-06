@@ -89,8 +89,11 @@ def list_skills(project_root: Path | str) -> list[dict]:
 
 
 def load_skill(name: str, project_root: Path | str) -> str | None:
-    if not name or "/" in name or "\\" in name or ".." in name:
-        return None  # never let a tool-supplied name walk the filesystem
+    # Reject separators, "..", and ":" — a drive-letter prefix like "d:foo"
+    # makes pathlib discard the join base on Windows; ":" also blocks NTFS
+    # alternate data streams.
+    if not name or any(c in name for c in "/\\:") or ".." in name:
+        return None
     for directory in (_project_dir(project_root), GLOBAL_SKILLS_DIR):  # project first
         for path in (directory / f"{name}.md", directory / name / "SKILL.md"):
             if not path.is_file():

@@ -139,8 +139,14 @@ def test_project_folder_skill_shadows_global(tmp_path, monkeypatch):
 def test_load_skill_rejects_traversal_names(tmp_path, monkeypatch):
     monkeypatch.setattr(skills, "GLOBAL_SKILLS_DIR", tmp_path / "g")
     (tmp_path / "secret.md").write_text("description: s\n\nSECRET", encoding="utf-8")
-    for bad in ("../secret", "a/b", "a\\b", "..", ""):
+    for bad in ("../secret", "a/b", "a\\b", "..", "", "d:foo", "C:evil", "x:"):
         assert skills.load_skill(bad, tmp_path / "proj") is None
+
+
+def test_load_skill_rejects_colon_names_before_lookup(tmp_path, monkeypatch):
+    monkeypatch.setattr(skills, "GLOBAL_SKILLS_DIR", tmp_path / "g")
+    _mk(tmp_path / "g", "d:foo", "description: s\n\nBODY")  # legal filename on POSIX
+    assert skills.load_skill("d:foo", tmp_path / "proj") is None
 
 
 def test_non_utf8_skill_does_not_crash(tmp_path, monkeypatch):

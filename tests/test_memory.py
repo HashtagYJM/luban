@@ -8,6 +8,7 @@ from luban import memory
 @pytest.fixture
 def mem(tmp_path, monkeypatch):
     monkeypatch.setattr(memory, "SOUL_PATH", tmp_path / "SOUL.md")
+    monkeypatch.setattr(memory, "USER_PATH", tmp_path / "USER.md")
     monkeypatch.setattr(memory, "MEMORY_DIR", tmp_path / "memory")
     return tmp_path
 
@@ -38,6 +39,11 @@ def test_read_soul_capped(mem):
 def test_read_soul_binary_never_crashes(mem):
     (mem / "SOUL.md").write_bytes(b"\xff\xfe caf\xe9")
     assert isinstance(memory.read_soul(), str)
+
+
+def test_read_user_binary_never_crashes(mem):
+    (mem / "USER.md").write_bytes(b"\xff\xfe user \x00 facts")
+    assert isinstance(memory.read_user(), str)
 
 
 def test_read_index(mem):
@@ -173,6 +179,7 @@ def test_journal_append_never_raises(mem):
 
 def test_scaffold_creates_enhancements_tracker(tmp_path, monkeypatch):
     monkeypatch.setattr(memory, "SOUL_PATH", tmp_path / ".luban" / "SOUL.md")
+    monkeypatch.setattr(memory, "USER_PATH", tmp_path / ".luban" / "USER.md")
     monkeypatch.setattr(memory, "MEMORY_DIR", tmp_path / ".luban" / "memory")
     memory.ensure_scaffold()
     tracker = tmp_path / ".luban" / "memory" / "enhancements.md"
@@ -186,6 +193,7 @@ def test_scaffold_creates_enhancements_tracker(tmp_path, monkeypatch):
 
 def test_scaffold_never_overwrites_tracker(tmp_path, monkeypatch):
     monkeypatch.setattr(memory, "SOUL_PATH", tmp_path / ".luban" / "SOUL.md")
+    monkeypatch.setattr(memory, "USER_PATH", tmp_path / ".luban" / "USER.md")
     monkeypatch.setattr(memory, "MEMORY_DIR", tmp_path / ".luban" / "memory")
     memory.ensure_scaffold()
     tracker = tmp_path / ".luban" / "memory" / "enhancements.md"

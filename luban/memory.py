@@ -1,4 +1,4 @@
-"""Long-term memory — SOUL.md identity, fact store, and daily journal.
+"""Long-term memory — SOUL.md + USER.md identity, fact store, and daily journal.
 
 Standard library only. All memory lives under the user's home (~/.luban),
 never in the project: a cloned repo must not be able to plant global memory.

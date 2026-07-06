@@ -10,7 +10,7 @@ def test_tools_schema_names():
     names = {t["name"] for t in tools.TOOLS}
     assert names == {
         "list_dir", "glob", "grep", "read_file",
-        "write_file", "edit_file", "run_command", "load_skill",
+        "write_file", "edit_file", "run_command", "load_skill", "sessions",
         "remember", "recall", "forget", "journal",
     }
     for t in tools.TOOLS:

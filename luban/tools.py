@@ -11,11 +11,12 @@ from typing import Callable
 
 from luban import memory as memory_mod
 from luban import permissions as permissions_mod
+from luban import sessions as sessions_mod
 from luban import skills as skills_mod
 
 MAX_OUTPUT = 20000  # chars; truncate large tool output to protect context
 MAX_COMMAND_TIMEOUT = 600  # seconds; cap model-supplied run_command timeouts
-READ_ONLY_TOOLS = {"list_dir", "glob", "grep", "read_file", "load_skill", "recall"}
+READ_ONLY_TOOLS = {"list_dir", "glob", "grep", "read_file", "load_skill", "recall", "sessions"}
 
 
 @dataclass
@@ -238,6 +239,21 @@ def _load_skill(inp: dict, ctx: ToolContext) -> ToolResult:
     return ToolResult(_truncate(f"[skill: {name}]\n{body}"))
 
 
+def _sessions(inp: dict, ctx: ToolContext) -> ToolResult:
+    all_projects = inp.get("all") is True
+    heads = sessions_mod.list_sessions(None if all_projects else str(ctx.project_root))
+    if not heads:
+        return ToolResult("(no saved sessions)")
+    lines = []
+    for h in heads:
+        prefix = f"[{Path(h['project']).name}] " if all_projects else ""
+        lines.append(
+            f'{prefix}{h["id"]}  {h["updated"]}  {h["model"]}  '
+            f'"{h["title"]}"  ({h["message_count"]} msgs)'
+        )
+    return ToolResult(_truncate("\n".join(lines)))
+
+
 def _remember(inp: dict, ctx: ToolContext) -> ToolResult:
     name = inp.get("name", "")
     description = inp.get("description", "")
@@ -292,6 +308,7 @@ _DISPATCH = {
     "edit_file": _edit_file,
     "run_command": _run_command,
     "load_skill": _load_skill,
+    "sessions": _sessions,
     "remember": _remember,
     "forget": _forget,
     "recall": _recall,
@@ -382,6 +399,18 @@ TOOLS = [
             "type": "object",
             "properties": {"name": {"type": "string"}},
             "required": ["name"],
+        },
+    },
+    {
+        "name": "sessions",
+        "description": "List saved conversation sessions for this project "
+        "(newest first). Set all=true to include every project. Full transcripts "
+        "are JSON files under ~/.luban/sessions/, readable with read_file.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "all": {"type": "boolean", "description": "include all projects, default false"}
+            },
         },
     },
     {

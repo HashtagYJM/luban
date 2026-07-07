@@ -133,12 +133,21 @@ def _grep(inp: dict, ctx: ToolContext) -> ToolResult:
         rx = re.compile(inp["pattern"])
     except re.error as exc:
         return ToolResult(f"Bad regex: {exc}", is_error=True)
-    base = resolve_in_root(root, inp.get("path", "."))
+    try:
+        base = resolve_in_root(root, inp.get("path", "."))
+    except ValueError as exc:
+        return ToolResult(str(exc), is_error=True)
+    if not base.exists():
+        # A silent "(no matches)" for an unsearchable path reads as a genuine
+        # empty result and misleads the agent — error like read_file does (E4a).
+        return ToolResult(f"Path not found: {inp.get('path', '.')}", is_error=True)
     files = [base] if base.is_file() else [p for p in base.rglob("*") if p.is_file()]
     hits = []
     for f in files:
         try:
-            for n, line in enumerate(f.read_text().splitlines(), 1):
+            for n, line in enumerate(
+                f.read_text(encoding="utf-8", errors="replace").splitlines(), 1
+            ):
                 if rx.search(line):
                     hits.append(f"{f.relative_to(root)}:{n}: {line.strip()}")
         except (UnicodeDecodeError, OSError, ValueError):
@@ -146,25 +155,41 @@ def _grep(inp: dict, ctx: ToolContext) -> ToolResult:
     return ToolResult(_truncate("\n".join(hits) or "(no matches)"))
 
 
+def _atomic_write_text(target: Path, text: str) -> None:
+    """Write UTF-8 to a temp file then os.replace over the target.
+
+    Always UTF-8 (never the platform default codec — cp1252 on Windows can't
+    encode arrows/em-dashes/emoji and would raise UnicodeEncodeError). Because we
+    write a temp and rename, a failed encode can never leave the real file
+    truncated to 0 bytes. Raises on failure; callers turn that into an is_error.
+    """
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp = target.with_name(target.name + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, target)
+
+
 def _write_file(inp: dict, ctx: ToolContext) -> ToolResult:
     try:
         target = resolve_tool_path(ctx.project_root, inp["path"], writing=True)
     except (ValueError, KeyError) as exc:
         return ToolResult(f"Bad request: {exc}", is_error=True)
-    old = target.read_text() if target.exists() else ""
+    old = target.read_text(encoding="utf-8", errors="replace") if target.exists() else ""
     new = inp["content"]
     ctx.render_diff(inp["path"], old, new)
     if not ctx.confirm(f"Write {inp['path']}?"):
         return ToolResult("User declined the write.")
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(new)
+    try:
+        _atomic_write_text(target, new)
+    except (OSError, ValueError, UnicodeError) as exc:
+        return ToolResult(f"Could not write {inp['path']}: {exc}", is_error=True)
     return ToolResult(f"Wrote {inp['path']} ({len(new)} chars).")
 
 
 def _edit_file(inp: dict, ctx: ToolContext) -> ToolResult:
     try:
         target = resolve_tool_path(ctx.project_root, inp["path"], writing=True)
-        old = target.read_text()
+        old = target.read_text(encoding="utf-8", errors="replace")
     except (ValueError, KeyError) as exc:
         return ToolResult(f"Bad request: {exc}", is_error=True)
     except FileNotFoundError:
@@ -181,7 +206,10 @@ def _edit_file(inp: dict, ctx: ToolContext) -> ToolResult:
     ctx.render_diff(inp["path"], old, new)
     if not ctx.confirm(f"Edit {inp['path']}?"):
         return ToolResult("User declined the edit.")
-    target.write_text(new)
+    try:
+        _atomic_write_text(target, new)
+    except (OSError, ValueError, UnicodeError) as exc:
+        return ToolResult(f"Could not edit {inp['path']}: {exc}", is_error=True)
     return ToolResult(f"Edited {inp['path']}.")
 
 

@@ -65,7 +65,7 @@ def write_default(path: Path = CONFIG_PATH) -> str:
     """Create the config file with the detected platform. Returns the platform."""
     plat = detect_platform()
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(_default_text(plat))
+    path.write_text(_default_text(plat), encoding="utf-8")
     return plat
 
 

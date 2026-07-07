@@ -238,8 +238,22 @@ def forget(name: str) -> str:
     return f"Forgot '{name}'."
 
 
-def recall(query: str) -> str:
+def _recall_match(query: str, *fields: str) -> bool:
+    """Match if the whole query is a substring, OR every whitespace token of the
+    query appears somewhere in the fields. Token matching lets multi-word queries
+    like "coding style" find a fact slugged "yjm-coding-style" whose body mentions
+    both words, without needing the exact contiguous phrase or slug."""
+    hay = " ".join(fields).lower()
     q = query.lower().strip()
+    if not q:
+        return True
+    if q in hay:
+        return True
+    tokens = q.split()
+    return bool(tokens) and all(t in hay for t in tokens)
+
+
+def recall(query: str) -> str:
     hits: list[str] = []
     if MEMORY_DIR.is_dir():
         for p in sorted(MEMORY_DIR.glob("*.md")):
@@ -249,7 +263,7 @@ def recall(query: str) -> str:
                 text = p.read_text(encoding="utf-8", errors="replace")
             except OSError:
                 continue
-            if q in p.stem.lower() or q in text.lower():
+            if _recall_match(query, p.stem, text):
                 hits.append(f"[{p.stem}]\n{text.strip()}")
     journal_dir = MEMORY_DIR / "journal"
     if journal_dir.is_dir():
@@ -258,7 +272,9 @@ def recall(query: str) -> str:
                 lines = p.read_text(encoding="utf-8", errors="replace").splitlines()
             except OSError:
                 continue
-            hits.extend(f"{p.stem}: {ln.strip()}" for ln in lines if q in ln.lower())
+            hits.extend(
+                f"{p.stem}: {ln.strip()}" for ln in lines if _recall_match(query, ln)
+            )
     out = "\n\n".join(hits) or "(no matches)"
     if len(out) > RECALL_MAX:
         out = out[:RECALL_MAX] + "\n[recall truncated]"

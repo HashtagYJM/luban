@@ -321,6 +321,34 @@ in `~/.luban/config.toml` turns the whole feature off.
 > repo could try to talk the model into planting bad "facts". The confirm
 > plus the audit log is your guard.
 
+### The mental model (worth understanding before you rely on it)
+
+These three stores aren't redundant — they're three levels of compression, each
+for a different kind of information:
+
+- **Sessions** are the full, verbatim transcript of a conversation — the raw
+  record. Kept on disk, re-readable, but *not* injected into future prompts.
+- **The journal** is a lightweight diary: a couple of timestamped lines per
+  session about what happened. Only today's and yesterday's are loaded, so it
+  naturally fades — it's for *what happened*.
+- **Facts** are the few durable truths distilled out of all that — a preference,
+  a standing decision, an environment truth. They're indexed and injected into
+  every future session, so the bar is high: it's for *what stays true*.
+
+The golden rule that keeps memory healthy: **a diary entry is not a fact.**
+Session narrative ("we discussed X today") belongs in the journal and the
+transcript; only things still true in a month and beyond this one project should
+become facts. Over-saving is what makes an agent's memory rot — an empty fact
+store is healthier than a noisy one. That's why compaction only ever journals,
+and durable facts are saved only by an explicit `remember` or during `/reflect`.
+
+luban's fact store follows the Markdown "LLM wiki" pattern (atomic one-fact
+files + a machine-maintained index, à la Karpathy) — plain text, greppable,
+git-able, no vector database. If you want to run your own memory well — or set up
+a shared starter for your team — see
+**[docs/memory-architecture.md](docs/memory-architecture.md)** for the full
+model and maintenance practices.
+
 ## Audit log
 
 Every tool call (including denials) is appended to `~/.luban/audit.jsonl` —

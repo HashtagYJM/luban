@@ -62,10 +62,21 @@ def resolve_tool_path(root: Path, path: str, writing: bool = False) -> Path:
     (client_local.py holds credentials, tools_local.py executes at startup)
     are off-limits entirely, and the audit log is never writable.
     """
-    expanded = Path(path).expanduser()
+    home = LUBAN_HOME.resolve()
+    # The documented ~/.luban alias must point at the (possibly relocated) luban
+    # home — NOT the OS home. Path.expanduser() sends ~ to the OS home, so on a
+    # box where LUBAN_HOME is relocated (e.g. a OneDrive folder) the model's
+    # natural "~/.luban/…" paths would resolve outside the jail and be rejected,
+    # leaving luban unable to edit its own memory/tracker/config (E10). Map the
+    # alias to LUBAN_HOME first; everything else uses normal ~ expansion.
+    norm = str(path).replace("\\", "/")
+    if norm == "~/.luban" or norm.startswith("~/.luban/"):
+        rest = norm[len("~/.luban"):].lstrip("/")
+        expanded = home / rest if rest else home
+    else:
+        expanded = Path(path).expanduser()
     if not expanded.is_absolute():
         return resolve_in_root(root, path)
-    home = LUBAN_HOME.resolve()
     target = expanded.resolve()
     if not (target == home or home in target.parents):
         raise ValueError(f"Absolute paths must stay under ~/.luban: {path}")

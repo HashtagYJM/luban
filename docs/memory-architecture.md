@@ -183,12 +183,14 @@ the system healthy:
    real facts out of the journal, prune stale ones, and catch contradictions.
    Do it occasionally, not every turn.
 6. **Cross-link with `[[wikilinks]]`.** When one fact refers to another, link it
-   by name (`[[some-other-note]]`). Those links are the edges of a knowledge
-   graph — they make the store navigable, and they cost nothing but a
-   convention. (They also mean that if you ever view `~/.luban/memory/` in a
-   graph-capable markdown editor, you get backlinks and a graph view for free —
-   the files are already in that shape. No app is required to *use* the memory;
-   one just makes it prettier to browse.)
+   by name (`[[some-other-note]]`). Today these are a **convention, not a resolved
+   link**: luban stores and shows them, but `recall` matches text, it does not yet
+   *follow* a `[[slug]]` to pull in the linked note (resolving them is planned).
+   Their value right now is twofold — they document the relationship for a human
+   reader, and if you point a graph-capable markdown editor (Obsidian, Logseq) at
+   `~/.luban/memory/` you get backlinks and a graph view for free, because the
+   files are already in that shape. No app is required to *use* the memory; one
+   just makes it navigable to browse.
 
 ---
 

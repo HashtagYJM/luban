@@ -4,6 +4,14 @@ Release notes, newest first. Bundled inside the package so luban can show
 "what's new" and reconcile its enhancement tracker offline, with no network.
 Each entry tags the tracker IDs (E-/F-) it resolves.
 
+## v0.5.7 — file tools reach a relocated home
+
+- Fixed: with `LUBAN_HOME` set to a synced folder (e.g. OneDrive), the file tools
+  rejected `~/.luban/…` paths because `~` expanded to the OS home instead of the
+  relocated home — so luban couldn't edit its own memory, tracker, config, or
+  skills on a synced setup. The `~/.luban` alias now resolves to `LUBAN_HOME`.
+  (E10 — a regression from v0.5.5)
+
 ## v0.5.6 — Windows write-crash fix + offline upgrade hook
 
 - Fixed a crash when writing files containing non-Latin-1 characters (arrows,

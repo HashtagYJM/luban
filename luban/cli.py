@@ -10,6 +10,7 @@ from pathlib import Path
 
 from luban import __version__, agent, config as config_mod, paths, tools, ui
 from luban import audit as audit_mod
+from luban import changelog
 from luban import client as client_mod
 from luban import custom_tools as custom_tools_mod
 from luban import memory as memory_mod
@@ -170,31 +171,56 @@ def resolve_model(flag_model: str | None, cfg: config_mod.Config) -> str:
     return flag_model or cfg.model or client_mod.DEFAULT_MODEL
 
 
-def version_nudge() -> str:
-    """One line when the installed luban version changed since the last run.
+def detect_upgrade() -> tuple[str | None, str]:
+    """Compare the installed version against the last one luban ran as.
 
-    State lives in a dotfile so the memory globs (*.md) never see it. Never
-    raises — a broken state file just means no nudge.
+    Returns (previous_version_or_None, current). None means first run ever (or no
+    recorded version) — callers suppress the banner then. The `.last-version`
+    dotfile lives at the luban-home ROOT (not under memory/) so upgrade detection
+    works even with memory disabled; a legacy dotfile under memory/ is honored
+    once for a seamless transition. Never raises.
     """
-    state = memory_mod.MEMORY_DIR / ".last-version"
+    home = paths.luban_home()
+    state = home / ".last-version"
+    legacy = memory_mod.MEMORY_DIR / ".last-version"
+    prev: str | None = None
     try:
-        prev = state.read_text(encoding="utf-8", errors="replace").strip()
+        prev = state.read_text(encoding="utf-8", errors="replace").strip() or None
     except OSError:
-        prev = ""
-    if prev == __version__:
-        return ""
+        prev = None
+    if prev is None:  # migrate from the old memory/ location if present
+        try:
+            prev = legacy.read_text(encoding="utf-8", errors="replace").strip() or None
+        except OSError:
+            prev = None
     try:
-        state.parent.mkdir(parents=True, exist_ok=True)
+        home.mkdir(parents=True, exist_ok=True)
         state.write_text(__version__, encoding="utf-8")
     except OSError:
-        return ""
-    if not prev:
-        return ""  # first run ever — nothing to review yet
+        pass
+    return prev, __version__
+
+
+def upgrade_banner(prev: str, section: str) -> str:
+    """Deterministic 'what's new' text from the bundled changelog (no model call,
+    not gated on memory — every colleague sees it)."""
+    header = f"[luban upgraded {prev} → {__version__}] What's new:"
+    if section:
+        return f"{header}\n{section}"
+    return f"{header}\n  (see the release notes for details)"
+
+
+def reconcile_directive(prev: str, section: str) -> str:
+    """Injected into the next turn so luban reconciles the enhancement tracker
+    against the release — using local changelog data, no network."""
+    notes = section or "(no bundled notes for this version)"
     return (
-        f"[luban upgraded {prev} -> {__version__}] Review the Open items in "
-        "~/.luban/memory/enhancements.md against this release's notes "
-        "(github.com/HashtagYJM/luban/releases) and move confirmed-fixed rows "
-        "to Resolved."
+        f"luban was just upgraded from {prev} to {__version__}. Here is what "
+        f"changed in this release:\n{notes}\n\n"
+        "Reconcile the Open items in ~/.luban/memory/enhancements.md against these "
+        "changes: for each Open row now addressed by this release, move it to the "
+        "Resolved section (note the version it was fixed in). Leave the rest. Then "
+        "briefly tell me what you moved."
     )
 
 
@@ -528,12 +554,15 @@ def main(argv: list[str] | None = None) -> None:
         project=str(project_root),
     )
     custom_names = setup_custom_tools()
+    prev, cur = detect_upgrade()  # runs regardless of memory (dotfile at home root)
+    upgraded = bool(prev and prev != cur)
+    section = changelog.section_for(cur) if upgraded else ""
+    if upgraded:
+        ui.print_text(upgrade_banner(prev, section) + "\n")  # everyone sees this
     if cfg.memory_enabled:
-        memory_mod.ensure_scaffold()
-        note = version_nudge()
-        if note:
-            ui.print_text(note + "\n")
-            session.pending_context.append(note)
+        memory_mod.ensure_scaffold()  # guarantees enhancements.md exists to reconcile
+        if upgraded:
+            session.pending_context.append(reconcile_directive(prev, section))
     client = client_mod.get_client()
     ctx = build_tool_context(session, project_root, cfg)
     if ns.cont:

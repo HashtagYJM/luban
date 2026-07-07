@@ -219,7 +219,10 @@ a security boundary. It keeps ordinary edits confined to the folder you pointed
 luban at and makes every change show up as a diff you confirm. `run_command` is
 the deliberate escape hatch: it can do anything you could do from a shell,
 anywhere on the machine — same as it always could — behind its own confirm (or
-a permission rule).
+a permission rule). When a file tool *is* pointed outside its scope (a path that
+escapes the project root, or one that doesn't exist), it now returns a clear
+error rather than a misleading empty result, so the agent isn't led to a wrong
+"nothing found" conclusion.
 
 File tools can also reach **`~/.luban`** — memory, skills, `config.toml` — so
 luban maintains its own files the same visible-diff, confirm-first way instead
@@ -308,10 +311,15 @@ occasionally to consolidate: it promotes journal items into facts and prunes
 stale ones, with your confirmation on every change.
 
 When luban notices its own installed version changed since the last run, it
-prints a one-line nudge asking the agent to reconcile the Open rows in
-`enhancements.md` against that release's notes and move the confirmed-fixed
-ones to Resolved — so field-reported issues get revisited on upgrade instead
-of sitting there forgotten.
+prints a **"what's new" banner** — read straight from a `CHANGELOG.md` bundled
+inside the package, so it works fully offline with no network — and then, on
+your next message, reconciles the Open rows in `~/.luban/memory/enhancements.md`
+against that release: anything the release fixed is moved to Resolved. So
+field-reported issues get revisited automatically on every upgrade instead of
+sitting there forgotten. The banner shows for everyone (even with memory
+disabled); the tracker reconciliation runs when memory is on. This is a default
+feature — a colleague who never touched the tracker still gets it, scaffolded on
+first run.
 
 Trust it? Cut the prompts with permission rules:
 `allow = ["remember", "journal"]`. Want none of it? `memory_enabled = false`

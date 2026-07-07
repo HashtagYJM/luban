@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "luban"
-version = "0.5.5"
+version = "0.5.6"
 description = "A small terminal coding agent."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -15,3 +15,6 @@ luban = "luban.cli:main"
 
 [tool.setuptools]
 packages = ["luban"]
+
+[tool.setuptools.package-data]
+luban = ["CHANGELOG.md"]

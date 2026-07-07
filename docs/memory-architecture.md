@@ -144,7 +144,10 @@ a wiki drifts out of sync with itself.
 
 - **Portable and inspectable.** It's just text. You can read it, `grep` it, diff
   it, put it in git, or hand it to a colleague. Nothing is hidden in an
-  embedding you can't audit.
+  embedding you can't audit. (Because it's just a folder, you can relocate the
+  whole store to a cloud-synced directory with the `LUBAN_HOME` environment
+  variable — see the README's "Sync across devices" section — and your memory
+  follows you between machines.)
 - **Zero infrastructure.** No vector store, no embedding model, no network — which
   matters a great deal in a locked-down environment. Retrieval is by *name* via
   the index + `recall`, not by similarity search.

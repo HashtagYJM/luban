@@ -12,9 +12,11 @@ import re
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
-SOUL_PATH = Path.home() / ".luban" / "SOUL.md"
-USER_PATH = Path.home() / ".luban" / "USER.md"
-MEMORY_DIR = Path.home() / ".luban" / "memory"
+from luban import paths
+
+SOUL_PATH = paths.luban_home() / "SOUL.md"
+USER_PATH = paths.luban_home() / "USER.md"
+MEMORY_DIR = paths.luban_home() / "memory"
 
 SOUL_MAX = 4000
 USER_MAX = 2000

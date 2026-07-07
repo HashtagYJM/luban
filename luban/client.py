@@ -13,11 +13,13 @@ import importlib.util
 import os
 import types
 from pathlib import Path
+
+from luban import paths
 from typing import Any
 
 DEFAULT_MODEL = "claude-sonnet-5"
 
-USER_CLIENT_PATH = Path.home() / ".luban" / "client_local.py"
+USER_CLIENT_PATH = paths.luban_home() / "client_local.py"
 
 _SETUP_HINT = (
     "No client_local.py found. Create ~/.luban/client_local.py with a "

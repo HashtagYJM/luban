@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Callable
 
 from luban import memory as memory_mod
+from luban import paths
 from luban import permissions as permissions_mod
 from luban import sessions as sessions_mod
 from luban import skills as skills_mod
@@ -49,7 +50,7 @@ def resolve_in_root(root: Path, path: str) -> Path:
     return target
 
 
-LUBAN_HOME = Path.home() / ".luban"  # call-time resolution (tests monkeypatch this)
+LUBAN_HOME = paths.luban_home()  # single resolved home (tests monkeypatch this)
 
 
 def resolve_tool_path(root: Path, path: str, writing: bool = False) -> Path:

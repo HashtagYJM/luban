@@ -11,7 +11,9 @@ import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
-CONFIG_DIR = Path.home() / ".luban"
+from luban import paths
+
+CONFIG_DIR = paths.luban_home()
 CONFIG_PATH = CONFIG_DIR / "config.toml"
 
 _VALID_PLATFORMS = {"windows", "mac", "linux"}
@@ -37,6 +39,10 @@ def detect_platform() -> str:
 def _default_text(plat: str) -> str:
     return (
         "# ~/.luban/config.toml — luban settings (edit me)\n"
+        "# To move this whole ~/.luban folder (e.g. to a OneDrive folder synced\n"
+        "# across devices), set the LUBAN_HOME environment variable — not a key\n"
+        "# here (this file lives inside the folder it would relocate). Quickest:\n"
+        "#   luban --set-home <path>\n"
         f'platform = "{plat}"   # windows | mac | linux\n'
         "\n"
         "# Default model (the --model flag wins). Uncomment to override the built-in:\n"

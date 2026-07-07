@@ -9,7 +9,9 @@ import json
 from datetime import datetime
 from pathlib import Path
 
-AUDIT_PATH = Path.home() / ".luban" / "audit.jsonl"
+from luban import paths
+
+AUDIT_PATH = paths.luban_home() / "audit.jsonl"
 
 
 def log(entry: dict, path: Path | None = None) -> None:

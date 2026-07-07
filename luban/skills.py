@@ -18,7 +18,9 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-GLOBAL_SKILLS_DIR = Path.home() / ".luban" / "skills"
+from luban import paths
+
+GLOBAL_SKILLS_DIR = paths.luban_home() / "skills"
 
 _DESC_PREFIX = "description:"
 _DESC_MAX = 80

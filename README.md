@@ -379,6 +379,40 @@ memory_enabled = true
 is **`--model` flag > `model` in config.toml > luban's built-in default** —
 leave it unset (or commented out) to fall back to the built-in.
 
+## Sync across devices (`LUBAN_HOME`)
+
+By default everything lives under `~/.luban`. To keep your memory, skills, and
+config in sync across machines, point that whole folder at a cloud-synced
+location with the **`LUBAN_HOME`** environment variable and let OneDrive/Dropbox
+do the syncing:
+
+```
+luban --set-home "C:\Users\you\OneDrive\luban"   # Windows: persists it for you
+# or set it yourself:
+#   Windows:  setx LUBAN_HOME "C:\Users\you\OneDrive\luban"   (new terminal after)
+#   mac/Linux: export LUBAN_HOME="$HOME/OneDrive/luban"       (in your shell profile)
+```
+
+Point every device at the **same** synced folder. luban resolves the home once
+per run and routes everything through it — there's no split location. When
+`LUBAN_HOME` is active, luban prints the home path at startup, and warns if an
+old `~/.luban` with data is still lying around so you don't accidentally run
+against two copies.
+
+Why an environment variable and not a config key? Because `config.toml` lives
+*inside* the folder you're relocating — it can't point somewhere else without
+leaving itself behind. The env var moves the whole thing to one place, which is
+the point.
+
+Two caveats worth knowing:
+
+- **This syncs `client_local.py` too.** If that file holds an internal/company
+  client, you're copying it to your cloud provider — only do this on a tenant
+  that's sanctioned to hold it.
+- **Don't run luban on two devices at the same instant** against the same synced
+  folder — OneDrive/Dropbox can create conflict copies (`SOUL-DESKTOP.md`) if two
+  machines write the same file simultaneously. One device at a time is safe.
+
 ## Troubleshooting
 
 - **Reasoning models:** their internal "thinking" is streamed live, dimmed,

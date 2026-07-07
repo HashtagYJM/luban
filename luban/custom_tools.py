@@ -27,7 +27,9 @@ import re
 import sys
 from pathlib import Path
 
-DEFAULT_PATH = Path.home() / ".luban" / "tools_local.py"  # call-time resolution
+from luban import paths
+
+DEFAULT_PATH = paths.luban_home() / "tools_local.py"  # call-time resolution
 
 _NAME_RX = re.compile(r"^[a-zA-Z0-9_-]{1,64}\Z")
 _REQUIRED = ("name", "description", "input_schema", "handler")

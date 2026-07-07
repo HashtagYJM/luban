@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import argparse
+import os
+import subprocess
+import sys
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-from luban import __version__, agent, config as config_mod, tools, ui
+from luban import __version__, agent, config as config_mod, paths, tools, ui
 from luban import audit as audit_mod
 from luban import client as client_mod
 from luban import custom_tools as custom_tools_mod
@@ -60,6 +63,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--auto", action="store_true", help="Skip confirmation prompts (auto-approves ALL file writes and shell commands — use with care).")
     p.add_argument("--no-stream", dest="stream", action="store_false")
     p.add_argument("--version", action="version", version=f"luban {__version__}")
+    p.add_argument("--set-home", metavar="PATH", default=None,
+                   help="Persist LUBAN_HOME to PATH (e.g. a OneDrive folder to "
+                        "sync memory across devices) and exit.")
     g = p.add_mutually_exclusive_group()
     g.add_argument("--continue", "-c", dest="cont", action="store_true",
                    help="Resume the most recent session for this folder.")
@@ -190,6 +196,68 @@ def version_nudge() -> str:
         "(github.com/HashtagYJM/luban/releases) and move confirmed-fixed rows "
         "to Resolved."
     )
+
+
+def home_notice() -> str:
+    """One line when $LUBAN_HOME has relocated the home dir, plus a warning if a
+    legacy ~/.luban still holds data that is now being ignored. Never raises.
+
+    Enforces the single-source-of-truth: you can see which home is active, and
+    you're told if a second copy exists so you never silently run against two.
+    """
+    if not os.environ.get("LUBAN_HOME"):
+        return ""
+    active = paths.luban_home()
+    default = (Path.home() / ".luban").resolve()
+    if active == default:
+        return ""
+    lines = [f"[luban home: {active}]"]
+    try:
+        soul = default / "SOUL.md"
+        has_data = (default / "memory").is_dir() or (
+            soul.is_file()
+            and soul.read_text(encoding="utf-8", errors="replace").strip() != ""
+        )
+    except OSError:
+        has_data = False
+    if has_data:
+        lines.append(
+            f"note: a legacy {default} with data exists and is being ignored — "
+            "move or delete it to avoid confusion."
+        )
+    return "\n".join(lines)
+
+
+def set_home(path: str) -> None:
+    """Persist LUBAN_HOME for future runs and create the target directory.
+
+    On Windows this runs `setx` (a new terminal is needed to pick it up); on
+    POSIX it prints the export line to add to your shell profile (editing
+    profiles automatically is too fragile to do for you).
+    """
+    target = Path(path).expanduser().resolve()
+    try:
+        target.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        ui.print_text(f"could not create {target}: {exc}\n")
+        return
+    if sys.platform.startswith("win"):
+        try:
+            subprocess.run(
+                ["setx", "LUBAN_HOME", str(target)], check=True, capture_output=True
+            )
+            ui.print_text(
+                f"✓ LUBAN_HOME set to {target}.\n"
+                "Open a NEW terminal for it to take effect. Point every device at "
+                "the same synced folder to share memory across them.\n"
+            )
+        except (OSError, subprocess.CalledProcessError) as exc:
+            ui.print_text(f"could not set LUBAN_HOME: {exc}\n")
+    else:
+        ui.print_text(
+            f"✓ created {target}. Add this to your shell profile to make it stick:\n"
+            f'  export LUBAN_HOME="{target}"\n'
+        )
 
 
 def build_agent_config(session: Session, cfg: config_mod.Config, project_root: Path) -> agent.AgentConfig:
@@ -446,7 +514,13 @@ def handle_command(line: str, session: Session, client=None, ctx=None, cfg=None)
 
 def main(argv: list[str] | None = None) -> None:
     ns = parse_args(argv)
+    if ns.set_home is not None:
+        set_home(ns.set_home)
+        return
     project_root = Path(ns.dir).resolve()
+    notice = home_notice()
+    if notice:
+        ui.print_text(notice + "\n")
     cfg = config_mod.load_config()
     session = Session(
         model=resolve_model(ns.model, cfg), max_tokens=ns.max_tokens,

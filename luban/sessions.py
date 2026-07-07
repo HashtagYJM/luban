@@ -12,7 +12,9 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-SESSIONS_DIR = Path.home() / ".luban" / "sessions"
+from luban import paths
+
+SESSIONS_DIR = paths.luban_home() / "sessions"
 
 
 class SessionNotFound(Exception):

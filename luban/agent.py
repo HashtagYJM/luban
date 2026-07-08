@@ -80,13 +80,46 @@ def _run_model_turn(client, config, messages, on_text, on_thinking):
     return msg
 
 
+def sanitize_history(messages: list[dict]) -> list[dict]:
+    """Guarantee an API-valid tail: history must never END in an assistant message
+    that contains unanswered tool_use blocks.
+
+    The Anthropic API requires every tool_use to be immediately followed by its
+    tool_result. A response truncated at max_tokens mid-tool-call (or any path that
+    leaves a trailing tool_use) would 400 on the next send — and on resume that
+    crash killed the session (E14). This strips trailing unanswered tool_use blocks
+    (keeping any text), dropping a message that becomes empty. Pure; returns a new
+    list only when it changes something. Enforced at run_turn's returns, on save,
+    and on restore (which repairs already-corrupted session files)."""
+    if not messages:
+        return messages
+    out = list(messages)
+    while out:
+        last = out[-1]
+        if last.get("role") != "assistant":
+            break
+        content = last.get("content")
+        if not isinstance(content, list):
+            break
+        if not any(isinstance(b, dict) and b.get("type") == "tool_use" for b in content):
+            break
+        kept = [b for b in content if not (isinstance(b, dict) and b.get("type") == "tool_use")]
+        if kept:
+            out[-1] = {**last, "content": kept}
+            break  # message still valid (text remains), tail is now clean
+        out.pop()  # nothing but tool_use — drop the whole message and re-check
+    return out
+
+
 def run_turn(client, config: AgentConfig, messages: list[dict], ctx, on_text, on_thinking=None) -> list[dict]:
     messages = list(messages)
     while True:
         msg = _run_model_turn(client, config, messages, on_text, on_thinking)
         messages.append({"role": "assistant", "content": client_mod.message_to_blocks(msg)})
         if msg.stop_reason != "tool_use":
-            return messages
+            # A max_tokens (or other non-tool_use) stop can still carry a truncated
+            # tool_use block — never return it unanswered, or the next send/resume 400s.
+            return sanitize_history(messages)
         offered = {
             t["name"] for t in (config.tools if config.tools is not None else tools_mod.TOOLS)
         }
@@ -109,5 +142,5 @@ def run_turn(client, config: AgentConfig, messages: list[dict], ctx, on_text, on
         if not results:
             # stop_reason was tool_use but no tool_use blocks were present;
             # returning avoids sending an empty tool_result message in a loop.
-            return messages
+            return sanitize_history(messages)
         messages.append({"role": "user", "content": results})

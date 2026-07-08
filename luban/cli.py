@@ -109,6 +109,7 @@ def build_tool_context(
         render_command=ui.render_command,
         decide=decide,
         audit=audit_cb,
+        allow_out_of_tree=cfg.allow_out_of_tree_file_edits if cfg is not None else False,
     )
 
 
@@ -132,7 +133,8 @@ def save_session(session: Session) -> None:
             "created": session.created,
             "model": session.model,
             "title": session.title,
-            "messages": session.messages,
+            # never persist a history that ends in an unanswered tool_use (E14)
+            "messages": agent.sanitize_history(session.messages),
         })
     except OSError as exc:
         ui.print_text(f"warning: could not save session ({exc})\n")
@@ -410,7 +412,9 @@ def _print_last_exchange(messages: list) -> None:
 
 
 def restore_session(session: Session, data: dict) -> None:
-    session.messages = data["messages"]
+    # Repair any already-saved history that ends in an unanswered tool_use, so a
+    # session closed mid-tool-call resumes cleanly instead of 400-crashing (E14).
+    session.messages = agent.sanitize_history(data["messages"])
     session.model = data.get("model", session.model)
     session.session_id = data["id"]
     session.created = data.get("created", "")
@@ -538,7 +542,28 @@ def handle_command(line: str, session: Session, client=None, ctx=None, cfg=None)
     return "handled"  # unknown /command: swallow rather than send to model
 
 
+def configure_utf8_io() -> None:
+    """Force UTF-8 on the standard streams regardless of the OS locale.
+
+    Root fix for the cp1252 family (E7/E8/E10/E12): on Windows the console
+    defaults to cp1252, so a non-Latin-1 character read from stdin or written to
+    stdout would mojibake or crash. Pinning UTF-8 here (with errors='replace' as a
+    floor) fixes stdin and stdout in one place; file I/O pins encoding at each site
+    (enforced by a policy test). Best-effort: a stream without reconfigure() (a
+    pipe/redirect wrapper) is skipped, never fatal.
+    """
+    for stream in (sys.stdin, sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="replace")
+        except (ValueError, OSError):
+            pass
+
+
 def main(argv: list[str] | None = None) -> None:
+    configure_utf8_io()
     ns = parse_args(argv)
     if ns.set_home is not None:
         set_home(ns.set_home)
@@ -605,6 +630,10 @@ def main(argv: list[str] | None = None) -> None:
         except KeyboardInterrupt:
             session.messages.pop()  # drop the unanswered user turn so history stays valid
             ui.print_text("\n[interrupted]\n")
+        except Exception as exc:  # a bad turn must not kill the session (E14)
+            if session.messages and session.messages[-1].get("role") == "user":
+                session.messages.pop()  # drop the turn that failed; keep history valid
+            ui.print_text(f"\n[turn failed: {exc}] — history preserved, try again.\n")
         else:
             save_session(session)
             est = estimate_tokens(session.messages)

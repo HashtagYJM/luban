@@ -224,6 +224,14 @@ escapes the project root, or one that doesn't exist), it now returns a clear
 error rather than a misleading empty result, so the agent isn't led to a wrong
 "nothing found" conclusion.
 
+If you *want* the file tools to reach outside the project — e.g. to edit a
+sibling repo without dropping to `run_command` one-liners — set
+`allow_out_of_tree_file_edits = true` in `~/.luban/config.toml`. It's **off by
+default** (corporate-safe); when on, an out-of-project path falls through to the
+same show-diff-and-confirm flow `run_command` uses (and, like `run_command`,
+`--auto` will auto-approve it). Your `~/.luban` area keeps its own guards
+regardless (its `.py` files stay off-limits to the file tools).
+
 File tools can also reach **`~/.luban`** — memory, skills, `config.toml` — so
 luban maintains its own files the same visible-diff, confirm-first way instead
 of falling back to blind shell one-liners. Two things stay off-limits even
@@ -386,6 +394,14 @@ memory_enabled = true
 `dir`/`type` vs. POSIX `ls`/`cat`). `model` sets the default model; precedence
 is **`--model` flag > `model` in config.toml > luban's built-in default** —
 leave it unset (or commented out) to fall back to the built-in.
+`allow_out_of_tree_file_edits` (default `false`) lets the file tools edit files
+outside the current project — see the trust-model section above.
+
+luban pins **UTF-8** for all file and terminal I/O regardless of the OS locale,
+so arrows, em-dashes, emoji, and CJK read and write correctly on Windows too. And
+a session that was closed mid-tool-call (or truncated by the model's token limit)
+now resumes cleanly — luban never keeps a history that ends in an unanswered tool
+call, and repairs older sessions that do.
 
 ## Sync across devices (`LUBAN_HOME`)
 

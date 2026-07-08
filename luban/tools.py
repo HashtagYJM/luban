@@ -34,6 +34,7 @@ class ToolContext:
     render_command: Callable[[str], None]
     decide: Callable[[str, dict], object] | None = None
     audit: Callable[[dict], None] | None = None
+    allow_out_of_tree: bool = False  # config gate for editing files outside the project
 
 
 def _truncate(text: str) -> str:
@@ -53,16 +54,23 @@ def resolve_in_root(root: Path, path: str) -> Path:
 LUBAN_HOME = paths.luban_home()  # single resolved home (tests monkeypatch this)
 
 
-def resolve_tool_path(root: Path, path: str, writing: bool = False) -> Path:
-    """Resolve a tool-supplied path.
+def resolve_tool_path(
+    root: Path, path: str, writing: bool = False, allow_out_of_tree: bool = False
+) -> Path:
+    """Resolve a tool-supplied path in tiers.
 
-    Relative paths stay jailed to the project root. Absolute (or ~) paths are
-    allowed only under the user's own ~/.luban area so the agent can maintain
-    its memory, skills, and config — with two guardrails: Python files there
-    (client_local.py holds credentials, tools_local.py executes at startup)
-    are off-limits entirely, and the audit log is never writable.
+    1. Relative → jailed to the project root.
+    2. Absolute under the project root → allowed.
+    3. Absolute under the user's own ~/.luban area → allowed, but with two
+       guardrails: Python files there (client_local.py holds credentials,
+       tools_local.py executes at startup) are off-limits, and the audit log is
+       never writable.
+    4. Absolute anywhere else (out of tree) → refused by default; permitted only
+       when allow_out_of_tree is set (config), in which case the caller's normal
+       diff-and-confirm flow applies — the same safety `run_command` already has.
     """
     home = LUBAN_HOME.resolve()
+    root_resolved = Path(root).resolve()
     # The documented ~/.luban alias must point at the (possibly relocated) luban
     # home — NOT the OS home. Path.expanduser() sends ~ to the OS home, so on a
     # box where LUBAN_HOME is relocated (e.g. a OneDrive folder) the model's
@@ -78,8 +86,16 @@ def resolve_tool_path(root: Path, path: str, writing: bool = False) -> Path:
     if not expanded.is_absolute():
         return resolve_in_root(root, path)
     target = expanded.resolve()
+    # Tier 2: absolute path inside the project root is fine (no ~/.luban guards).
+    if target == root_resolved or root_resolved in target.parents:
+        return target
+    # Tier 4 (checked before the ~/.luban guards so a sibling project's data.py
+    # stays editable): out-of-tree paths are gated by config, then fall through to
+    # the caller's confirm flow. The .py/audit guards below are ~/.luban-only.
     if not (target == home or home in target.parents):
-        raise ValueError(f"Absolute paths must stay under ~/.luban: {path}")
+        if allow_out_of_tree:
+            return target
+        raise ValueError(f"Path escapes the project root and ~/.luban: {path}")
     # Windows strips trailing dots/spaces from the final component at open time,
     # so "client_local.py " and "tools_local.py." reach the real .py file while
     # pathlib keeps the tail lexically. Normalize before classifying. Case-folded:
@@ -95,7 +111,10 @@ def resolve_tool_path(root: Path, path: str, writing: bool = False) -> Path:
 
 def _list_dir(inp: dict, ctx: ToolContext) -> ToolResult:
     try:
-        target = resolve_tool_path(ctx.project_root, inp.get("path", "."))
+        target = resolve_tool_path(
+            ctx.project_root, inp.get("path", "."),
+            allow_out_of_tree=ctx.allow_out_of_tree,
+        )
         if not target.is_dir():
             return ToolResult(f"Not a directory: {inp.get('path', '.')}", is_error=True)
         names = sorted(
@@ -108,8 +127,10 @@ def _list_dir(inp: dict, ctx: ToolContext) -> ToolResult:
 
 def _read_file(inp: dict, ctx: ToolContext) -> ToolResult:
     try:
-        target = resolve_tool_path(ctx.project_root, inp["path"])
-        text = target.read_text()
+        target = resolve_tool_path(
+            ctx.project_root, inp["path"], allow_out_of_tree=ctx.allow_out_of_tree
+        )
+        text = target.read_text(encoding="utf-8", errors="replace")
     except (ValueError, KeyError) as exc:
         return ToolResult(f"Bad request: {exc}", is_error=True)
     except FileNotFoundError:
@@ -182,7 +203,10 @@ def _atomic_write_text(target: Path, text: str) -> None:
 
 def _write_file(inp: dict, ctx: ToolContext) -> ToolResult:
     try:
-        target = resolve_tool_path(ctx.project_root, inp["path"], writing=True)
+        target = resolve_tool_path(
+            ctx.project_root, inp["path"], writing=True,
+            allow_out_of_tree=ctx.allow_out_of_tree,
+        )
     except (ValueError, KeyError) as exc:
         return ToolResult(f"Bad request: {exc}", is_error=True)
     old = target.read_text(encoding="utf-8", errors="replace") if target.exists() else ""
@@ -199,7 +223,10 @@ def _write_file(inp: dict, ctx: ToolContext) -> ToolResult:
 
 def _edit_file(inp: dict, ctx: ToolContext) -> ToolResult:
     try:
-        target = resolve_tool_path(ctx.project_root, inp["path"], writing=True)
+        target = resolve_tool_path(
+            ctx.project_root, inp["path"], writing=True,
+            allow_out_of_tree=ctx.allow_out_of_tree,
+        )
         old = target.read_text(encoding="utf-8", errors="replace")
     except (ValueError, KeyError) as exc:
         return ToolResult(f"Bad request: {exc}", is_error=True)

@@ -27,6 +27,7 @@ class Config:
     deny: list[str] = field(default_factory=list)
     memory_file: str = ""  # "" = try LUBAN.md, CLAUDE.md, AGENTS.md in order
     memory_enabled: bool = True  # long-term memory (SOUL.md, remember/recall, journal)
+    allow_out_of_tree_file_edits: bool = False  # let file tools touch paths outside the project
 
 
 def detect_platform() -> str:
@@ -53,6 +54,11 @@ def _default_text(plat: str) -> str:
         "\n"
         "# Long-term memory (SOUL.md, remember/recall tools, journal). Default on:\n"
         "# memory_enabled = true\n"
+        "\n"
+        "# Let the file tools read/write paths OUTSIDE this project (e.g. a sibling\n"
+        "# repo), via the same diff-and-confirm as run_command. Default off for\n"
+        "# corporate safety; under --auto these edits auto-approve like any other:\n"
+        "# allow_out_of_tree_file_edits = false\n"
         "\n"
         "# Optional permission rules (deny > allow > ask; deny works even in --auto):\n"
         "# [permissions]\n"
@@ -101,6 +107,9 @@ def load_config(path: Path = CONFIG_PATH) -> Config:
     memory_enabled = data.get("memory_enabled")
     if not isinstance(memory_enabled, bool):
         memory_enabled = True
+    allow_out_of_tree = data.get("allow_out_of_tree_file_edits")
+    if not isinstance(allow_out_of_tree, bool):
+        allow_out_of_tree = False
     return Config(
         platform=plat,
         model=model,
@@ -108,4 +117,5 @@ def load_config(path: Path = CONFIG_PATH) -> Config:
         deny=deny,
         memory_file=memory_file,
         memory_enabled=memory_enabled,
+        allow_out_of_tree_file_edits=allow_out_of_tree,
     )

@@ -4,6 +4,21 @@ Release notes, newest first. Bundled inside the package so luban can show
 "what's new" and reconcile its enhancement tracker offline, with no network.
 Each entry tags the tracker IDs (E-/F-) it resolves.
 
+## v0.5.8 — resume-crash fix, UTF-8 everywhere, optional out-of-tree edits
+
+- Fixed: resuming a session that was closed mid-tool-call (or truncated at
+  max_tokens) no longer crashes. luban never persists or replays a history that
+  ends in an unanswered tool_use, and repairs already-broken session files on
+  resume. A failed turn is reported instead of killing the session. (E14)
+- Fixed the cp1252 encoding issue at its root: the standard streams are pinned to
+  UTF-8 at startup, `read_file` reads UTF-8, and a policy test now fails the build
+  if any file I/O forgets to pin the encoding — so this class of bug can't creep
+  back one surface at a time. (E12)
+- New (off by default): `allow_out_of_tree_file_edits` in config.toml lets the
+  file tools read/write files outside the project (e.g. a sibling repo) via the
+  same diff-and-confirm as run_command, instead of forcing clunky shell
+  workarounds. Default off for corporate safety. (E16)
+
 ## v0.5.7 — file tools reach a relocated home
 
 - Fixed: with `LUBAN_HOME` set to a synced folder (e.g. OneDrive), the file tools

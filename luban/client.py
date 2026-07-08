@@ -106,6 +106,13 @@ def message_to_blocks(message) -> list[dict]:
                 blocks.append({"type": "thinking", "thinking": b.thinking, "signature": signature})
         elif b.type == "redacted_thinking":
             blocks.append({"type": "redacted_thinking", "data": b.data})
+        elif b.type in ("server_tool_use", "web_search_tool_result"):
+            # Server-side tools (web search): the API resolved these inline. Echo the
+            # raw block back on the next turn or the follow-up request 400s / loses the
+            # search context. model_dump() gives the wire-shaped dict the API expects.
+            dump = getattr(b, "model_dump", None)
+            if callable(dump):
+                blocks.append(dump(exclude_none=True))
     return blocks
 
 

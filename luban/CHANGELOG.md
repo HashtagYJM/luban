@@ -4,6 +4,18 @@ Release notes, newest first. Bundled inside the package so luban can show
 "what's new" and reconcile its enhancement tracker offline, with no network.
 Each entry tags the tracker IDs (E-/F-) it resolves.
 
+## v0.5.9 — web search, subagents, smarter memory
+
+- New (off by default): `web_search = true` in config.toml offers the model the
+  API's server-side web search tool, so it can pull in current information instead
+  of asking you to paste it. Set `web_search_tool_type` to match your backend. (E11)
+- New (off by default): `subagents = true` offers a `spawn_subagent` tool — the
+  model can run a fresh read-only sub-agent on a focused subtask (research or
+  investigate in parallel) and get back just the answer. (E15)
+- `recall` now follows `[[wikilinks]]` between facts, so a short "pointer" fact
+  that references another pulls the linked fact in too — keeping project notes as
+  live pointers instead of stale copies. (E9)
+
 ## v0.5.8 — resume-crash fix, UTF-8 everywhere, optional out-of-tree edits
 
 - Fixed: resuming a session that was closed mid-tool-call (or truncated at

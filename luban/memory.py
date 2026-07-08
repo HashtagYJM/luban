@@ -88,6 +88,10 @@ _HYGIENE = (
     "diff and asks. Never edit ~/.luban/memory/MEMORY.md itself: it is a machine-"
     "rebuilt index; edit the component files instead."
     " The journal is for what happened; facts are for what stays true."
+    " For a project whose details live in its own files, save a short POINTER fact "
+    "(path + status + 'details live at …') rather than copying code that will go "
+    "stale, and cross-reference related facts by name with [[slug]] — recall follows "
+    "those links."
 )
 
 
@@ -253,8 +257,20 @@ def _recall_match(query: str, *fields: str) -> bool:
     return bool(tokens) and all(t in hay for t in tokens)
 
 
+_WIKILINK = re.compile(r"\[\[([a-z0-9][a-z0-9-]*)\]\]")
+
+
+def _fact_text(slug: str) -> str | None:
+    p = _fact_path(slug)
+    try:
+        return p.read_text(encoding="utf-8", errors="replace") if p.exists() else None
+    except OSError:
+        return None
+
+
 def recall(query: str) -> str:
     hits: list[str] = []
+    matched: set[str] = set()
     if MEMORY_DIR.is_dir():
         for p in sorted(MEMORY_DIR.glob("*.md")):
             if p.name == "MEMORY.md":
@@ -265,6 +281,20 @@ def recall(query: str) -> str:
                 continue
             if _recall_match(query, p.stem, text):
                 hits.append(f"[{p.stem}]\n{text.strip()}")
+                matched.add(p.stem)
+        # E9: follow [[wikilinks]] one level so a "pointer" fact that references
+        # another (e.g. active-work → [[project-x]]) pulls the linked fact in too.
+        for p in sorted(MEMORY_DIR.glob("*.md")):
+            if p.stem not in matched:
+                continue
+            body = _fact_text(p.stem) or ""
+            for slug in _WIKILINK.findall(body):
+                if slug in matched:
+                    continue
+                linked = _fact_text(slug)
+                if linked is not None:
+                    hits.append(f"[{slug}] (linked from [{p.stem}])\n{linked.strip()}")
+                    matched.add(slug)
     journal_dir = MEMORY_DIR / "journal"
     if journal_dir.is_dir():
         for p in sorted(journal_dir.glob("*.md")):

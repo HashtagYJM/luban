@@ -35,6 +35,7 @@ class ToolContext:
     decide: Callable[[str, dict], object] | None = None
     audit: Callable[[dict], None] | None = None
     allow_out_of_tree: bool = False  # config gate for editing files outside the project
+    subagent: Callable[[str], str] | None = None  # run a nested read-only sub-agent
 
 
 def _truncate(text: str) -> str:
@@ -370,7 +371,42 @@ def _journal(inp: dict, ctx: ToolContext) -> ToolResult:
     return ToolResult("Journal updated.")
 
 
+def _spawn_subagent(inp: dict, ctx: ToolContext) -> ToolResult:
+    if ctx.subagent is None:
+        return ToolResult(
+            "Subagents are not enabled (set subagents = true in ~/.luban/config.toml).",
+            is_error=True,
+        )
+    task = inp.get("task")
+    if not isinstance(task, str) or not task.strip():
+        return ToolResult("Bad request: 'task' must be a non-empty string.", is_error=True)
+    try:
+        return ToolResult(_truncate(ctx.subagent(task)))
+    except Exception as exc:  # a sub-run failure must not kill the parent turn
+        return ToolResult(f"Subagent failed: {exc}", is_error=True)
+
+
+# Offered only when config.subagents is on (build_agent_config appends it); the
+# handler is always registered so run_tool can dispatch it when offered.
+SUBAGENT_TOOL = {
+    "name": "spawn_subagent",
+    "description": (
+        "Run a fresh read-only sub-agent on a focused, self-contained sub-task and "
+        "get back its final answer. Use it to research or investigate in parallel "
+        "with your own work, or to isolate a big read-heavy subtask from your "
+        "context. The sub-agent can read/search/recall but cannot write files or run "
+        "commands. Give it a complete, standalone task description."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {"task": {"type": "string", "description": "Self-contained task for the sub-agent."}},
+        "required": ["task"],
+    },
+}
+
+
 _DISPATCH = {
+    "spawn_subagent": _spawn_subagent,
     "list_dir": _list_dir,
     "glob": _glob,
     "grep": _grep,

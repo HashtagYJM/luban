@@ -28,6 +28,9 @@ class Config:
     memory_file: str = ""  # "" = try LUBAN.md, CLAUDE.md, AGENTS.md in order
     memory_enabled: bool = True  # long-term memory (SOUL.md, remember/recall, journal)
     allow_out_of_tree_file_edits: bool = False  # let file tools touch paths outside the project
+    web_search: bool = False  # offer the model the API's server-side web search tool
+    web_search_tool_type: str = "web_search_20250305"  # server-tool type version string
+    subagents: bool = False  # offer the spawn_subagent tool (nested read-only agent)
 
 
 def detect_platform() -> str:
@@ -59,6 +62,16 @@ def _default_text(plat: str) -> str:
         "# repo), via the same diff-and-confirm as run_command. Default off for\n"
         "# corporate safety; under --auto these edits auto-approve like any other:\n"
         "# allow_out_of_tree_file_edits = false\n"
+        "\n"
+        "# Offer the API's server-side web search tool (if your client/model supports\n"
+        "# it). Default off. Set the tool-type to match your backend — newer models\n"
+        "# use web_search_20260209; the default basic variant is broadly available:\n"
+        "# web_search = false\n"
+        '# web_search_tool_type = "web_search_20250305"\n'
+        "\n"
+        "# Offer the spawn_subagent tool: the model can run a fresh read-only sub-agent\n"
+        "# on a focused subtask. Default off (each sub-run costs extra model calls):\n"
+        "# subagents = false\n"
         "\n"
         "# Optional permission rules (deny > allow > ask; deny works even in --auto):\n"
         "# [permissions]\n"
@@ -110,6 +123,15 @@ def load_config(path: Path = CONFIG_PATH) -> Config:
     allow_out_of_tree = data.get("allow_out_of_tree_file_edits")
     if not isinstance(allow_out_of_tree, bool):
         allow_out_of_tree = False
+    web_search = data.get("web_search")
+    if not isinstance(web_search, bool):
+        web_search = False
+    web_search_type = data.get("web_search_tool_type")
+    if not isinstance(web_search_type, str) or not web_search_type:
+        web_search_type = "web_search_20250305"
+    subagents = data.get("subagents")
+    if not isinstance(subagents, bool):
+        subagents = False
     return Config(
         platform=plat,
         model=model,
@@ -118,4 +140,7 @@ def load_config(path: Path = CONFIG_PATH) -> Config:
         memory_file=memory_file,
         memory_enabled=memory_enabled,
         allow_out_of_tree_file_edits=allow_out_of_tree,
+        web_search=web_search,
+        web_search_tool_type=web_search_type,
+        subagents=subagents,
     )

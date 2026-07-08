@@ -78,8 +78,25 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return p.parse_args(argv)
 
 
+def _final_text(messages: list[dict]) -> str:
+    """The last assistant message's text (for a sub-agent's return value)."""
+    for msg in reversed(messages):
+        if msg.get("role") != "assistant":
+            continue
+        content = msg.get("content")
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts = [b.get("text", "") for b in content
+                     if isinstance(b, dict) and b.get("type") == "text"]
+            if any(parts):
+                return "\n".join(p for p in parts if p)
+    return "(sub-agent produced no text)"
+
+
 def build_tool_context(
-    session: Session, project_root: Path, cfg: config_mod.Config | None = None
+    session: Session, project_root: Path, cfg: config_mod.Config | None = None,
+    client=None,
 ) -> tools.ToolContext:
     def confirm(prompt: str) -> bool:
         if session.auto:
@@ -102,6 +119,29 @@ def build_tool_context(
         def audit_cb(entry: dict) -> None:
             audit_mod.log({"project": session.project, **entry})
 
+    subagent = None
+    if client is not None and cfg is not None and cfg.subagents:
+        def subagent(task: str) -> str:
+            # Nested agent: read-only tools only (no writes/run_command → no confirm
+            # prompts and no unattended mutations), no memory, no further nesting.
+            read_only = [t for t in tools.active_tools(False)
+                         if t["name"] in tools.READ_ONLY_TOOLS]
+            sub_cfg = agent.AgentConfig(
+                session.model, session.max_tokens, stream=False, platform=cfg.platform,
+                tools=read_only,
+            )
+            sub_ctx = tools.ToolContext(
+                project_root=Path(project_root),
+                confirm=lambda p: False,  # writes aren't offered; deny defensively
+                render_diff=lambda p, o, n: None,
+                render_command=lambda c: None,
+                decide=decide, audit=audit_cb,
+            )
+            msgs = agent.run_turn(
+                client, sub_cfg, [{"role": "user", "content": task}], sub_ctx, lambda t: None
+            )
+            return _final_text(msgs)
+
     return tools.ToolContext(
         project_root=Path(project_root),
         confirm=confirm,
@@ -110,6 +150,7 @@ def build_tool_context(
         decide=decide,
         audit=audit_cb,
         allow_out_of_tree=cfg.allow_out_of_tree_file_edits if cfg is not None else False,
+        subagent=subagent,
     )
 
 
@@ -289,12 +330,17 @@ def set_home(path: str) -> None:
 
 
 def build_agent_config(session: Session, cfg: config_mod.Config, project_root: Path) -> agent.AgentConfig:
+    tool_list = tools.active_tools(cfg.memory_enabled)
+    if cfg.subagents:
+        tool_list = [*tool_list, tools.SUBAGENT_TOOL]
     return agent.AgentConfig(
         session.model, session.max_tokens, session.stream, platform=cfg.platform,
         skills=skills_mod.list_skills(str(project_root)),
         memory=read_project_memory(project_root, cfg.memory_file),
         global_memory=memory_mod.bootstrap_block() if cfg.memory_enabled else "",
-        tools=tools.active_tools(cfg.memory_enabled),
+        tools=tool_list,
+        web_search=cfg.web_search,
+        web_search_tool_type=cfg.web_search_tool_type,
     )
 
 
@@ -589,7 +635,7 @@ def main(argv: list[str] | None = None) -> None:
         if upgraded:
             session.pending_context.append(reconcile_directive(prev, section))
     client = client_mod.get_client()
-    ctx = build_tool_context(session, project_root, cfg)
+    ctx = build_tool_context(session, project_root, cfg, client=client)
     if ns.cont:
         data = sessions_mod.latest(str(project_root))
         if data is None:

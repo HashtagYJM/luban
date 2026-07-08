@@ -397,6 +397,23 @@ leave it unset (or commented out) to fall back to the built-in.
 `allow_out_of_tree_file_edits` (default `false`) lets the file tools edit files
 outside the current project — see the trust-model section above.
 
+Three more optional capabilities, all **off by default**:
+
+- `web_search = true` — offers the model the API's **server-side web search**
+  tool, so it can pull in current information itself instead of asking you to
+  paste it. Requires that your client/model supports it; set
+  `web_search_tool_type` to match your backend (newer models use
+  `web_search_20260209`, the default `web_search_20250305` is broadly available).
+- `subagents = true` — offers a `spawn_subagent` tool: the model can run a fresh
+  **read-only** sub-agent on a focused subtask (research or investigate in
+  parallel) and get back just the answer. The sub-agent can read/search/recall
+  but can't write files or run commands. Each sub-run costs extra model calls.
+
+And `recall` now follows `[[wikilinks]]` between memory facts — so a short
+"pointer" fact (`path + status + "details live at …"`) that references another by
+`[[slug]]` pulls the linked fact in too. Keep project notes as live pointers
+rather than stale copies.
+
 luban pins **UTF-8** for all file and terminal I/O regardless of the OS locale,
 so arrows, em-dashes, emoji, and CJK read and write correctly on Windows too. And
 a session that was closed mid-tool-call (or truncated by the model's token limit)

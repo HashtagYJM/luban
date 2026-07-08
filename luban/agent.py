@@ -57,11 +57,21 @@ class AgentConfig:
     memory: str = ""
     global_memory: str = ""
     tools: list | None = None
+    web_search: bool = False
+    web_search_tool_type: str = "web_search_20250305"
 
 
 def _run_model_turn(client, config, messages, on_text, on_thinking):
     system = system_prompt_for(config.platform, config.skills, config.memory, config.global_memory)
     tool_schemas = config.tools if config.tools is not None else tools_mod.TOOLS
+    if config.web_search:
+        # Server-side tool: the API runs the search and returns results inline; luban
+        # never dispatches it (run_turn only handles client tool_use blocks). Append
+        # rather than mutate the shared TOOLS list.
+        tool_schemas = [
+            *tool_schemas,
+            {"type": config.web_search_tool_type, "name": "web_search"},
+        ]
     if config.stream:
         return client_mod.stream_turn(
             client, model=config.model, max_tokens=config.max_tokens,

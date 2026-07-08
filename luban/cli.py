@@ -54,6 +54,8 @@ class Session:
     title: str = ""
     pending_context: list = field(default_factory=list)
     journaled: bool = False
+    thinking: bool = True
+    effort: str = "high"
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -341,6 +343,8 @@ def build_agent_config(session: Session, cfg: config_mod.Config, project_root: P
         tools=tool_list,
         web_search=cfg.web_search,
         web_search_tool_type=cfg.web_search_tool_type,
+        thinking=session.thinking,
+        effort=session.effort,
     )
 
 
@@ -509,6 +513,23 @@ def handle_command(line: str, session: Session, client=None, ctx=None, cfg=None)
     if cmd == "/auto":
         session.auto = True
         return "handled"
+    if cmd == "/thinking":
+        if arg in ("on", "off"):
+            session.thinking = arg == "on"
+        elif arg:
+            ui.print_text("usage: /thinking [on|off]\n")
+            return "handled"
+        ui.print_text(f"thinking: {'on' if session.thinking else 'off'}\n")
+        return "handled"
+    if cmd == "/effort":
+        levels = ("low", "medium", "high", "xhigh", "max")
+        if arg in levels:
+            session.effort = arg
+        elif arg:
+            ui.print_text(f"usage: /effort [{' | '.join(levels)}]\n")
+            return "handled"
+        ui.print_text(f"effort: {session.effort}\n")
+        return "handled"
     if cmd == "/clear":
         session.messages.clear()
         session.session_id = ""
@@ -623,6 +644,7 @@ def main(argv: list[str] | None = None) -> None:
         model=resolve_model(ns.model, cfg), max_tokens=ns.max_tokens,
         auto=ns.auto, stream=ns.stream, messages=[],
         project=str(project_root),
+        thinking=cfg.thinking, effort=cfg.effort,
     )
     custom_names = setup_custom_tools()
     prev, cur = detect_upgrade()  # runs regardless of memory (dotfile at home root)

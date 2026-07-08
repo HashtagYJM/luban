@@ -62,21 +62,46 @@ def get_client() -> Any:
     return provider.build_client()
 
 
-def create_turn(client, *, model, max_tokens, system, messages, tools):
-    return client.messages.create(
-        model=model, max_tokens=max_tokens, system=system,
-        messages=messages, tools=tools,
-    )
+# Tri-state: None = untried, True = backend accepts thinking/effort, False = rejected
+# (probed once per process so a backend that lacks them, e.g. some non-Anthropic
+# endpoints, degrades to a plain request instead of erroring every turn).
+_EXTRAS_SUPPORTED: bool | None = None
 
 
-def stream_turn(client, *, model, max_tokens, system, messages, tools, on_text, on_thinking=None):
+def _thinking_extras(thinking: bool, effort: str) -> dict:
+    if not thinking:
+        return {}
+    extras: dict = {"thinking": {"type": "adaptive", "display": "summarized"}}
+    if effort:
+        extras["output_config"] = {"effort": effort}
+    return extras
+
+
+def create_turn(client, *, model, max_tokens, system, messages, tools,
+                thinking=False, effort="high"):
+    global _EXTRAS_SUPPORTED
+    base = dict(model=model, max_tokens=max_tokens, system=system,
+                messages=messages, tools=tools)
+    extras = _thinking_extras(thinking, effort) if _EXTRAS_SUPPORTED is not False else {}
+    if not extras:
+        return client.messages.create(**base)
+    try:
+        msg = client.messages.create(**base, **extras)
+        _EXTRAS_SUPPORTED = True
+        return msg
+    except Exception:
+        if _EXTRAS_SUPPORTED is True:
+            raise  # extras worked before — this is a real error, don't mask it
+        msg = client.messages.create(**base)  # first-run probe: retry without extras
+        _EXTRAS_SUPPORTED = False
+        return msg
+
+
+def _stream_once(client, base, extras, on_text, on_thinking):
     # Iterate raw stream events (not just .text_stream) so reasoning models that
     # emit `thinking` deltas are surfaced too — otherwise a thinking-only turn
     # streams nothing and the user sees a blank response.
-    with client.messages.stream(
-        model=model, max_tokens=max_tokens, system=system,
-        messages=messages, tools=tools,
-    ) as stream:
+    with client.messages.stream(**base, **extras) as stream:
         for event in stream:
             if getattr(event, "type", None) != "content_block_delta":
                 continue
@@ -87,6 +112,26 @@ def stream_turn(client, *, model, max_tokens, system, messages, tools, on_text, 
             elif dtype == "thinking_delta" and on_thinking is not None:
                 on_thinking(delta.thinking)
         return stream.get_final_message()
+
+
+def stream_turn(client, *, model, max_tokens, system, messages, tools, on_text,
+                on_thinking=None, thinking=False, effort="high"):
+    global _EXTRAS_SUPPORTED
+    base = dict(model=model, max_tokens=max_tokens, system=system,
+                messages=messages, tools=tools)
+    extras = _thinking_extras(thinking, effort) if _EXTRAS_SUPPORTED is not False else {}
+    if not extras:
+        return _stream_once(client, base, {}, on_text, on_thinking)
+    try:
+        msg = _stream_once(client, base, extras, on_text, on_thinking)
+        _EXTRAS_SUPPORTED = True
+        return msg
+    except Exception:
+        if _EXTRAS_SUPPORTED is True:
+            raise
+        msg = _stream_once(client, base, {}, on_text, on_thinking)
+        _EXTRAS_SUPPORTED = False
+        return msg
 
 
 def message_to_blocks(message) -> list[dict]:

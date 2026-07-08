@@ -25,7 +25,8 @@ def test_config_passes_platform_into_prompt(tmp_path, monkeypatch):
     # The streamed system prompt reflects config.platform.
     seen = {}
 
-    def fake_create(client, *, model, max_tokens, system, messages, tools):
+    def fake_create(client, *, model, max_tokens, system, messages, tools,
+                    thinking=False, effort="high"):
         seen["system"] = system
         return FakeMessage([FakeBlock("text", text="ok")], "end_turn")
 

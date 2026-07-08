@@ -397,6 +397,12 @@ leave it unset (or commented out) to fall back to the built-in.
 `allow_out_of_tree_file_edits` (default `false`) lets the file tools edit files
 outside the current project — see the trust-model section above.
 
+luban requests **adaptive extended thinking** by default with **`effort = "high"`**,
+so capable models reason before answering. Adjust per-session with `/thinking
+[on|off]` and `/effort [low|medium|high|xhigh|max]`, or set the `thinking` / `effort`
+defaults in `config.toml`. A backend that doesn't accept these parameters degrades
+to a plain request automatically.
+
 Three more optional capabilities, all **off by default**:
 
 - `web_search = true` — offers the model the API's **server-side web search**

@@ -4,6 +4,17 @@ Release notes, newest first. Bundled inside the package so luban can show
 "what's new" and reconcile its enhancement tracker offline, with no network.
 Each entry tags the tracker IDs (E-/F-) it resolves.
 
+## v0.5.10 — extended thinking on by default, adjustable effort
+
+- luban now requests **adaptive extended thinking** by default, with effort set to
+  **high** — so capable models actually reason before answering instead of running
+  with thinking off. Change either per-session with `/thinking [on|off]` and
+  `/effort [low|medium|high|xhigh|max]`, or set the default in config.toml
+  (`thinking`, `effort`). Backends that don't support these parameters degrade to a
+  plain request automatically.
+- Web search turns that hit the API's internal iteration limit (`pause_turn`) now
+  resume automatically instead of returning a truncated answer.
+
 ## v0.5.9 — web search, subagents, smarter memory
 
 - New (off by default): `web_search = true` in config.toml offers the model the

@@ -13,7 +13,8 @@ SYSTEM_PROMPT = (
     "are relative to the project root."
     " The user drives the session with slash-commands you can point them to when "
     "relevant: /compact (summarize a long conversation and keep going), /reflect "
-    "(tidy your long-term memory), /model (show or switch the model), and /sessions "
+    "(tidy your long-term memory), /model (show or switch the model), /thinking "
+    "(toggle extended thinking), /effort (low..max reasoning depth), and /sessions "
     "(list saved sessions)."
 )
 
@@ -59,6 +60,8 @@ class AgentConfig:
     tools: list | None = None
     web_search: bool = False
     web_search_tool_type: str = "web_search_20250305"
+    thinking: bool = False
+    effort: str = "high"
 
 
 def _run_model_turn(client, config, messages, on_text, on_thinking):
@@ -77,10 +80,12 @@ def _run_model_turn(client, config, messages, on_text, on_thinking):
             client, model=config.model, max_tokens=config.max_tokens,
             system=system, messages=messages, tools=tool_schemas,
             on_text=on_text, on_thinking=on_thinking,
+            thinking=config.thinking, effort=config.effort,
         )
     msg = client_mod.create_turn(
         client, model=config.model, max_tokens=config.max_tokens,
         system=system, messages=messages, tools=tool_schemas,
+        thinking=config.thinking, effort=config.effort,
     )
     for b in msg.content:
         if b.type == "text":
@@ -121,11 +126,24 @@ def sanitize_history(messages: list[dict]) -> list[dict]:
     return out
 
 
+MAX_PAUSE_RESUMES = 8
+
+
 def run_turn(client, config: AgentConfig, messages: list[dict], ctx, on_text, on_thinking=None) -> list[dict]:
     messages = list(messages)
+    pauses = 0
     while True:
         msg = _run_model_turn(client, config, messages, on_text, on_thinking)
         messages.append({"role": "assistant", "content": client_mod.message_to_blocks(msg)})
+        if msg.stop_reason == "pause_turn":
+            # A server tool (web search) hit the API's internal iteration limit.
+            # Re-send the same messages (now including this partial assistant turn,
+            # with its server_tool_use blocks preserved) so the server resumes — no
+            # extra user message. Bounded so a stuck server tool can't loop forever.
+            if pauses >= MAX_PAUSE_RESUMES:
+                return sanitize_history(messages)
+            pauses += 1
+            continue
         if msg.stop_reason != "tool_use":
             # A max_tokens (or other non-tool_use) stop can still carry a truncated
             # tool_use block — never return it unanswered, or the next send/resume 400s.

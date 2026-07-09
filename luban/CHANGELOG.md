@@ -4,8 +4,13 @@ Release notes, newest first. Bundled inside the package so luban can show
 "what's new" and reconcile its enhancement tracker offline, with no network.
 Each entry tags the tracker IDs (E-/F-) it resolves.
 
-## v0.5.12 — config discovery, cumulative upgrade notes, grep path alias
+## v0.5.11 — calmer thinking, config discovery, cumulative upgrade notes, grep alias
 
+- Tuned the thinking defaults after field use: **effort now defaults to `medium`**
+  (not `high`) so easy tasks stay fast, and thinking now runs **silently by
+  default** — no more grey reasoning text on every turn. New `/verbose [on|off]`
+  (and `thinking_verbose` in config.toml) shows the reasoning when you want it;
+  `/effort` still goes up to `xhigh`/`max`, and `/thinking off` turns it off.
 - New: **`/config`** prints your effective settings, and **`luban --sync-config`**
   appends any config keys a newer luban added — as commented lines, preserving all
   your values — so shipped-but-gated features (web search, subagents, thinking
@@ -16,15 +21,6 @@ Each entry tags the tracker IDs (E-/F-) it resolves.
   so a multi-version jump doesn't miss intermediate fixes. (E17)
 - `grep` now resolves the `~/.luban` path alias like the other file tools (still
   never exposing `~/.luban/*.py`). (E18)
-
-## v0.5.11 — calmer thinking defaults (medium + silent)
-
-- Tuned the thinking defaults after field use: **effort now defaults to `medium`**
-  (not `high`) so easy tasks stay fast, and thinking now runs **silently by
-  default** — no more grey reasoning text on every turn.
-- New `/verbose [on|off]` (and `thinking_verbose` in config.toml) shows the
-  reasoning text when you want to watch it. `/effort` still goes up to `xhigh`/`max`
-  for the hardest tasks, and `/thinking off` turns it off entirely.
 
 ## v0.5.10 — extended thinking on by default, adjustable effort
 

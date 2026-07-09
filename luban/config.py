@@ -28,7 +28,8 @@ class Config:
     memory_file: str = ""  # "" = try LUBAN.md, CLAUDE.md, AGENTS.md in order
     memory_enabled: bool = True  # long-term memory (SOUL.md, remember/recall, journal)
     thinking: bool = True  # request adaptive extended thinking (on for capable models)
-    effort: str = "high"  # low | medium | high | xhigh | max
+    effort: str = "medium"  # low | medium | high | xhigh | max
+    thinking_verbose: bool = False  # stream the reasoning text; default silent
     allow_out_of_tree_file_edits: bool = False  # let file tools touch paths outside the project
     web_search: bool = False  # offer the model the API's server-side web search tool
     web_search_tool_type: str = "web_search_20250305"  # server-tool type version string
@@ -61,10 +62,13 @@ def _default_text(plat: str) -> str:
         "# memory_enabled = true\n"
         "\n"
         "# Extended thinking. On by default for capable models; effort is one of\n"
-        "# low | medium | high | xhigh | max (xhigh is best for coding/agentic work).\n"
-        "# Change per-session with /thinking and /effort, or set the default here:\n"
+        "# low | medium | high | xhigh | max (medium balances speed and depth; use\n"
+        "# xhigh for the hardest coding/agentic work). Thinking is SILENT by default;\n"
+        "# thinking_verbose = true streams the reasoning as grey text. Change any of\n"
+        "# these per-session with /thinking, /effort, /verbose, or set defaults here:\n"
         "# thinking = true\n"
-        '# effort = "high"\n'
+        '# effort = "medium"\n'
+        "# thinking_verbose = false\n"
         "\n"
         "# Let the file tools read/write paths OUTSIDE this project (e.g. a sibling\n"
         "# repo), via the same diff-and-confirm as run_command. Default off for\n"
@@ -133,7 +137,10 @@ def load_config(path: Path = CONFIG_PATH) -> Config:
         thinking = True
     effort = data.get("effort")
     if effort not in {"low", "medium", "high", "xhigh", "max"}:
-        effort = "high"
+        effort = "medium"
+    thinking_verbose = data.get("thinking_verbose")
+    if not isinstance(thinking_verbose, bool):
+        thinking_verbose = False
     allow_out_of_tree = data.get("allow_out_of_tree_file_edits")
     if not isinstance(allow_out_of_tree, bool):
         allow_out_of_tree = False
@@ -155,6 +162,7 @@ def load_config(path: Path = CONFIG_PATH) -> Config:
         memory_enabled=memory_enabled,
         thinking=thinking,
         effort=effort,
+        thinking_verbose=thinking_verbose,
         allow_out_of_tree_file_edits=allow_out_of_tree,
         web_search=web_search,
         web_search_tool_type=web_search_type,

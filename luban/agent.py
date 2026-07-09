@@ -14,8 +14,8 @@ SYSTEM_PROMPT = (
     " The user drives the session with slash-commands you can point them to when "
     "relevant: /compact (summarize a long conversation and keep going), /reflect "
     "(tidy your long-term memory), /model (show or switch the model), /thinking "
-    "(toggle extended thinking), /effort (low..max reasoning depth), and /sessions "
-    "(list saved sessions)."
+    "(toggle extended thinking), /effort (low..max reasoning depth), /verbose "
+    "(show or hide the reasoning text), and /sessions (list saved sessions)."
 )
 
 _PLATFORM_LINE = {
@@ -61,7 +61,8 @@ class AgentConfig:
     web_search: bool = False
     web_search_tool_type: str = "web_search_20250305"
     thinking: bool = False
-    effort: str = "high"
+    effort: str = "medium"
+    thinking_verbose: bool = False  # stream the reasoning (grey text) vs think silently
 
 
 def _run_model_turn(client, config, messages, on_text, on_thinking):
@@ -81,11 +82,13 @@ def _run_model_turn(client, config, messages, on_text, on_thinking):
             system=system, messages=messages, tools=tool_schemas,
             on_text=on_text, on_thinking=on_thinking,
             thinking=config.thinking, effort=config.effort,
+            verbose=config.thinking_verbose,
         )
     msg = client_mod.create_turn(
         client, model=config.model, max_tokens=config.max_tokens,
         system=system, messages=messages, tools=tool_schemas,
         thinking=config.thinking, effort=config.effort,
+        verbose=config.thinking_verbose,
     )
     for b in msg.content:
         if b.type == "text":

@@ -4,6 +4,15 @@ Release notes, newest first. Bundled inside the package so luban can show
 "what's new" and reconcile its enhancement tracker offline, with no network.
 Each entry tags the tracker IDs (E-/F-) it resolves.
 
+## v0.5.11 — calmer thinking defaults (medium + silent)
+
+- Tuned the thinking defaults after field use: **effort now defaults to `medium`**
+  (not `high`) so easy tasks stay fast, and thinking now runs **silently by
+  default** — no more grey reasoning text on every turn.
+- New `/verbose [on|off]` (and `thinking_verbose` in config.toml) shows the
+  reasoning text when you want to watch it. `/effort` still goes up to `xhigh`/`max`
+  for the hardest tasks, and `/thinking off` turns it off entirely.
+
 ## v0.5.10 — extended thinking on by default, adjustable effort
 
 - luban now requests **adaptive extended thinking** by default, with effort set to

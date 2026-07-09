@@ -35,11 +35,24 @@ def _reset_extras():
 def test_thinking_and_effort_sent_when_on(tmp_path):
     rec = _Rec()
     cfg = agent.AgentConfig("m", 100, stream=False, platform="mac", tools=[],
-                            thinking=True, effort="xhigh")
+                            thinking=True, effort="xhigh")  # silent by default
     agent.run_turn(rec, cfg, [{"role": "user", "content": "hi"}], _ctx(tmp_path), lambda t: None)
     sent = rec.calls[0]
-    assert sent["thinking"] == {"type": "adaptive", "display": "summarized"}
+    assert sent["thinking"] == {"type": "adaptive", "display": "omitted"}
     assert sent["output_config"] == {"effort": "xhigh"}
+
+
+def test_verbose_streams_reasoning(tmp_path):
+    rec = _Rec()
+    cfg = agent.AgentConfig("m", 100, stream=False, platform="mac", tools=[],
+                            thinking=True, effort="medium", thinking_verbose=True)
+    agent.run_turn(rec, cfg, [{"role": "user", "content": "hi"}], _ctx(tmp_path), lambda t: None)
+    assert rec.calls[0]["thinking"] == {"type": "adaptive", "display": "summarized"}
+
+
+def test_default_effort_is_medium():
+    assert config_mod.Config(platform="mac").effort == "medium"
+    assert config_mod.Config(platform="mac").thinking_verbose is False
 
 
 def test_no_thinking_params_when_off(tmp_path):
@@ -123,6 +136,16 @@ def test_slash_effort_sets_valid_only(monkeypatch):
     assert s.effort == "xhigh"
 
 
-def test_config_defaults_thinking_on_effort_high():
+def test_config_defaults_thinking_on_effort_medium_silent():
     cfg = config_mod.Config(platform="mac")
-    assert cfg.thinking is True and cfg.effort == "high"
+    assert cfg.thinking is True and cfg.effort == "medium" and cfg.thinking_verbose is False
+
+
+def test_slash_verbose_toggles(monkeypatch):
+    monkeypatch.setattr(cli.ui, "print_text", lambda *a, **k: None)
+    s = _session()
+    assert s.thinking_verbose is False
+    cli.handle_command("/verbose on", s)
+    assert s.thinking_verbose is True
+    cli.handle_command("/verbose off", s)
+    assert s.thinking_verbose is False

@@ -68,21 +68,24 @@ def get_client() -> Any:
 _EXTRAS_SUPPORTED: bool | None = None
 
 
-def _thinking_extras(thinking: bool, effort: str) -> dict:
+def _thinking_extras(thinking: bool, effort: str, verbose: bool = False) -> dict:
     if not thinking:
         return {}
-    extras: dict = {"thinking": {"type": "adaptive", "display": "summarized"}}
+    # display: "summarized" streams the reasoning (grey text); "omitted" thinks
+    # silently. Set it explicitly so behavior is the same across models.
+    display = "summarized" if verbose else "omitted"
+    extras: dict = {"thinking": {"type": "adaptive", "display": display}}
     if effort:
         extras["output_config"] = {"effort": effort}
     return extras
 
 
 def create_turn(client, *, model, max_tokens, system, messages, tools,
-                thinking=False, effort="high"):
+                thinking=False, effort="medium", verbose=False):
     global _EXTRAS_SUPPORTED
     base = dict(model=model, max_tokens=max_tokens, system=system,
                 messages=messages, tools=tools)
-    extras = _thinking_extras(thinking, effort) if _EXTRAS_SUPPORTED is not False else {}
+    extras = _thinking_extras(thinking, effort, verbose) if _EXTRAS_SUPPORTED is not False else {}
     if not extras:
         return client.messages.create(**base)
     try:
@@ -115,11 +118,11 @@ def _stream_once(client, base, extras, on_text, on_thinking):
 
 
 def stream_turn(client, *, model, max_tokens, system, messages, tools, on_text,
-                on_thinking=None, thinking=False, effort="high"):
+                on_thinking=None, thinking=False, effort="medium", verbose=False):
     global _EXTRAS_SUPPORTED
     base = dict(model=model, max_tokens=max_tokens, system=system,
                 messages=messages, tools=tools)
-    extras = _thinking_extras(thinking, effort) if _EXTRAS_SUPPORTED is not False else {}
+    extras = _thinking_extras(thinking, effort, verbose) if _EXTRAS_SUPPORTED is not False else {}
     if not extras:
         return _stream_once(client, base, {}, on_text, on_thinking)
     try:

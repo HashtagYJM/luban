@@ -55,7 +55,8 @@ class Session:
     pending_context: list = field(default_factory=list)
     journaled: bool = False
     thinking: bool = True
-    effort: str = "high"
+    effort: str = "medium"
+    thinking_verbose: bool = False
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -345,6 +346,7 @@ def build_agent_config(session: Session, cfg: config_mod.Config, project_root: P
         web_search_tool_type=cfg.web_search_tool_type,
         thinking=session.thinking,
         effort=session.effort,
+        thinking_verbose=session.thinking_verbose,
     )
 
 
@@ -530,6 +532,14 @@ def handle_command(line: str, session: Session, client=None, ctx=None, cfg=None)
             return "handled"
         ui.print_text(f"effort: {session.effort}\n")
         return "handled"
+    if cmd == "/verbose":
+        if arg in ("on", "off"):
+            session.thinking_verbose = arg == "on"
+        elif arg:
+            ui.print_text("usage: /verbose [on|off]  (show the grey thinking text)\n")
+            return "handled"
+        ui.print_text(f"thinking text: {'shown' if session.thinking_verbose else 'hidden'}\n")
+        return "handled"
     if cmd == "/clear":
         session.messages.clear()
         session.session_id = ""
@@ -645,6 +655,7 @@ def main(argv: list[str] | None = None) -> None:
         auto=ns.auto, stream=ns.stream, messages=[],
         project=str(project_root),
         thinking=cfg.thinking, effort=cfg.effort,
+        thinking_verbose=cfg.thinking_verbose,
     )
     custom_names = setup_custom_tools()
     prev, cur = detect_upgrade()  # runs regardless of memory (dotfile at home root)

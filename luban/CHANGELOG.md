@@ -4,6 +4,15 @@ Release notes, newest first. Bundled inside the package so luban can show
 "what's new" and reconcile its enhancement tracker offline, with no network.
 Each entry tags the tracker IDs (E-/F-) it resolves.
 
+## Unreleased
+
+- Holistic fix for the cp1252 family across the whole process tree: luban now sets
+  UTF-8 mode (`PYTHONUTF8`) in the environment so every child process it spawns
+  starts in UTF-8 — a Python script run via `run_command` no longer crashes on an
+  arrow or emoji — and it decodes those children's output as UTF-8 too. This closes
+  the "spawned children" surface that E12 (own streams) didn't cover, and a code
+  guard now keeps every UTF-8 surface (streams, files, env, child pipes) honest. (E20)
+
 ## v0.5.11 — calmer thinking, config discovery, cumulative upgrade notes, grep alias
 
 - Tuned the thinking defaults after field use: **effort now defaults to `medium`**

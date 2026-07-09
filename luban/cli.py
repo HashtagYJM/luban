@@ -657,15 +657,23 @@ def handle_command(line: str, session: Session, client=None, ctx=None, cfg=None)
 
 
 def configure_utf8_io() -> None:
-    """Force UTF-8 on the standard streams regardless of the OS locale.
+    """Force UTF-8 across luban's WHOLE process tree, regardless of the OS locale.
 
-    Root fix for the cp1252 family (E7/E8/E10/E12): on Windows the console
-    defaults to cp1252, so a non-Latin-1 character read from stdin or written to
-    stdout would mojibake or crash. Pinning UTF-8 here (with errors='replace' as a
-    floor) fixes stdin and stdout in one place; file I/O pins encoding at each site
-    (enforced by a policy test). Best-effort: a stream without reconfigure() (a
-    pipe/redirect wrapper) is skipped, never fatal.
+    The cp1252 family (E7/E8/E10/E12/E20) all trace to one root: on Windows the
+    default locale is cp1252, and Python honors it for std streams, file I/O, AND
+    the processes luban spawns. This is the single process-level lever:
+      - luban's own std streams are reconfigured to UTF-8 here;
+      - PYTHONUTF8=1 / PYTHONIOENCODING=utf-8 are set in the environment so EVERY
+        child process luban later spawns (a run_command Python probe, a pipeline,
+        anything — not just run_command) starts in UTF-8 mode and won't charmap-
+        crash printing arrows/emoji (E20).
+    luban's own file I/O pins encoding at each site (policy-tested), and run_command
+    also decodes child pipes as UTF-8, so no surface is left on the locale default.
+    Best-effort: a stream without reconfigure() is skipped, never fatal.
     """
+    # Children read these at their own interpreter start and inherit os.environ.
+    os.environ["PYTHONUTF8"] = "1"
+    os.environ.setdefault("PYTHONIOENCODING", "utf-8")
     for stream in (sys.stdin, sys.stdout, sys.stderr):
         reconfigure = getattr(stream, "reconfigure", None)
         if reconfigure is None:

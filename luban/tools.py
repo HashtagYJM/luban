@@ -294,6 +294,8 @@ def _run_command(inp: dict, ctx: ToolContext) -> ToolResult:
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        encoding="utf-8",  # decode child output as UTF-8 (children run in UTF-8 mode
+        errors="replace",  # via PYTHONUTF8); never charmap-crash reading their output
         start_new_session=(sys.platform != "win32"),  # POSIX: own process group so we can kill the whole tree
     )
     try:

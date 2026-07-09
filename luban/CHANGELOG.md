@@ -4,7 +4,7 @@ Release notes, newest first. Bundled inside the package so luban can show
 "what's new" and reconcile its enhancement tracker offline, with no network.
 Each entry tags the tracker IDs (E-/F-) it resolves.
 
-## Unreleased
+## v0.5.12 — UTF-8 across the whole process tree (child processes)
 
 - Holistic fix for the cp1252 family across the whole process tree: luban now sets
   UTF-8 mode (`PYTHONUTF8`) in the environment so every child process it spawns

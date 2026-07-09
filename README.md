@@ -397,11 +397,18 @@ leave it unset (or commented out) to fall back to the built-in.
 `allow_out_of_tree_file_edits` (default `false`) lets the file tools edit files
 outside the current project — see the trust-model section above.
 
-luban requests **adaptive extended thinking** by default with **`effort = "high"`**,
-so capable models reason before answering. Adjust per-session with `/thinking
-[on|off]` and `/effort [low|medium|high|xhigh|max]`, or set the `thinking` / `effort`
-defaults in `config.toml`. A backend that doesn't accept these parameters degrades
-to a plain request automatically.
+See every setting that's actually in effect with **`/config`** — handy for spotting
+capabilities you haven't enabled. After upgrading luban, run **`luban --sync-config`**
+to append any new config keys (as commented lines, leaving your values untouched) so
+new features are discoverable instead of missing from an old `config.toml`.
+
+luban requests **adaptive extended thinking** by default at **`effort = "medium"`**,
+so capable models reason before answering without over-thinking easy tasks. Thinking
+runs **silently** by default; `/verbose on` streams the reasoning as dim text when you
+want to watch it. Adjust per-session with `/thinking [on|off]`, `/effort
+[low|medium|high|xhigh|max]`, and `/verbose [on|off]`, or set the `thinking` /
+`effort` / `thinking_verbose` defaults in `config.toml`. A backend that doesn't accept
+these parameters degrades to a plain request automatically.
 
 Three more optional capabilities, all **off by default**:
 

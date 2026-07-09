@@ -4,6 +4,19 @@ Release notes, newest first. Bundled inside the package so luban can show
 "what's new" and reconcile its enhancement tracker offline, with no network.
 Each entry tags the tracker IDs (E-/F-) it resolves.
 
+## v0.5.12 — config discovery, cumulative upgrade notes, grep path alias
+
+- New: **`/config`** prints your effective settings, and **`luban --sync-config`**
+  appends any config keys a newer luban added — as commented lines, preserving all
+  your values — so shipped-but-gated features (web search, subagents, thinking
+  settings…) are discoverable instead of silently missing from an old config. On
+  upgrade luban now points this out. (E19)
+- The upgrade "what's new" banner and tracker reconciliation now read the **full
+  cumulative span** of releases since your last-seen version, not just the newest —
+  so a multi-version jump doesn't miss intermediate fixes. (E17)
+- `grep` now resolves the `~/.luban` path alias like the other file tools (still
+  never exposing `~/.luban/*.py`). (E18)
+
 ## v0.5.11 — calmer thinking defaults (medium + silent)
 
 - Tuned the thinking defaults after field use: **effort now defaults to `medium`**

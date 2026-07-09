@@ -7,6 +7,7 @@ to grow — more keys (model, auto, stream) can be added later.
 from __future__ import annotations
 
 import platform as _platform
+import re
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -98,6 +99,53 @@ def write_default(path: Path = CONFIG_PATH) -> str:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(_default_text(plat), encoding="utf-8")
     return plat
+
+
+# Config keys a fresh install documents. Used by sync_config to append any that a
+# pre-existing config.toml predates — so shipped-but-gated features stay
+# discoverable instead of silently missing from a stale file (E19).
+_MIGRATABLE = [
+    ("model", '# model = "your-model-id"\n'),
+    ("memory_file", '# memory_file = "CLAUDE.md"\n'),
+    ("memory_enabled", "# memory_enabled = true\n"),
+    ("thinking", "# thinking = true\n"),
+    ("effort", '# effort = "medium"   # low | medium | high | xhigh | max\n'),
+    ("thinking_verbose", "# thinking_verbose = false   # stream the reasoning text\n"),
+    ("allow_out_of_tree_file_edits", "# allow_out_of_tree_file_edits = false\n"),
+    ("web_search", "# web_search = false\n"),
+    ("web_search_tool_type", '# web_search_tool_type = "web_search_20250305"\n'),
+    ("subagents", "# subagents = false\n"),
+]
+
+
+def missing_keys(path: Path = CONFIG_PATH) -> list[str]:
+    """Config keys the current luban knows about that aren't in the file yet."""
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    return [k for k, _ in _MIGRATABLE
+            if not re.search(rf"^\s*#?\s*{re.escape(k)}\s*=", text, re.MULTILINE)]
+
+
+def sync_config(path: Path = CONFIG_PATH) -> list[str]:
+    """Append the config keys this luban knows about that a pre-existing
+    config.toml is missing — as COMMENTED lines under a version banner. Purely
+    additive: never edits or removes an existing line/value. Returns keys added."""
+    from luban import __version__
+
+    missing = missing_keys(path)
+    if not missing:
+        return []
+    blocks = dict(_MIGRATABLE)
+    addition = (f"\n# --- settings added by luban --sync-config (v{__version__}) ---\n"
+                + "".join(blocks[k] for k in missing))
+    try:
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(addition)
+    except OSError:
+        return []
+    return missing
 
 
 def load_config(path: Path = CONFIG_PATH) -> Config:

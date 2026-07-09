@@ -70,6 +70,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--set-home", metavar="PATH", default=None,
                    help="Persist LUBAN_HOME to PATH (e.g. a OneDrive folder to "
                         "sync memory across devices) and exit.")
+    p.add_argument("--sync-config", action="store_true",
+                   help="Append any new config keys (commented) to config.toml, "
+                        "preserving your values, and exit.")
     g = p.add_mutually_exclusive_group()
     g.add_argument("--continue", "-c", dest="cont", action="store_true",
                    help="Resume the most recent session for this folder.")
@@ -258,15 +261,24 @@ def upgrade_banner(prev: str, section: str) -> str:
 
 def reconcile_directive(prev: str, section: str) -> str:
     """Injected into the next turn so luban reconciles the enhancement tracker
-    against the release — using local changelog data, no network."""
-    notes = section or "(no bundled notes for this version)"
+    against the release — using local changelog data, no network. `section` is the
+    CUMULATIVE span of every release since the user's last-seen version (E17), so a
+    multi-version jump doesn't miss intermediate fixes."""
+    notes = section or "(no bundled notes for these versions)"
     return (
-        f"luban was just upgraded from {prev} to {__version__}. Here is what "
-        f"changed in this release:\n{notes}\n\n"
+        f"luban was just upgraded from {prev} to {__version__}. Here is EVERY "
+        f"release's notes across that span:\n{notes}\n\n"
         "Reconcile the Open items in ~/.luban/memory/enhancements.md against these "
-        "changes: for each Open row now addressed by this release, move it to the "
-        "Resolved section (note the version it was fixed in). Leave the rest. Then "
-        "briefly tell me what you moved."
+        "changes, and verify — don't just text-match:\n"
+        "- For each Open row, empirically check whether the fix is actually present: "
+        "prefer running the relevant tool/probe; for a prevention-class fix that "
+        "can't be triggered in-session, inspect the installed package code to confirm "
+        "the guard exists.\n"
+        "- Move a row to Resolved only with evidence; note the version it was fixed "
+        "in and a one-line note of how you verified it. If a prevention fix can't be "
+        "re-triggered, mark it Resolved with 're-open on recurrence'.\n"
+        "- Don't infer status from stale artifacts (e.g. an old config.toml).\n"
+        "Then briefly tell me what you moved and how you checked."
     )
 
 
@@ -540,6 +552,31 @@ def handle_command(line: str, session: Session, client=None, ctx=None, cfg=None)
             return "handled"
         ui.print_text(f"thinking text: {'shown' if session.thinking_verbose else 'hidden'}\n")
         return "handled"
+    if cmd == "/config":
+        # Effective settings (session overrides where they exist) so every
+        # capability is discoverable even if it's absent from a stale config (E19).
+        rows = [
+            ("model", session.model), ("auto", session.auto),
+            ("thinking", session.thinking), ("effort", session.effort),
+            ("thinking_verbose", session.thinking_verbose),
+        ]
+        if cfg is not None:
+            rows += [
+                ("memory_enabled", cfg.memory_enabled),
+                ("web_search", cfg.web_search),
+                ("web_search_tool_type", cfg.web_search_tool_type),
+                ("subagents", cfg.subagents),
+                ("allow_out_of_tree_file_edits", cfg.allow_out_of_tree_file_edits),
+                ("memory_file", cfg.memory_file or "(auto: LUBAN.md/CLAUDE.md/AGENTS.md)"),
+            ]
+        ui.print_text("effective settings:\n")
+        for k, v in rows:
+            ui.print_text(f"  {k} = {v}\n")
+        miss = config_mod.missing_keys() if cfg is not None else []
+        if miss:
+            ui.print_text(f"({len(miss)} new setting(s) not in your config.toml — "
+                          "run `luban --sync-config` to add them)\n")
+        return "handled"
     if cmd == "/clear":
         session.messages.clear()
         session.session_id = ""
@@ -645,6 +682,16 @@ def main(argv: list[str] | None = None) -> None:
     if ns.set_home is not None:
         set_home(ns.set_home)
         return
+    if ns.sync_config:
+        added = config_mod.sync_config()
+        if added:
+            ui.print_text(
+                f"added {len(added)} setting(s) to {config_mod.CONFIG_PATH} "
+                f"(commented): {', '.join(added)}\n"
+            )
+        else:
+            ui.print_text("config.toml is already up to date.\n")
+        return
     project_root = Path(ns.dir).resolve()
     notice = home_notice()
     if notice:
@@ -660,9 +707,17 @@ def main(argv: list[str] | None = None) -> None:
     custom_names = setup_custom_tools()
     prev, cur = detect_upgrade()  # runs regardless of memory (dotfile at home root)
     upgraded = bool(prev and prev != cur)
-    section = changelog.section_for(cur) if upgraded else ""
+    # Cumulative span since the last-seen version — a multi-version jump surfaces
+    # every intermediate release's notes, not just the newest (E17).
+    section = changelog.sections_between(prev, cur) if upgraded else ""
     if upgraded:
         ui.print_text(upgrade_banner(prev, section) + "\n")  # everyone sees this
+        miss = config_mod.missing_keys()
+        if miss:
+            ui.print_text(
+                f"tip: {len(miss)} new setting(s) available — run `luban --sync-config` "
+                "to add them to your config.toml, or /config to see what's in effect.\n"
+            )
     if cfg.memory_enabled:
         memory_mod.ensure_scaffold()  # guarantees enhancements.md exists to reconcile
         if upgraded:

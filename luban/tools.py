@@ -167,22 +167,35 @@ def _grep(inp: dict, ctx: ToolContext) -> ToolResult:
     except re.error as exc:
         return ToolResult(f"Bad regex: {exc}", is_error=True)
     try:
-        base = resolve_in_root(root, inp.get("path", "."))
-    except ValueError as exc:
+        # Same resolver as read_file/list_dir so the ~/.luban alias, the project
+        # jail, and out-of-tree gating all behave identically (E18).
+        base = resolve_tool_path(
+            root, inp.get("path", "."), allow_out_of_tree=ctx.allow_out_of_tree
+        )
+    except (ValueError, KeyError) as exc:
         return ToolResult(str(exc), is_error=True)
     if not base.exists():
         # A silent "(no matches)" for an unsearchable path reads as a genuine
         # empty result and misleads the agent — error like read_file does (E4a).
         return ToolResult(f"Path not found: {inp.get('path', '.')}", is_error=True)
+    home = LUBAN_HOME.resolve()
     files = [base] if base.is_file() else [p for p in base.rglob("*") if p.is_file()]
     hits = []
     for f in files:
+        # Never expose the contents of ~/.luban Python (client_local.py holds
+        # credentials) even though grep can now reach the home area.
+        if (f == home or home in f.parents) and f.name.rstrip(" .").lower().endswith(".py"):
+            continue
         try:
             for n, line in enumerate(
                 f.read_text(encoding="utf-8", errors="replace").splitlines(), 1
             ):
                 if rx.search(line):
-                    hits.append(f"{f.relative_to(root)}:{n}: {line.strip()}")
+                    try:
+                        disp = f.relative_to(root)
+                    except ValueError:
+                        disp = f  # under ~/.luban or out-of-tree: show the full path
+                    hits.append(f"{disp}:{n}: {line.strip()}")
         except (UnicodeDecodeError, OSError, ValueError):
             continue
     return ToolResult(_truncate("\n".join(hits) or "(no matches)"))

@@ -563,6 +563,7 @@ def handle_command(line: str, session: Session, client=None, ctx=None, cfg=None)
         if cfg is not None:
             rows += [
                 ("memory_enabled", cfg.memory_enabled),
+                ("auto_continue", cfg.auto_continue),
                 ("web_search", cfg.web_search),
                 ("web_search_tool_type", cfg.web_search_tool_type),
                 ("subagents", cfg.subagents),
@@ -742,6 +743,24 @@ def main(argv: list[str] | None = None) -> None:
         data = pick_session(str(project_root), ns.all)
         if data is not None:
             restore_session(session, data)
+    else:
+        # Plain start (no -c/-r): a prior session for this folder — e.g. one you
+        # compacted then exited — is on disk but wouldn't auto-load, so it looks
+        # gone. Surface it. auto_continue reopens it instead of just reminding.
+        recent = sessions_mod.latest(str(project_root))
+        if recent is not None:
+            if cfg.auto_continue:
+                restore_session(session, recent)
+            else:
+                n = len(recent.get("messages", []))
+                title = recent.get("title") or "(untitled)"
+                when = recent.get("updated", "")
+                ui.print_text(
+                    f"↩ a recent session is saved here: \"{title}\" ({n} messages"
+                    + (f", updated {when}" if when else "")
+                    + ") — resume with `luban -c`, or set auto_continue = true to "
+                    "reopen it automatically.\n"
+                )
     ui.print_text(
         f"luban — project: {project_root}  model: {session.model}  "
         f"platform: {cfg.platform}\n"

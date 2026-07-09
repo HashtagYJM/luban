@@ -31,6 +31,7 @@ class Config:
     thinking: bool = True  # request adaptive extended thinking (on for capable models)
     effort: str = "medium"  # low | medium | high | xhigh | max
     thinking_verbose: bool = False  # stream the reasoning text; default silent
+    auto_continue: bool = False  # reopen the folder's last session on a plain start
     allow_out_of_tree_file_edits: bool = False  # let file tools touch paths outside the project
     web_search: bool = False  # offer the model the API's server-side web search tool
     web_search_tool_type: str = "web_search_20250305"  # server-tool type version string
@@ -70,6 +71,10 @@ def _default_text(plat: str) -> str:
         "# thinking = true\n"
         '# effort = "medium"\n'
         "# thinking_verbose = false\n"
+        "\n"
+        "# Reopen this folder's last session automatically on a plain `luban` start\n"
+        "# (instead of just reminding you it exists). Default off:\n"
+        "# auto_continue = false\n"
         "\n"
         "# Let the file tools read/write paths OUTSIDE this project (e.g. a sibling\n"
         "# repo), via the same diff-and-confirm as run_command. Default off for\n"
@@ -111,6 +116,7 @@ _MIGRATABLE = [
     ("thinking", "# thinking = true\n"),
     ("effort", '# effort = "medium"   # low | medium | high | xhigh | max\n'),
     ("thinking_verbose", "# thinking_verbose = false   # stream the reasoning text\n"),
+    ("auto_continue", "# auto_continue = false   # reopen the last session on plain start\n"),
     ("allow_out_of_tree_file_edits", "# allow_out_of_tree_file_edits = false\n"),
     ("web_search", "# web_search = false\n"),
     ("web_search_tool_type", '# web_search_tool_type = "web_search_20250305"\n'),
@@ -189,6 +195,9 @@ def load_config(path: Path = CONFIG_PATH) -> Config:
     thinking_verbose = data.get("thinking_verbose")
     if not isinstance(thinking_verbose, bool):
         thinking_verbose = False
+    auto_continue = data.get("auto_continue")
+    if not isinstance(auto_continue, bool):
+        auto_continue = False
     allow_out_of_tree = data.get("allow_out_of_tree_file_edits")
     if not isinstance(allow_out_of_tree, bool):
         allow_out_of_tree = False
@@ -211,6 +220,7 @@ def load_config(path: Path = CONFIG_PATH) -> Config:
         thinking=thinking,
         effort=effort,
         thinking_verbose=thinking_verbose,
+        auto_continue=auto_continue,
         allow_out_of_tree_file_edits=allow_out_of_tree,
         web_search=web_search,
         web_search_tool_type=web_search_type,

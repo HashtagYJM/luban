@@ -4,6 +4,13 @@ Release notes, newest first. Bundled inside the package so luban can show
 "what's new" and reconcile its enhancement tracker offline, with no network.
 Each entry tags the tracker IDs (E-/F-) it resolves.
 
+## Unreleased
+
+- On a plain `luban` start, if this folder has a saved session (e.g. one you
+  compacted then exited), luban now **reminds you it's there** and how to resume it
+  (`luban -c`) — so a compacted session no longer looks lost. Set
+  `auto_continue = true` in config.toml to reopen it automatically instead.
+
 ## v0.5.12 — UTF-8 across the whole process tree (child processes)
 
 - Holistic fix for the cp1252 family across the whole process tree: luban now sets

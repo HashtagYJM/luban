@@ -45,7 +45,10 @@ def test_restore_session_sets_state_and_prints(tmp_path, monkeypatch, capsys):
     assert s.model == "claude-fable-5"
     assert len(s.messages) == 2
     out = capsys.readouterr().out
-    assert "resumed 2026-07-02-0900-aaaa" in out
+    # banner now leads with the PROJECT so a wrong-thread resume is obvious (E21);
+    # the session id is still shown, just no longer first.
+    assert "resumed [projA]" in out
+    assert "2026-07-02-0900-aaaa" in out
     assert "fix utils" in out          # banner title + last exchange
     assert "done, tests pass" in out   # last assistant text
 
@@ -55,7 +58,9 @@ def test_restore_warns_on_other_project(tmp_path, monkeypatch, capsys):
     _saved(tmp_path, project="/elsewhere")
     s = _session(project="/projA")
     cli.restore_session(s, sessions.load("2026-07-02-0900-aaaa", sessions_dir=tmp_path))
-    assert "another folder" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "DIFFERENT project" in out and "WARNING" in out  # loud, not a soft note (E21)
+    assert "/elsewhere" in out and "/projA" in out
 
 
 def test_pick_session_by_number(tmp_path, monkeypatch, capsys):

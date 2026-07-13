@@ -535,12 +535,21 @@ def restore_session(session: Session, data: dict) -> None:
     session.session_id = data["id"]
     session.created = data.get("created", "")
     session.title = data.get("title", "")
+    # Lead with the PROJECT, not the session id: resuming the wrong thread (a
+    # session from another folder) is the failure that actually bites, and it's
+    # only obvious if the project name is the first thing you read (E21).
+    proj = data.get("project", "")
+    label = Path(proj).name if proj else "?"
     ui.print_text(
-        f'resumed {data["id"]} · "{session.title}" · {session.model} '
-        f"· {len(session.messages)} messages\n"
+        f'resumed [{label}] "{session.title}" · {session.model} '
+        f'· {len(session.messages)} messages · {data["id"]}\n'
     )
-    if data.get("project") and data["project"] != session.project:
-        ui.print_text(f"note: this conversation referenced another folder: {data['project']}\n")
+    if proj and proj != session.project:
+        ui.print_text(
+            "⚠ WARNING: that session belongs to a DIFFERENT project —\n"
+            f"    session: {proj}\n"
+            f"    current: {session.project}\n"
+        )
     _print_last_exchange(session.messages)
 
 
@@ -639,6 +648,18 @@ def handle_command(line: str, session: Session, client=None, ctx=None, cfg=None)
         if miss:
             ui.print_text(f"({len(miss)} new setting(s) not in your config.toml — "
                           "run `luban --sync-config` to add them)\n")
+        return "handled"
+    if cmd == "/resume":
+        # First-class continuity: restore THIS project's most recent session from
+        # its transcript. Deterministic — it can't drift onto another project's
+        # thread the way inferring "where we left off" from the journal did (E21).
+        data = sessions_mod.latest(session.project)
+        if data is None or (session.session_id and data.get("id") == session.session_id):
+            ui.print_text("no other saved session for this project.\n")
+            return "handled"
+        if session.messages:
+            save_session(session)  # don't lose the thread you're currently in
+        restore_session(session, data)
         return "handled"
     if cmd == "/clear":
         session.messages.clear()

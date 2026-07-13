@@ -527,7 +527,9 @@ TOOLS = [
         "name": "sessions",
         "description": "List saved conversation sessions for this project "
         "(newest first). Set all=true to include every project. Full transcripts "
-        "are JSON files under ~/.luban/sessions/, readable with read_file.",
+        "are JSON files under ~/.luban/sessions/, readable with read_file — use "
+        "them (not the journal) to recover what a past session was actually doing. "
+        "Read them via the ~/.luban alias, never a shell '~'.",
         "input_schema": {
             "type": "object",
             "properties": {

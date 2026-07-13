@@ -4,12 +4,54 @@ Release notes, newest first. Bundled inside the package so luban can show
 "what's new" and reconcile its enhancement tracker offline, with no network.
 Each entry tags the tracker IDs (E-/F-) it resolves.
 
-## Unreleased
+## v0.5.13 — always-on context you can see, and continuity you can trust
 
+**Your always-on files are no longer silently truncated.** Every turn, luban injects
+these into the system prompt — and anything past a cap was being dropped with only
+the *model* told, never you:
+
+| # | Layer | Cap (chars) |
+|---|-------|------|
+| 1 | base prompt + platform + memory hygiene | — |
+| 2 | **SOUL.md** (identity & standing instructions) | 4,000 |
+| 3 | **USER.md** (who you're working with) | **4,000** (was 2,000) |
+| 4 | **memory index** (one line per fact) | 4,000 |
+| 5 | **journal** (today + yesterday) | 3,000 |
+| 6 | **project memory** (LUBAN.md → CLAUDE.md → AGENTS.md) | 8,000 |
+| 7 | skills catalog (names + descriptions) | — |
+
+- **Over-cap files now warn YOU** — at startup and in `/config` — naming the file,
+  its size, the cap, and how much is being dropped. Previously the `[truncated]`
+  marker only ever reached the model, so an over-long USER.md looked like luban
+  ignoring your instructions when it had simply never seen them.
+- **`USER_MAX` raised 2,000 → 4,000** (peer of SOUL.md). Caps stay: an uncapped
+  always-on file bloats every turn with no signal.
+- **`/config` prints your always-on budget**, so you can see it before it bites.
+- **Write-routing** is now part of luban's memory conventions: a standing preference
+  → edit **USER.md**; luban's character → **SOUL.md**; a detail needed only when
+  relevant → **remember** (a fact); a repeatable procedure → **a skill**;
+  codebase-only → **the project memory file**. And the rule behind it: *never store
+  always-on behaviour as a recallable fact — it can't know to recall it before it
+  acts.*
+
+**Continuity is restored, not re-narrated.**
+
+- New **`/resume`** restores this project's last session **from its transcript** —
+  deterministic and project-scoped, so it can't wander onto another project's thread
+  the way inferring "where we left off" from the journal could.
+- Resume now **leads with the project name**, and warns loudly if a session belongs
+  to a different project.
 - On a plain `luban` start, if this folder has a saved session (e.g. one you
-  compacted then exited), luban now **reminds you it's there** and how to resume it
-  (`luban -c`) — so a compacted session no longer looks lost. Set
-  `auto_continue = true` in config.toml to reopen it automatically instead.
+  compacted then exited), luban **reminds you it's there** and how to resume it —
+  so a compacted session no longer looks lost. Set `auto_continue = true` to reopen
+  it automatically.
+
+**Compaction nudge no longer cries wolf.**
+
+- The token estimate now counts the message **text**, not the Python dict repr (which
+  was inflating every count with keys and punctuation).
+- The nudge threshold is now the **`warn_tokens`** config key, default **150,000**
+  (was a hardcoded 60,000 — a fraction of a modern context window).
 
 ## v0.5.12 — UTF-8 across the whole process tree (child processes)
 

@@ -15,8 +15,8 @@ SYSTEM_PROMPT = (
     "relevant: /compact (summarize a long conversation and keep going), /reflect "
     "(tidy your long-term memory), /model (show or switch the model), /thinking "
     "(toggle extended thinking), /effort (low..max reasoning depth), /verbose "
-    "(show or hide the reasoning text), /config (show effective settings), and "
-    "/sessions (list saved sessions)."
+    "(show or hide the reasoning text), /config (show effective settings), /resume "
+    "(restore this project's last session), and /sessions (list saved sessions)."
 )
 
 _PLATFORM_LINE = {

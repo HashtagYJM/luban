@@ -79,8 +79,35 @@ def test_compact_system_prompt_excludes_memory(tmp_path, monkeypatch):
     assert "LUBAN.md" not in sent_system  # memory & skills deliberately excluded
 
 
-def test_estimate_tokens():
+def test_estimate_tokens_counts_content_not_dict_repr():
     msgs = [{"role": "user", "content": "x" * 400}]
-    assert cli.estimate_tokens(msgs) > 90  # ~ (400 + dict overhead) // 4
+    assert cli.estimate_tokens(msgs) == 100  # 400 chars / 4 — no dict overhead
     assert cli.estimate_tokens([]) == 0
-    assert cli.WARN_TOKENS == 60_000
+
+
+def test_estimate_tokens_walks_content_blocks():
+    msgs = [
+        {"role": "assistant", "content": [
+            {"type": "text", "text": "a" * 40},
+            {"type": "tool_use", "id": "t", "name": "grep", "input": {"pattern": "x"}},
+        ]},
+        {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "t", "content": "b" * 40},
+        ]},
+    ]
+    est = cli.estimate_tokens(msgs)
+    assert 20 <= est <= 40  # the text + args, not the surrounding dict punctuation
+
+
+def test_estimate_tokens_ignores_dict_keys():
+    """The old version str()'d the whole dict, so an empty message still 'cost'
+    tokens for its keys/punctuation — inflating the count and tripping /compact early."""
+    assert cli.estimate_tokens([{"role": "user", "content": ""}]) == 0
+
+
+def test_compact_warn_threshold_is_configurable_and_no_longer_60k():
+    from luban import config as config_mod
+    assert config_mod.Config(platform="mac").warn_tokens == 150_000
+    assert cli.DEFAULT_WARN_TOKENS == 150_000
+    # and it's user-tunable
+    assert config_mod.Config(platform="mac", warn_tokens=500_000).warn_tokens == 500_000

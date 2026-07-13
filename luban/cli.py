@@ -35,7 +35,8 @@ REFLECT_PROMPT = (
     "from the journal into facts with remember, and merge or forget stale, "
     "duplicate, or wrong facts. Then report briefly what you changed."
 )
-WARN_TOKENS = 60_000
+# Kept for reference; the live threshold is config.warn_tokens (default 150k).
+DEFAULT_WARN_TOKENS = 150_000
 # First match wins; a `memory_file` key in config.toml overrides the chain.
 MEMORY_FILES = ("LUBAN.md", "CLAUDE.md", "AGENTS.md")
 MEMORY_MAX_CHARS = 8000
@@ -433,8 +434,42 @@ def exit_journal(session: Session, cfg: config_mod.Config, project_root: Path) -
     )
 
 
+def _message_text(msg: dict) -> str:
+    """The text a message actually contributes to the prompt."""
+    content = msg.get("content")
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return ""
+    parts: list[str] = []
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        kind = block.get("type")
+        if kind == "text":
+            parts.append(str(block.get("text", "")))
+        elif kind == "thinking":
+            parts.append(str(block.get("thinking", "")))
+        elif kind == "tool_use":
+            # the tool name + its JSON arguments are real tokens on the wire
+            parts.append(str(block.get("name", "")))
+            parts.append(str(block.get("input", "")))
+        elif kind == "tool_result":
+            inner = block.get("content")
+            parts.append(inner if isinstance(inner, str) else str(inner))
+        else:
+            parts.append(str(block.get("text") or ""))
+    return "\n".join(p for p in parts if p)
+
+
 def estimate_tokens(messages: list) -> int:
-    return sum(len(str(m)) for m in messages) // 4
+    """Rough token estimate (~4 chars/token) over the message TEXT.
+
+    The old version stringified the whole message dict, so it counted Python
+    punctuation and the 'role'/'content'/'type' keys as if they were prompt
+    tokens — inflating the count and tripping the /compact nudge far too early.
+    """
+    return sum(len(_message_text(m)) for m in messages) // 4
 
 
 def compact_session(session: Session, client, ctx=None, cfg=None) -> None:
@@ -581,6 +616,7 @@ def handle_command(line: str, session: Session, client=None, ctx=None, cfg=None)
             rows += [
                 ("memory_enabled", cfg.memory_enabled),
                 ("auto_continue", cfg.auto_continue),
+                ("warn_tokens", f"{cfg.warn_tokens:,}"),
                 ("web_search", cfg.web_search),
                 ("web_search_tool_type", cfg.web_search_tool_type),
                 ("subagents", cfg.subagents),
@@ -828,7 +864,7 @@ def main(argv: list[str] | None = None) -> None:
         else:
             save_session(session)
             est = estimate_tokens(session.messages)
-            if est > WARN_TOKENS:
+            if est > cfg.warn_tokens:
                 ui.print_text(
                     f"\nnote: conversation is large (~{est:,} tokens) — consider /compact\n"
                 )

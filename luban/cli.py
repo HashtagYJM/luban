@@ -211,10 +211,10 @@ def read_project_memory(project_root: Path, memory_file: str = "") -> str:
     return ""
 
 
-def always_on_usage(project_root: Path, cfg: config_mod.Config) -> list[tuple[str, int, int]]:
-    """(label, chars, cap) for everything injected into EVERY turn's system prompt —
-    the memory files plus this project's memory file. Used to tell the HUMAN when
-    content is being dropped (the truncation marker only ever reached the model)."""
+def always_on_usage(project_root: Path, cfg: config_mod.Config) -> list[tuple[str, int, int, bool]]:
+    """(label, chars, cap, warnable) for everything injected into EVERY turn's system
+    prompt — the memory files plus this project's memory file. Used to tell the HUMAN
+    when content is being dropped (the truncation marker only ever reached the model)."""
     usage = list(memory_mod.always_on_usage()) if cfg.memory_enabled else []
     names = (cfg.memory_file,) if cfg.memory_file else MEMORY_FILES
     for name in names:
@@ -223,7 +223,7 @@ def always_on_usage(project_root: Path, cfg: config_mod.Config) -> list[tuple[st
             size = len(path.read_text(encoding="utf-8", errors="replace").strip())
         except OSError:
             continue
-        usage.append((name, size, MEMORY_MAX_CHARS))
+        usage.append((name, size, MEMORY_MAX_CHARS, True))  # head-biased: really lossy
         break  # first match only, same as read_project_memory
     return usage
 
@@ -639,9 +639,16 @@ def handle_command(line: str, session: Session, client=None, ctx=None, cfg=None)
             usage = always_on_usage(Path(ctx.project_root), cfg)
             if usage:
                 ui.print_text("always-on context (sent every turn):\n")
-                for label, size, cap in usage:
-                    over = "  ⚠ OVER CAP — tail dropped" if size > cap else ""
-                    ui.print_text(f"  {label}: {size:,}/{cap:,} chars{over}\n")
+                for label, size, cap, warnable in usage:
+                    if size <= cap:
+                        note = ""
+                    elif warnable:
+                        note = "  ⚠ OVER CAP — tail dropped"
+                    elif label == "journal":
+                        note = "  (oldest entries roll off; still on disk)"
+                    else:
+                        note = "  (descriptions trimmed; every fact still listed)"
+                    ui.print_text(f"  {label}: {size:,}/{cap:,} chars{note}\n")
                 for warning in memory_mod.cap_warnings(usage):
                     ui.print_text(warning + "\n")
         miss = config_mod.missing_keys() if cfg is not None else []
@@ -650,14 +657,33 @@ def handle_command(line: str, session: Session, client=None, ctx=None, cfg=None)
                           "run `luban --sync-config` to add them)\n")
         return "handled"
     if cmd == "/resume":
-        # First-class continuity: restore THIS project's most recent session from
-        # its transcript. Deterministic — it can't drift onto another project's
-        # thread the way inferring "where we left off" from the journal did (E21).
-        data = sessions_mod.latest(session.project)
-        if data is None or (session.session_id and data.get("id") == session.session_id):
-            ui.print_text("no other saved session for this project.\n")
-            return "handled"
-        if session.messages:
+        # First-class continuity: restore a session from its TRANSCRIPT. With no
+        # argument, this project's most recent — deterministic, so it can't drift
+        # onto another project's thread the way journal-inference did (E21). With an
+        # argument, a specific session (number from /sessions, or its id) — for
+        # running more than one thread in the same folder.
+        heads = sessions_mod.list_sessions(session.project or None)
+        if arg:
+            if arg.isdigit() and 1 <= int(arg) <= len(heads):
+                target = heads[int(arg) - 1]["id"]
+            else:
+                target = arg  # a session id (possibly another project — restore warns)
+            try:
+                data = sessions_mod.load(target)
+            except Exception:
+                ui.print_text(
+                    f"no such session: {arg}  (use /sessions to list them)\n"
+                )
+                return "handled"
+        else:
+            data = sessions_mod.latest(session.project)
+            if data is None or (session.session_id and data.get("id") == session.session_id):
+                ui.print_text(
+                    "no other saved session for this project. "
+                    "(/sessions to list, /resume <n|id> to pick one)\n"
+                )
+                return "handled"
+        if session.messages and data.get("id") != session.session_id:
             save_session(session)  # don't lose the thread you're currently in
         restore_session(session, data)
         return "handled"
@@ -692,11 +718,14 @@ def handle_command(line: str, session: Session, client=None, ctx=None, cfg=None)
         if not heads:
             ui.print_text("no saved sessions found.\n")
             return "handled"
-        for h in heads:
+        # Numbered so you can pick one straight from this list with /resume <n>.
+        for i, h in enumerate(heads, 1):
+            marker = " (current)" if h["id"] == session.session_id else ""
             ui.print_text(
-                f'  {h["id"]}  {h["updated"]}  {h["model"]}  "{h["title"]}"'
-                f"  ({h['message_count']} msgs)\n"
+                f'{i:3}. {h["id"]}  {h["updated"]}  {h["model"]}  "{h["title"]}"'
+                f"  ({h['message_count']} msgs){marker}\n"
             )
+        ui.print_text("resume one with: /resume <number|id>\n")
         return "handled"
     if cmd == "/skills":
         catalog = skills_mod.list_skills(session.project or ".")

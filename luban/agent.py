@@ -16,7 +16,8 @@ SYSTEM_PROMPT = (
     "(tidy your long-term memory), /model (show or switch the model), /thinking "
     "(toggle extended thinking), /effort (low..max reasoning depth), /verbose "
     "(show or hide the reasoning text), /config (show effective settings), /resume "
-    "(restore this project's last session), and /sessions (list saved sessions)."
+    "(restore this project's last session, or `/resume <number|id>` to pick a "
+    "specific one), and /sessions (list saved sessions, numbered for /resume)."
 )
 
 _PLATFORM_LINE = {

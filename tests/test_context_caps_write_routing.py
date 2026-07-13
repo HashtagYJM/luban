@@ -54,7 +54,7 @@ def test_no_warning_when_within_cap(mem):
 
 
 def test_always_on_usage_covers_every_layer(mem):
-    labels = [lbl for lbl, _, _ in memory.always_on_usage()]
+    labels = [lbl for lbl, _, _, _ in memory.always_on_usage()]
     assert labels == ["SOUL.md", "USER.md", "memory index", "journal"]
 
 
@@ -62,7 +62,8 @@ def test_cli_usage_includes_project_memory_file(tmp_path, mem):
     (tmp_path / "CLAUDE.md").write_text("project rules", encoding="utf-8")
     cfg = config_mod.Config(platform="mac")
     usage = cli.always_on_usage(tmp_path, cfg)
-    assert ("CLAUDE.md", len("project rules"), cli.MEMORY_MAX_CHARS) in usage
+    # head-biased like SOUL/USER, so it IS warnable
+    assert ("CLAUDE.md", len("project rules"), cli.MEMORY_MAX_CHARS, True) in usage
 
 
 # ---- C3: templates declare the budget, and suppression SURVIVES the change ----

@@ -157,22 +157,89 @@ def read_user() -> str:
     return _read_capped(USER_PATH, USER_MAX, "USER.md")
 
 
+_INDEX_LINE = re.compile(r"^- \[([a-z0-9][a-z0-9-]*)\]")
+_INDEX_TRIM_NOTE = "<!-- descriptions trimmed to fit; use recall for details -->"
+
+
+def _slug_only_index(lines: list[str]) -> str:
+    slugs = [f"- [{m.group(1)}]" for ln in lines if (m := _INDEX_LINE.match(ln))]
+    header = lines[0] if lines else "# Long-term memory index"
+    return "\n".join([header, _INDEX_TRIM_NOTE, *slugs])
+
+
 def read_index() -> str:
-    return _read_capped(MEMORY_DIR / "MEMORY.md", INDEX_MAX, "memory index")
+    """The always-on catalog of facts. Degrades by dropping DESCRIPTIONS, never
+    SLUGS.
+
+    _rebuild_index sorts alphabetically and this used to head-truncate, so once the
+    index passed its cap the late-alphabet facts silently fell off the list. The
+    index is the only thing telling the model a fact EXISTS — a fact missing from it
+    is one the model will never think to recall. A slug-only line is ~20 chars, so
+    dropping descriptions keeps ~200 facts discoverable instead of ~50 (H2).
+    """
+    try:
+        text = (MEMORY_DIR / "MEMORY.md").read_text(encoding="utf-8", errors="replace").strip()
+    except OSError:
+        return ""
+    if len(text) <= INDEX_MAX:
+        return text
+    compact = _slug_only_index(text.splitlines())
+    if len(compact) <= INDEX_MAX:
+        return compact
+    # Extreme: even slug-only overflows. Now a fact really is falling off the
+    # catalog — cap_warnings says so out loud.
+    return compact[:INDEX_MAX] + "\n[memory index truncated]"
 
 
-def read_recent_journal() -> str:
-    """Today's and yesterday's journal, tail-biased truncation (newest survives)."""
-    parts = []
-    for d in (date.today() - timedelta(days=1), date.today()):
-        path = MEMORY_DIR / "journal" / f"{d.isoformat()}.md"
+def index_slugs_dropped() -> int:
+    """How many fact slugs don't fit even in a slug-only index — i.e. facts the
+    model will no longer know exist. 0 in every normal case."""
+    try:
+        text = (MEMORY_DIR / "MEMORY.md").read_text(encoding="utf-8", errors="replace").strip()
+    except OSError:
+        return 0
+    lines = text.splitlines()
+    total = sum(1 for ln in lines if _INDEX_LINE.match(ln))
+    compact = _slug_only_index(lines)
+    if len(compact) <= INDEX_MAX:
+        return 0
+    kept = sum(1 for ln in compact[:INDEX_MAX].splitlines() if _INDEX_LINE.match(ln))
+    return max(0, total - kept)
+
+
+JOURNAL_DAYS = 2
+
+
+def _recent_journal_text() -> str:
+    """The most recent JOURNAL_DAYS journal days that actually HAVE content.
+
+    Was calendar-based (literally today and yesterday), so it went completely
+    blank after any gap — work Friday, return Monday, and both "today" and
+    "yesterday" are empty even though Friday's entries are right there on disk.
+    Continuity died exactly when you'd been away and needed it most (H3).
+    """
+    try:
+        files = sorted((MEMORY_DIR / "journal").glob("*.md"))  # names sort chronologically
+    except OSError:
+        return ""
+    picked: list[str] = []
+    for path in reversed(files):  # newest first
+        if len(picked) >= JOURNAL_DAYS:
+            break
         try:
             text = path.read_text(encoding="utf-8", errors="replace").strip()
         except OSError:
             continue
         if text:
-            parts.append(f"## {d.isoformat()}\n{text}")
-    combined = "\n".join(parts)
+            picked.append(f"## {path.stem}\n{text}")
+    return "\n".join(reversed(picked))  # back to chronological order
+
+
+def read_recent_journal() -> str:
+    """Recent journal days. Tail-biased truncation: when the slice is over budget
+    the NEWEST entries survive and the OLDEST roll off (the opposite of
+    _read_capped) — and losslessly, since the full day files stay on disk."""
+    combined = _recent_journal_text()
     if len(combined) > JOURNAL_MAX:
         combined = "[journal truncated]\n" + combined[-JOURNAL_MAX:]
     return combined
@@ -188,43 +255,45 @@ def _raw_len(path: Path) -> int:
         return 0
 
 
-def _raw_journal_len() -> int:
-    parts = []
-    for d in (date.today() - timedelta(days=1), date.today()):
-        path = MEMORY_DIR / "journal" / f"{d.isoformat()}.md"
-        try:
-            text = path.read_text(encoding="utf-8", errors="replace").strip()
-        except OSError:
-            continue
-        if text:
-            parts.append(f"## {d.isoformat()}\n{text}")
-    return len("\n".join(parts))
+def always_on_usage() -> list[tuple[str, int, int, bool]]:
+    """(label, actual_chars, cap, warnable) for each memory file injected every turn.
 
-
-def always_on_usage() -> list[tuple[str, int, int]]:
-    """(label, actual_chars, cap) for each memory file injected into EVERY turn."""
+    `warnable` marks the HEAD-biased, genuinely-lossy files. The journal is
+    tail-biased and rolls off losslessly (full day files stay on disk), and the
+    index now sheds descriptions rather than facts — warning about either would be
+    noise, and the head-biased wording would be flat wrong for them (H1).
+    """
     return [
-        ("SOUL.md", _raw_len(SOUL_PATH), SOUL_MAX),
-        ("USER.md", _raw_len(USER_PATH), USER_MAX),
-        ("memory index", _raw_len(MEMORY_DIR / "MEMORY.md"), INDEX_MAX),
-        ("journal", _raw_journal_len(), JOURNAL_MAX),
+        ("SOUL.md", _raw_len(SOUL_PATH), SOUL_MAX, True),
+        ("USER.md", _raw_len(USER_PATH), USER_MAX, True),
+        ("memory index", _raw_len(MEMORY_DIR / "MEMORY.md"), INDEX_MAX, False),
+        ("journal", len(_recent_journal_text()), JOURNAL_MAX, False),
     ]
 
 
-def cap_warnings(usage: list[tuple[str, int, int]]) -> list[str]:
-    """Human-facing warnings for any always-on file whose tail is being DROPPED.
+def cap_warnings(usage: list[tuple[str, int, int, bool]]) -> list[str]:
+    """Human-facing warnings for always-on content that is genuinely being LOST.
 
-    The `[label truncated]` marker _read_capped appends only ever reached the
-    MODEL — the human was never told, so an over-cap USER.md looked like luban
-    ignoring their instructions when it had simply never seen them. Say it out loud.
+    The `[label truncated]` marker only ever reached the MODEL — the human was never
+    told, so an over-cap USER.md looked like luban ignoring their instructions when
+    it had simply never seen them. Say it out loud — but only where it's true: this
+    wording ("the last N chars are dropped") describes head-biased truncation, and
+    must never be applied to the tail-biased journal (H1).
     """
-    return [
+    out = [
         f"warning: {label} is {size:,} chars but the cap is {cap:,} — the last "
         f"{size - cap:,} chars are NOT being sent to the model. Trim it, or move "
         "task-specific detail into a skill."
-        for label, size, cap in usage
-        if size > cap
+        for label, size, cap, warnable in usage
+        if warnable and size > cap
     ]
+    dropped = index_slugs_dropped()
+    if dropped:
+        out.append(
+            f"warning: {dropped:,} fact(s) no longer fit in the memory index — luban "
+            "won't know they exist (they're still on disk). Use forget to prune."
+        )
+    return out
 
 
 def _is_untouched(text: str, template: str = "") -> bool:

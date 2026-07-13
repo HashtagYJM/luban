@@ -77,8 +77,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     g = p.add_mutually_exclusive_group()
     g.add_argument("--continue", "-c", dest="cont", action="store_true",
                    help="Resume the most recent session for this folder.")
-    g.add_argument("--resume", "-r", action="store_true",
-                   help="Pick a past session to resume.")
+    g.add_argument("--resume", "-r", nargs="?", const="", default=None,
+                   metavar="N|ID|NAME",
+                   help="Resume a past session: bare -r lists them and asks; "
+                        "-r <number|id|name> goes straight there.")
     p.add_argument("--all", action="store_true",
                    help="With --resume: list sessions from all folders.")
     p.set_defaults(stream=True)
@@ -173,7 +175,10 @@ def save_session(session: Session) -> None:
              if m["role"] == "user" and isinstance(m["content"], str)),
             "",
         )
-        session.title = first[:60]
+        # First LINE, whitespace collapsed: a pasted stack trace or a multi-line
+        # brief used to make a title that was 60 chars of noise, and two threads in
+        # one folder were then impossible to tell apart in /sessions. /title renames.
+        session.title = " ".join(first.split())[:60]
     try:
         sessions_mod.save({
             "id": session.session_id,
@@ -535,6 +540,9 @@ def restore_session(session: Session, data: dict) -> None:
     session.session_id = data["id"]
     session.created = data.get("created", "")
     session.title = data.get("title", "")
+    # Switching threads starts a new journal segment. Otherwise a `journaled` flag
+    # set by the thread you just left would suppress the journal entry for this one.
+    session.journaled = False
     # Lead with the PROJECT, not the session id: resuming the wrong thread (a
     # session from another folder) is the failure that actually bites, and it's
     # only obvious if the project name is the first thing you read (E21).
@@ -553,28 +561,48 @@ def restore_session(session: Session, data: dict) -> None:
     _print_last_exchange(session.messages)
 
 
-def pick_session(project: str, all_projects: bool, input_fn=input) -> dict | None:
+def _print_session_list(heads: list[dict], current_id: str = "",
+                        with_project: bool = False) -> None:
+    for i, h in enumerate(heads, 1):
+        prefix = f"[{Path(h['project']).name}] " if with_project else ""
+        marker = "  (current)" if h["id"] == current_id else ""
+        ui.print_text(
+            f'{i:3}. {prefix}{h["id"]}  {h["updated"]}  {h["model"]}  '
+            f'"{h["title"]}"  ({h["message_count"]} msgs){marker}\n'
+        )
+
+
+def resolve_or_report(ref: str, project: str | None) -> dict | None:
+    """Shared by `-r <ref>` and `/resume <ref>` so they accept the same things."""
+    try:
+        return sessions_mod.resolve(ref, project)
+    except sessions_mod.AmbiguousSession as exc:
+        ui.print_text(f'"{ref}" matches {len(exc.matches)} sessions:\n')
+        _print_session_list(exc.matches, with_project=True)
+        ui.print_text("be more specific, or use the id.\n")
+    except sessions_mod.SessionNotFound:
+        ui.print_text(f'no session matching "{ref}" (/sessions to list them)\n')
+    except OSError:
+        ui.print_text("could not read that session file.\n")
+    return None
+
+
+def pick_session(project: str, all_projects: bool, ref: str = "",
+                 input_fn=input) -> dict | None:
+    if ref:  # `luban -r 2` / `luban -r market` — no prompt, straight in
+        return resolve_or_report(ref, None if all_projects else project)
     heads = sessions_mod.list_sessions(None if all_projects else project)
     if not heads:
         ui.print_text("no saved sessions found.\n")
         return None
-    for i, h in enumerate(heads, 1):
-        prefix = f"[{Path(h['project']).name}] " if all_projects else ""
-        ui.print_text(
-            f'{i:3}. {prefix}{h["updated"]}  {h["model"]}  "{h["title"]}"'
-            f"  ({h['message_count']} msgs)\n"
-        )
+    _print_session_list(heads, with_project=all_projects)
     try:
-        raw = input_fn("resume which? (number, Enter to cancel): ").strip()
+        raw = input_fn("resume which? (number, name, Enter to cancel): ").strip()
     except (EOFError, KeyboardInterrupt):
         return None
-    if not raw.isdigit() or not (1 <= int(raw) <= len(heads)):
+    if not raw:
         return None
-    try:
-        return sessions_mod.load(heads[int(raw) - 1]["id"])
-    except Exception:
-        ui.print_text("could not read that session file — starting fresh.\n")
-        return None
+    return resolve_or_report(raw, None if all_projects else project)
 
 
 def handle_command(line: str, session: Session, client=None, ctx=None, cfg=None) -> str:
@@ -662,18 +690,9 @@ def handle_command(line: str, session: Session, client=None, ctx=None, cfg=None)
         # onto another project's thread the way journal-inference did (E21). With an
         # argument, a specific session (number from /sessions, or its id) — for
         # running more than one thread in the same folder.
-        heads = sessions_mod.list_sessions(session.project or None)
         if arg:
-            if arg.isdigit() and 1 <= int(arg) <= len(heads):
-                target = heads[int(arg) - 1]["id"]
-            else:
-                target = arg  # a session id (possibly another project — restore warns)
-            try:
-                data = sessions_mod.load(target)
-            except Exception:
-                ui.print_text(
-                    f"no such session: {arg}  (use /sessions to list them)\n"
-                )
+            data = resolve_or_report(arg, session.project or None)
+            if data is None:
                 return "handled"
         else:
             data = sessions_mod.latest(session.project)
@@ -687,11 +706,28 @@ def handle_command(line: str, session: Session, client=None, ctx=None, cfg=None)
             save_session(session)  # don't lose the thread you're currently in
         restore_session(session, data)
         return "handled"
-    if cmd == "/clear":
+    if cmd in ("/clear", "/new"):
+        # /new is /clear with the thread you're leaving saved first, and an optional
+        # name — the direct way to run a second thread in the same folder.
+        if cmd == "/new" and session.messages:
+            save_session(session)
+            ui.print_text(f"saved \"{session.title}\" ({session.session_id})\n")
         session.messages.clear()
         session.session_id = ""
-        session.title = ""
+        session.title = arg.strip()[:60] if cmd == "/new" else ""
         session.created = ""
+        session.journaled = False
+        if session.title:
+            ui.print_text(f'✓ new session: "{session.title}"\n')
+        return "handled"
+    if cmd == "/title":
+        if not arg.strip():
+            ui.print_text(f'title: "{session.title or "(untitled)"}"\n')
+            return "handled"
+        session.title = arg.strip()[:60]
+        if session.messages:
+            save_session(session)  # persist the rename now, not at exit
+        ui.print_text(f'✓ title → "{session.title}"\n')
         return "handled"
     if cmd == "/model":
         available = client_mod.list_models(client) if client is not None else None
@@ -714,18 +750,18 @@ def handle_command(line: str, session: Session, client=None, ctx=None, cfg=None)
         ui.print_text(f"✓ model → {wanted}\n")
         return "handled"
     if cmd == "/sessions":
-        heads = sessions_mod.list_sessions(session.project or None)
+        every = arg.strip() in ("all", "--all")
+        heads = sessions_mod.list_sessions(None if every else (session.project or None))
         if not heads:
             ui.print_text("no saved sessions found.\n")
             return "handled"
         # Numbered so you can pick one straight from this list with /resume <n>.
-        for i, h in enumerate(heads, 1):
-            marker = " (current)" if h["id"] == session.session_id else ""
-            ui.print_text(
-                f'{i:3}. {h["id"]}  {h["updated"]}  {h["model"]}  "{h["title"]}"'
-                f"  ({h['message_count']} msgs){marker}\n"
-            )
-        ui.print_text("resume one with: /resume <number|id>\n")
+        _print_session_list(heads, current_id=session.session_id, with_project=every)
+        ui.print_text(
+            "resume one with: /resume <number|id|name>"
+            + ("" if every else "   ·   /sessions all — every folder")
+            + "\n"
+        )
         return "handled"
     if cmd == "/skills":
         catalog = skills_mod.list_skills(session.project or ".")
@@ -851,8 +887,8 @@ def main(argv: list[str] | None = None) -> None:
             ui.print_text("no previous session here — starting fresh.\n")
         else:
             restore_session(session, data)
-    elif ns.resume:
-        data = pick_session(str(project_root), ns.all)
+    elif ns.resume is not None:  # bare -r is "" (falsy) — absent is None
+        data = pick_session(str(project_root), ns.all, ref=ns.resume)
         if data is not None:
             restore_session(session, data)
     else:

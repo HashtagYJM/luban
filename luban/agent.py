@@ -15,9 +15,11 @@ SYSTEM_PROMPT = (
     "relevant: /compact (summarize a long conversation and keep going), /reflect "
     "(tidy your long-term memory), /model (show or switch the model), /thinking "
     "(toggle extended thinking), /effort (low..max reasoning depth), /verbose "
-    "(show or hide the reasoning text), /config (show effective settings), /resume "
-    "(restore this project's last session, or `/resume <number|id>` to pick a "
-    "specific one), and /sessions (list saved sessions, numbered for /resume)."
+    "(show or hide the reasoning text), /config (show effective settings), /sessions "
+    "(list saved sessions — `/sessions all` spans folders), /resume (reopen this "
+    "project's last session; `/resume <number|id|name>` picks a specific one), /new "
+    "(save the current thread and start another one, optionally `/new <title>`), and "
+    "/title (name the current session so it's findable later)."
 )
 
 _PLATFORM_LINE = {

@@ -21,6 +21,14 @@ class SessionNotFound(Exception):
     pass
 
 
+class AmbiguousSession(Exception):
+    """A reference matched more than one session — the caller should show them."""
+
+    def __init__(self, matches: list[dict]) -> None:
+        super().__init__(f"{len(matches)} sessions match")
+        self.matches = matches
+
+
 def _dir(sessions_dir: Path | None) -> Path:
     # Resolve the default at call time so tests can monkeypatch SESSIONS_DIR.
     return sessions_dir if sessions_dir is not None else SESSIONS_DIR
@@ -76,3 +84,40 @@ def latest(project: str, sessions_dir: Path | None = None) -> dict | None:
     if not heads:
         return None
     return load(heads[0]["id"], sessions_dir)
+
+
+def resolve(ref: str, project: str | None = None,
+            sessions_dir: Path | None = None) -> dict:
+    """Turn whatever the user typed into a session.
+
+    Accepts a listing number, a full id, or any distinguishing fragment of an id
+    or a title — because ids are timestamps-plus-hex and nobody wants to retype
+    `2026-07-14-0930-a1b2` to switch threads. Sessions in `project` win over
+    identically-matching ones elsewhere; a fragment that still matches several
+    raises AmbiguousSession rather than guessing.
+    """
+    ref = ref.strip()
+    if not ref:
+        raise SessionNotFound(ref)
+    heads = list_sessions(project, sessions_dir)
+    if ref.isdigit():  # a number from the /sessions listing
+        i = int(ref)
+        if 1 <= i <= len(heads):
+            return load(heads[i - 1]["id"], sessions_dir)
+        raise SessionNotFound(ref)
+    try:
+        return load(ref, sessions_dir)  # a full id, from anywhere
+    except SessionNotFound:
+        pass
+    low = ref.lower()
+    matches = [
+        h for h in list_sessions(None, sessions_dir)
+        if low in h["id"].lower() or low in (h["title"] or "").lower()
+    ]
+    here = [h for h in matches if project and h["project"] == project]
+    matches = here or matches
+    if not matches:
+        raise SessionNotFound(ref)
+    if len(matches) > 1:
+        raise AmbiguousSession(matches)
+    return load(matches[0]["id"], sessions_dir)

@@ -152,5 +152,5 @@ def test_resume_unknown_id_is_reported(store, monkeypatch):
     s = cli.Session(model="m", max_tokens=100, auto=True, stream=False, messages=[],
                     project=str(store / "p"), title="")
     cli.handle_command("/resume nope", s)
-    assert "no such session" in "".join(out)
+    assert "no session matching" in "".join(out)
     assert s.session_id == ""

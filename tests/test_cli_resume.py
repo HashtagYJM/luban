@@ -25,10 +25,12 @@ def _session(project="/projA"):
 
 
 def test_parse_args_flags():
+    # -r now takes an optional ref, so "present" is `is not None`, not truthiness:
+    # a bare -r is "" (falsy) and still means "show me the picker".
     ns = cli.parse_args(["--continue"])
-    assert ns.cont and not ns.resume
+    assert ns.cont and ns.resume is None
     ns = cli.parse_args(["-r", "--all"])
-    assert ns.resume and ns.all
+    assert ns.resume == "" and ns.all
 
 
 def test_continue_and_resume_mutually_exclusive():

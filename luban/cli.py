@@ -210,6 +210,23 @@ def read_project_memory(project_root: Path, memory_file: str = "") -> str:
     return ""
 
 
+def always_on_usage(project_root: Path, cfg: config_mod.Config) -> list[tuple[str, int, int]]:
+    """(label, chars, cap) for everything injected into EVERY turn's system prompt —
+    the memory files plus this project's memory file. Used to tell the HUMAN when
+    content is being dropped (the truncation marker only ever reached the model)."""
+    usage = list(memory_mod.always_on_usage()) if cfg.memory_enabled else []
+    names = (cfg.memory_file,) if cfg.memory_file else MEMORY_FILES
+    for name in names:
+        path = Path(project_root) / name
+        try:
+            size = len(path.read_text(encoding="utf-8", errors="replace").strip())
+        except OSError:
+            continue
+        usage.append((name, size, MEMORY_MAX_CHARS))
+        break  # first match only, same as read_project_memory
+    return usage
+
+
 def setup_custom_tools() -> list[str]:
     """Load user-owned tools_local.py and merge its tools into the toolbox."""
     specs = custom_tools_mod.load_custom_tools()
@@ -573,6 +590,15 @@ def handle_command(line: str, session: Session, client=None, ctx=None, cfg=None)
         ui.print_text("effective settings:\n")
         for k, v in rows:
             ui.print_text(f"  {k} = {v}\n")
+        if cfg is not None and ctx is not None:
+            usage = always_on_usage(Path(ctx.project_root), cfg)
+            if usage:
+                ui.print_text("always-on context (sent every turn):\n")
+                for label, size, cap in usage:
+                    over = "  ⚠ OVER CAP — tail dropped" if size > cap else ""
+                    ui.print_text(f"  {label}: {size:,}/{cap:,} chars{over}\n")
+                for warning in memory_mod.cap_warnings(usage):
+                    ui.print_text(warning + "\n")
         miss = config_mod.missing_keys() if cfg is not None else []
         if miss:
             ui.print_text(f"({len(miss)} new setting(s) not in your config.toml — "
@@ -767,6 +793,10 @@ def main(argv: list[str] | None = None) -> None:
     )
     if custom_names:
         ui.print_text(f"custom tools: {', '.join(custom_names)}\n")
+    # Tell the HUMAN when an always-on file is over its cap and being cut (C1) —
+    # otherwise luban silently never sees the tail and looks like it's ignoring you.
+    for warning in memory_mod.cap_warnings(always_on_usage(project_root, cfg)):
+        ui.print_text(warning + "\n")
     while True:
         try:
             line = input("\nyou> ").strip()

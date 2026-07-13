@@ -19,7 +19,12 @@ USER_PATH = paths.luban_home() / "USER.md"
 MEMORY_DIR = paths.luban_home() / "memory"
 
 SOUL_MAX = 4000
-USER_MAX = 2000
+# A user profile is at least as load-bearing as the agent's character — a real
+# professional profile does not fit in 2,000 chars (a 3,158-char USER.md was being
+# silently truncated in the field, dropping the user's hard coding rules and whole
+# Environment section). Caps stay: an uncapped always-on file bloats EVERY turn
+# with no signal. A cap you can see (cap_warnings) beats no cap.
+USER_MAX = 4000
 INDEX_MAX = 4000
 JOURNAL_MAX = 3000
 RECALL_MAX = 8000
@@ -30,6 +35,8 @@ _SOUL_TEMPLATE = (
     "<!-- SOUL.md — luban's character and standing behavior when working with you. -->\n"
     "<!-- Edit freely; luban reads this at the start of every session. -->\n"
     "<!-- Facts about you personally go in USER.md instead. -->\n"
+    f"<!-- Keep it under {SOUL_MAX:,} characters: anything past that is NOT sent to -->\n"
+    "<!-- the model. Move task-specific detail into a skill instead. -->\n"
     "\n"
     "## How I should work\n"
     "<!-- standing behavior, e.g. 'add type hints', 'ask before installing', 'keep changes minimal' -->\n"
@@ -44,6 +51,8 @@ _SOUL_TEMPLATE = (
 _USER_TEMPLATE = (
     "<!-- USER.md — who luban is working with. luban reads this every session and -->\n"
     "<!-- may update it (with your confirmation) as it learns about you. -->\n"
+    f"<!-- Keep it under {USER_MAX:,} characters: anything past that is NOT sent to -->\n"
+    "<!-- the model. luban warns you at startup if you go over. -->\n"
     "\n"
     "## About me\n"
     "<!-- your name, role, team -->\n"
@@ -92,6 +101,14 @@ _HYGIENE = (
     "(path + status + 'details live at …') rather than copying code that will go "
     "stale, and cross-reference related facts by name with [[slug]] — recall follows "
     "those links."
+    " WHERE TO WRITE — route by how the knowledge will be USED, not by whichever "
+    "tool is handiest: a standing preference about the user or how they want work "
+    "done -> EDIT USER.md (it is always in your context); your own character or "
+    "behavior -> SOUL.md; a detail only needed once it becomes relevant -> remember "
+    "(a fact); a repeatable procedure for a class of task -> a skill; something true "
+    "only inside one codebase -> that project's memory file. NEVER store always-on "
+    "behavior as a recallable fact: you cannot know to recall it before you act, so "
+    "by the time you would look it up you have already done the thing the wrong way."
 )
 
 
@@ -155,9 +172,71 @@ def read_recent_journal() -> str:
     return combined
 
 
-def _is_untouched(text: str, template: str) -> bool:
-    """True when the file is still the shipped template (nothing user-authored yet)."""
-    return text.strip() == template.strip()
+_SCAFFOLD_COMMENT = re.compile(r"<!--.*?-->", re.DOTALL)
+
+
+def _raw_len(path: Path) -> int:
+    try:
+        return len(path.read_text(encoding="utf-8", errors="replace").strip())
+    except OSError:
+        return 0
+
+
+def _raw_journal_len() -> int:
+    parts = []
+    for d in (date.today() - timedelta(days=1), date.today()):
+        path = MEMORY_DIR / "journal" / f"{d.isoformat()}.md"
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace").strip()
+        except OSError:
+            continue
+        if text:
+            parts.append(f"## {d.isoformat()}\n{text}")
+    return len("\n".join(parts))
+
+
+def always_on_usage() -> list[tuple[str, int, int]]:
+    """(label, actual_chars, cap) for each memory file injected into EVERY turn."""
+    return [
+        ("SOUL.md", _raw_len(SOUL_PATH), SOUL_MAX),
+        ("USER.md", _raw_len(USER_PATH), USER_MAX),
+        ("memory index", _raw_len(MEMORY_DIR / "MEMORY.md"), INDEX_MAX),
+        ("journal", _raw_journal_len(), JOURNAL_MAX),
+    ]
+
+
+def cap_warnings(usage: list[tuple[str, int, int]]) -> list[str]:
+    """Human-facing warnings for any always-on file whose tail is being DROPPED.
+
+    The `[label truncated]` marker _read_capped appends only ever reached the
+    MODEL — the human was never told, so an over-cap USER.md looked like luban
+    ignoring their instructions when it had simply never seen them. Say it out loud.
+    """
+    return [
+        f"warning: {label} is {size:,} chars but the cap is {cap:,} — the last "
+        f"{size - cap:,} chars are NOT being sent to the model. Trim it, or move "
+        "task-specific detail into a skill."
+        for label, size, cap in usage
+        if size > cap
+    ]
+
+
+def _is_untouched(text: str, template: str = "") -> bool:
+    """True when the file still holds no user-authored content — only scaffold
+    (HTML comments and empty section headings).
+
+    Checked STRUCTURALLY, not by exact-matching one template's text: the old
+    equality check meant that editing a template (e.g. to add the char budget)
+    silently un-suppressed every existing user's untouched scaffold, spraying it
+    into the prompt as noise. `template` is accepted and ignored for call-site
+    compatibility.
+    """
+    body = _SCAFFOLD_COMMENT.sub("", text)
+    authored = [
+        ln.strip() for ln in body.splitlines()
+        if ln.strip() and not ln.strip().startswith("#")
+    ]
+    return not authored
 
 
 def bootstrap_block() -> str:

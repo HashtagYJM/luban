@@ -88,7 +88,11 @@ def test_bootstrap_block_composition(mem):
 
 def test_bootstrap_block_skips_empty_sections(mem):
     out = memory.bootstrap_block()  # nothing scaffolded
-    assert "SOUL.md" not in out and "Recent journal" not in out
+    # assert on the SECTION HEADERS, not bare filenames — _HYGIENE legitimately
+    # names SOUL.md/USER.md in its write-routing rule.
+    assert "Identity & standing instructions" not in out
+    assert "Who you are working with" not in out
+    assert "Recent journal" not in out
     assert "remember" in out  # hygiene still there
 
 

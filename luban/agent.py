@@ -69,7 +69,7 @@ class AgentConfig:
     thinking_verbose: bool = False  # stream the reasoning (grey text) vs think silently
 
 
-def _run_model_turn(client, config, messages, on_text, on_thinking):
+def _run_model_turn(client, config, messages, on_text, on_thinking, on_retry=None):
     system = system_prompt_for(config.platform, config.skills, config.memory, config.global_memory)
     tool_schemas = config.tools if config.tools is not None else tools_mod.TOOLS
     if config.web_search:
@@ -86,13 +86,13 @@ def _run_model_turn(client, config, messages, on_text, on_thinking):
             system=system, messages=messages, tools=tool_schemas,
             on_text=on_text, on_thinking=on_thinking,
             thinking=config.thinking, effort=config.effort,
-            verbose=config.thinking_verbose,
+            verbose=config.thinking_verbose, on_retry=on_retry,
         )
     msg = client_mod.create_turn(
         client, model=config.model, max_tokens=config.max_tokens,
         system=system, messages=messages, tools=tool_schemas,
         thinking=config.thinking, effort=config.effort,
-        verbose=config.thinking_verbose,
+        verbose=config.thinking_verbose, on_retry=on_retry,
     )
     for b in msg.content:
         if b.type == "text":
@@ -136,11 +136,12 @@ def sanitize_history(messages: list[dict]) -> list[dict]:
 MAX_PAUSE_RESUMES = 8
 
 
-def run_turn(client, config: AgentConfig, messages: list[dict], ctx, on_text, on_thinking=None) -> list[dict]:
+def run_turn(client, config: AgentConfig, messages: list[dict], ctx, on_text,
+             on_thinking=None, on_retry=None) -> list[dict]:
     messages = list(messages)
     pauses = 0
     while True:
-        msg = _run_model_turn(client, config, messages, on_text, on_thinking)
+        msg = _run_model_turn(client, config, messages, on_text, on_thinking, on_retry)
         messages.append({"role": "assistant", "content": client_mod.message_to_blocks(msg)})
         if msg.stop_reason == "pause_turn":
             # A server tool (web search) hit the API's internal iteration limit.

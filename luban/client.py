@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import time
 import types
 from pathlib import Path
 
@@ -81,21 +82,23 @@ def _thinking_extras(thinking: bool, effort: str, verbose: bool = False) -> dict
 
 
 def create_turn(client, *, model, max_tokens, system, messages, tools,
-                thinking=False, effort="medium", verbose=False):
+                thinking=False, effort="medium", verbose=False, on_retry=None):
     global _EXTRAS_SUPPORTED
     base = dict(model=model, max_tokens=max_tokens, system=system,
                 messages=messages, tools=tools)
     extras = _thinking_extras(thinking, effort, verbose) if _EXTRAS_SUPPORTED is not False else {}
     if not extras:
-        return client.messages.create(**base)
+        return _with_retry(lambda: client.messages.create(**base), on_retry)
     try:
-        msg = client.messages.create(**base, **extras)
+        msg = _with_retry(lambda: client.messages.create(**base, **extras), on_retry)
         _EXTRAS_SUPPORTED = True
         return msg
-    except Exception:
+    except Exception as exc:
         if _EXTRAS_SUPPORTED is True:
             raise  # extras worked before — this is a real error, don't mask it
-        msg = client.messages.create(**base)  # first-run probe: retry without extras
+        if is_transient(exc):
+            raise  # a dropped connection is not "this backend rejects extras"
+        msg = _with_retry(lambda: client.messages.create(**base), on_retry)  # probe
         _EXTRAS_SUPPORTED = False
         return msg
 
@@ -117,22 +120,91 @@ def _stream_once(client, base, extras, on_text, on_thinking):
         return stream.get_final_message()
 
 
+STREAM_RETRIES = 3          # attempts after the first, per turn
+_RETRY_BACKOFF = (2, 5, 12)  # seconds; a cut stream usually means a busy gateway
+
+# Matched by NAME and message, not by class, so this works whatever HTTP stack the
+# client wraps (we never import httpx — luban stays zero-dependency).
+_TRANSIENT_TYPES = {
+    "APIConnectionError", "APITimeoutError", "RemoteProtocolError", "ProtocolError",
+    "ReadError", "ReadTimeout", "ConnectError", "ConnectionResetError",
+    "IncompleteRead", "ChunkedEncodingError", "InternalServerError",
+    "OverloadedError", "APIStatusError",
+}
+_TRANSIENT_TEXT = (
+    "peer closed connection",       # the one the field keeps hitting
+    "incomplete chunked read",
+    "connection reset",
+    "connection aborted",
+    "server disconnected",
+    "remote end closed",
+    "overloaded",
+)
+
+
+def is_transient(exc: BaseException) -> bool:
+    """A network-level failure that a fresh identical request may well survive.
+
+    The SDK's own max_retries CANNOT cover this case: it retries failures that
+    happen while *issuing* the request. Once a 200 is streaming and bytes have
+    been consumed, a severed body is handed to us as an exception — there is no
+    resume for a half-read stream, so the only possible retry is a new request.
+    That's what this enables. Deliberately excludes 4xx (a bad request will fail
+    identically forever) — hence the status check below.
+    """
+    status = getattr(exc, "status_code", None)
+    if isinstance(status, int):  # an HTTP status is authoritative — don't also sniff text
+        return status in (408, 409, 429) or status >= 500
+    if type(exc).__name__ in _TRANSIENT_TYPES:
+        return True
+    text = str(exc).lower()
+    return any(frag in text for frag in _TRANSIENT_TEXT)
+
+
+def _with_retry(call, on_retry=None):
+    """Re-issue a turn that died on the wire. Safe to repeat: no tool has run yet
+    (they execute only after the turn returns), and the request is unchanged, so a
+    retry is a pure re-ask — never a duplicated side effect."""
+    last: BaseException | None = None
+    for attempt in range(STREAM_RETRIES + 1):
+        try:
+            return call()
+        except Exception as exc:
+            if not is_transient(exc) or attempt == STREAM_RETRIES:
+                raise
+            last = exc
+            delay = _RETRY_BACKOFF[min(attempt, len(_RETRY_BACKOFF) - 1)]
+            if on_retry is not None:
+                on_retry(exc, attempt + 1, STREAM_RETRIES, delay)
+            time.sleep(delay)
+    raise last  # unreachable
+
+
 def stream_turn(client, *, model, max_tokens, system, messages, tools, on_text,
-                on_thinking=None, thinking=False, effort="medium", verbose=False):
+                on_thinking=None, thinking=False, effort="medium", verbose=False,
+                on_retry=None):
     global _EXTRAS_SUPPORTED
     base = dict(model=model, max_tokens=max_tokens, system=system,
                 messages=messages, tools=tools)
     extras = _thinking_extras(thinking, effort, verbose) if _EXTRAS_SUPPORTED is not False else {}
     if not extras:
-        return _stream_once(client, base, {}, on_text, on_thinking)
+        return _with_retry(lambda: _stream_once(client, base, {}, on_text, on_thinking),
+                           on_retry)
     try:
-        msg = _stream_once(client, base, extras, on_text, on_thinking)
+        msg = _with_retry(
+            lambda: _stream_once(client, base, extras, on_text, on_thinking), on_retry)
         _EXTRAS_SUPPORTED = True
         return msg
-    except Exception:
+    except Exception as exc:
         if _EXTRAS_SUPPORTED is True:
+            raise  # extras worked before — this is a real error, don't mask it
+        # The first-run probe must not read a DROPPED CONNECTION as "this backend
+        # rejects thinking/effort" — that would silently disable them for the whole
+        # process because a proxy hiccuped on turn one.
+        if is_transient(exc):
             raise
-        msg = _stream_once(client, base, {}, on_text, on_thinking)
+        msg = _with_retry(
+            lambda: _stream_once(client, base, {}, on_text, on_thinking), on_retry)
         _EXTRAS_SUPPORTED = False
         return msg
 

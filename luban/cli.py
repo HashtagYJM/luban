@@ -163,6 +163,17 @@ def build_tool_context(
     )
 
 
+def stream_retry_notice(exc: BaseException, attempt: int, total: int, delay: int) -> None:
+    """Say it out loud when a turn is re-issued. The response restarts from the top,
+    so text already on screen is about to be superseded — silently re-streaming would
+    look like the model repeating itself."""
+    ui.print_text(
+        f"\n[connection dropped mid-response: {exc}]\n"
+        f"  retrying in {delay}s (attempt {attempt}/{total}) — the response restarts; "
+        "anything printed above this line is from the dead attempt.\n"
+    )
+
+
 def save_session(session: Session) -> None:
     if not session.messages:
         return
@@ -945,7 +956,8 @@ def main(argv: list[str] | None = None) -> None:
         ui.print_text("\nluban> ")
         try:
             session.messages = agent.run_turn(
-                client, agent_config, session.messages, ctx, ui.print_text, ui.print_thinking
+                client, agent_config, session.messages, ctx, ui.print_text,
+                ui.print_thinking, on_retry=stream_retry_notice,
             )
         except KeyboardInterrupt:
             session.messages.pop()  # drop the unanswered user turn so history stays valid
@@ -953,7 +965,14 @@ def main(argv: list[str] | None = None) -> None:
         except Exception as exc:  # a bad turn must not kill the session (E14)
             if session.messages and session.messages[-1].get("role") == "user":
                 session.messages.pop()  # drop the turn that failed; keep history valid
-            ui.print_text(f"\n[turn failed: {exc}] — history preserved, try again.\n")
+            hint = (
+                "  (the connection was cut mid-response — a gateway or proxy, not a "
+                "luban timeout; retries are automatic, this one exhausted them)\n"
+                if client_mod.is_transient(exc) else ""
+            )
+            ui.print_text(
+                f"\n[turn failed: {exc}] — history preserved, try again.\n{hint}"
+            )
         else:
             save_session(session)
             est = estimate_tokens(session.messages)

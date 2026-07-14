@@ -65,7 +65,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(prog="luban", description="Terminal coding agent.")
     p.add_argument("--dir", default=".", help="Project root (default: cwd).")
     p.add_argument("--model", default=None)
-    p.add_argument("--max-tokens", type=int, default=8192)
+    # No default here: an explicit flag must win over config.toml, but an absent flag
+    # must not silently override it with a hardcoded 8192 (the old bug — max_tokens was
+    # CLI-only, so config.toml could not raise the ceiling at all).
+    p.add_argument("--max-tokens", type=int, default=None,
+                   help="Ceiling on one turn's output (thinking + text + tool call). "
+                        "Defaults to config.toml's max_tokens.")
     p.add_argument("--auto", action="store_true", help="Skip confirmation prompts (auto-approves ALL file writes and shell commands — use with care).")
     p.add_argument("--no-stream", dest="stream", action="store_false")
     p.add_argument("--version", action="version", version=f"luban {__version__}")
@@ -161,6 +166,36 @@ def build_tool_context(
         audit=audit_cb,
         allow_out_of_tree=cfg.allow_out_of_tree_file_edits if cfg is not None else False,
         subagent=subagent,
+    )
+
+
+NO_STREAM_MAX_TOKENS = 16_000  # a non-streamed request holds an idle connection open
+
+
+def resolve_max_tokens(flag: int | None, cfg: config_mod.Config, stream: bool) -> int:
+    """Flag beats config; a non-streamed run is clamped so it can't time out mid-request."""
+    want = flag if flag is not None else cfg.max_tokens
+    if not stream and want > NO_STREAM_MAX_TOKENS:
+        ui.print_text(
+            f"note: --no-stream caps max_tokens at {NO_STREAM_MAX_TOKENS:,} "
+            f"(asked for {want:,}) — a large non-streamed response times out on the "
+            "wire. Drop --no-stream to use the full ceiling.\n"
+        )
+        return NO_STREAM_MAX_TOKENS
+    return want
+
+
+def truncation_notice(cap: int, n: int, total: int) -> None:
+    """A turn cut off mid-tool-call. NEVER let this be silent: the tool didn't run, so a
+    write the model announced simply never happened — and the model will claim it did."""
+    ui.print_text(
+        f"\n⚠ the turn hit the output ceiling (max_tokens = {cap:,}) MID-TOOL-CALL — "
+        "the tool call was cut off and dropped, so it did NOT run and nothing was "
+        "written.\n"
+        + (f"  telling the model to retry smaller (attempt {n}/{total}).\n" if n <= total
+           else "  out of retries.\n")
+        + f"  if this repeats, raise max_tokens in {config_mod.CONFIG_PATH}, or lower "
+        "/effort — thinking shares this ceiling with the tool call.\n"
     )
 
 
@@ -891,7 +926,8 @@ def main(argv: list[str] | None = None) -> None:
         ui.print_text(notice + "\n")
     cfg = config_mod.load_config()
     session = Session(
-        model=resolve_model(ns.model, cfg), max_tokens=ns.max_tokens,
+        model=resolve_model(ns.model, cfg),
+        max_tokens=resolve_max_tokens(ns.max_tokens, cfg, ns.stream),
         auto=ns.auto, stream=ns.stream, messages=[],
         project=str(project_root),
         thinking=cfg.thinking, effort=cfg.effort,
@@ -990,6 +1026,7 @@ def main(argv: list[str] | None = None) -> None:
             session.messages = agent.run_turn(
                 client, agent_config, session.messages, ctx, ui.print_text,
                 ui.print_thinking, on_retry=stream_retry_notice,
+                on_truncated=truncation_notice,
             )
         except KeyboardInterrupt:
             session.messages.pop()  # drop the unanswered user turn so history stays valid

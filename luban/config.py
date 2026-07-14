@@ -31,6 +31,13 @@ class Config:
     memory_enabled: bool = True  # long-term memory (SOUL.md, remember/recall, journal)
     thinking: bool = True  # request adaptive extended thinking (on for capable models)
     effort: str = "medium"  # low | medium | high | xhigh | max
+    # The ceiling on ONE turn's whole output: thinking + text + the tool_use input.
+    # The old fixed 8192 was set before thinking existed — raising `effort` grows the
+    # thinking allocation but the ceiling never moved with it, so reasoning starved the
+    # tool call and writes were cut off mid-flight (E24). Streaming makes a large
+    # ceiling safe; a non-streamed request holds the connection open with nothing
+    # flowing, so it gets clamped (see NO_STREAM_MAX_TOKENS).
+    max_tokens: int = 32_000
     thinking_verbose: bool = False  # stream the reasoning text; default silent
     auto_continue: bool = False  # reopen the folder's last session on a plain start
     # When to nudge "consider /compact". The old 60k default was set for a much
@@ -75,6 +82,13 @@ def _default_text(plat: str) -> str:
         "# thinking = true\n"
         '# effort = "medium"\n'
         "# thinking_verbose = false\n"
+        "\n"
+        "# Ceiling on ONE turn's whole output: thinking + text + the tool call itself.\n"
+        "# Raising `effort` grows the thinking allocation but NOT this ceiling, so if it\n"
+        "# is too low, reasoning starves the tool call and a write gets cut off. Raise it\n"
+        "# if you run high/xhigh effort or ask for large writes. Non-streamed runs\n"
+        "# (--no-stream) are clamped lower — an idle connection times out.\n"
+        "# max_tokens = 32000\n"
         "\n"
         "# Reopen this folder's last session automatically on a plain `luban` start\n"
         "# (instead of just reminding you it exists). Default off:\n"
@@ -124,6 +138,7 @@ _MIGRATABLE = [
     ("thinking", "# thinking = true\n"),
     ("effort", '# effort = "medium"   # low | medium | high | xhigh | max\n'),
     ("thinking_verbose", "# thinking_verbose = false   # stream the reasoning text\n"),
+    ("max_tokens", "# max_tokens = 32000   # ceiling on ONE turn: thinking + text + tool call\n"),
     ("auto_continue", "# auto_continue = false   # reopen the last session on plain start\n"),
     ("warn_tokens", "# warn_tokens = 150000   # when to nudge you to /compact\n"),
     ("allow_out_of_tree_file_edits", "# allow_out_of_tree_file_edits = false\n"),
@@ -309,6 +324,9 @@ def load_config(path: Path = CONFIG_PATH) -> Config:
     effort = data.get("effort")
     if effort not in {"low", "medium", "high", "xhigh", "max"}:
         effort = "medium"
+    max_tokens = data.get("max_tokens")
+    if not isinstance(max_tokens, int) or isinstance(max_tokens, bool) or max_tokens <= 0:
+        max_tokens = 32_000
     thinking_verbose = data.get("thinking_verbose")
     if not isinstance(thinking_verbose, bool):
         thinking_verbose = False
@@ -339,6 +357,7 @@ def load_config(path: Path = CONFIG_PATH) -> Config:
         memory_enabled=memory_enabled,
         thinking=thinking,
         effort=effort,
+        max_tokens=max_tokens,
         thinking_verbose=thinking_verbose,
         auto_continue=auto_continue,
         warn_tokens=warn_tokens,

@@ -10,7 +10,9 @@ def test_parse_args_defaults():
     ns = cli.parse_args([])
     assert ns.model is None
     assert ns.auto is False
-    assert ns.max_tokens == 8192
+    # None, not a number: an absent flag must defer to config.toml's max_tokens. The old
+    # hardcoded 8192 default meant config could never raise the ceiling (E24).
+    assert ns.max_tokens is None
     assert ns.stream is True
 
 

@@ -9,8 +9,12 @@ SYSTEM_PROMPT = (
     "You are Luban, a terminal coding agent operating inside the user's project "
     "directory. Use the tools to search and read files before editing. Prefer "
     "edit_file over rewriting whole files; keep changes minimal and targeted. "
-    "Briefly say what you are about to do before calling mutating tools. All paths "
-    "are relative to the project root."
+    "Briefly say what you are about to do before calling mutating tools — in the SAME "
+    "turn as the tool call, never as a turn of its own. NEVER end a turn announcing "
+    "work you have not done ('I'll write the file now', 'let me update X'): a turn that "
+    "ends with no tool call yields control back to the user, so the announced work "
+    "simply never happens and the session stalls. If you say you are about to act, the "
+    "tool call must be in that same turn. All paths are relative to the project root."
     " The user drives the session with slash-commands you can point them to when "
     "relevant: /compact (summarize a long conversation and keep going), /reflect "
     "(tidy your long-term memory), /model (show or switch the model), /thinking "
@@ -135,12 +139,27 @@ def sanitize_history(messages: list[dict]) -> list[dict]:
 
 
 MAX_PAUSE_RESUMES = 8
+MAX_TRUNCATION_RETRIES = 2
+
+TRUNCATION_NUDGE = (
+    "Your previous turn hit the output token ceiling (max_tokens) before it finished. "
+    "It ended mid-tool-call, so THE TOOL CALL WAS DROPPED — nothing ran, nothing was "
+    "written. Do not assume it succeeded. Retry the action in a way that fits: split a "
+    "large write into parts (write_file, then edit_file to append), or do less per turn."
+)
+
+
+def _has_tool_use(content) -> bool:
+    return isinstance(content, list) and any(
+        isinstance(b, dict) and b.get("type") == "tool_use" for b in content
+    )
 
 
 def run_turn(client, config: AgentConfig, messages: list[dict], ctx, on_text,
-             on_thinking=None, on_retry=None) -> list[dict]:
+             on_thinking=None, on_retry=None, on_truncated=None) -> list[dict]:
     messages = list(messages)
     pauses = 0
+    truncations = 0
     while True:
         msg = _run_model_turn(client, config, messages, on_text, on_thinking, on_retry)
         messages.append({"role": "assistant", "content": client_mod.message_to_blocks(msg)})
@@ -153,9 +172,25 @@ def run_turn(client, config: AgentConfig, messages: list[dict], ctx, on_text,
                 return sanitize_history(messages)
             pauses += 1
             continue
+        if msg.stop_reason == "max_tokens" and _has_tool_use(messages[-1]["content"]):
+            # The turn was cut off MID-TOOL-CALL. sanitize_history must strip that
+            # tool_use (an unanswered one 400s the next send — E14), but stripping it
+            # silently is how a write "vanishes": the user sees the model announce the
+            # write, no tool runs, no error appears anywhere, and the model itself never
+            # learns the call was dropped — so it reports success (E24, and the
+            # mechanism behind most of what E23 logged as "announce-and-yield").
+            # Tell BOTH: the human, and the model on its next turn.
+            messages = sanitize_history(messages)
+            if on_truncated is not None:
+                on_truncated(config.max_tokens, truncations + 1, MAX_TRUNCATION_RETRIES)
+            if truncations >= MAX_TRUNCATION_RETRIES:
+                return messages
+            truncations += 1
+            messages.append({"role": "user", "content": TRUNCATION_NUDGE})
+            continue
         if msg.stop_reason != "tool_use":
-            # A max_tokens (or other non-tool_use) stop can still carry a truncated
-            # tool_use block — never return it unanswered, or the next send/resume 400s.
+            # Any other non-tool_use stop can still carry a trailing tool_use — never
+            # return it unanswered, or the next send/resume 400s.
             return sanitize_history(messages)
         offered = {
             t["name"] for t in (config.tools if config.tools is not None else tools_mod.TOOLS)

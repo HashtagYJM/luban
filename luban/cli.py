@@ -843,8 +843,11 @@ def main(argv: list[str] | None = None) -> None:
         added = config_mod.sync_config()
         if added:
             ui.print_text(
-                f"added {len(added)} setting(s) to {config_mod.CONFIG_PATH} "
-                f"(commented): {', '.join(added)}\n"
+                f"updated {len(added)} setting(s) in {config_mod.CONFIG_PATH}: "
+                f"{', '.join(added)}\n"
+                "(new keys are added commented-out; any setting that a [table] "
+                "header had swallowed is moved back to the top level, where it's "
+                "actually read — your values are never changed.)\n"
             )
         else:
             ui.print_text("config.toml is already up to date.\n")
@@ -918,6 +921,10 @@ def main(argv: list[str] | None = None) -> None:
     # Tell the HUMAN when an always-on file is over its cap and being cut (C1) —
     # otherwise luban silently never sees the tail and looks like it's ignoring you.
     for warning in memory_mod.cap_warnings(always_on_usage(project_root, cfg)):
+        ui.print_text(warning + "\n")
+    # Same principle for config: a setting that's in the file but silently ignored
+    # (swallowed by a [table] header) looks exactly like luban disobeying you.
+    for warning in config_mod.config_warnings():
         ui.print_text(warning + "\n")
     while True:
         try:

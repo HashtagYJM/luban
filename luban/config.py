@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import platform as _platform
 import re
+import sys
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -132,34 +133,138 @@ _MIGRATABLE = [
 ]
 
 
+_TOP_LEVEL_KEYS = {"platform", *(k for k, _ in _MIGRATABLE)}
+# A real table header. A commented-out `# [permissions]` is not one.
+_TABLE_HEADER = re.compile(r"^\s*\[")
+
+
+def _top_level_end(lines: list[str]) -> int:
+    """Index of the first real table header — the end of the top-level region.
+
+    Everything after a `[table]` header belongs to that table until the next one.
+    Top-level keys MUST be written above it or TOML silently reparents them.
+    """
+    for i, line in enumerate(lines):
+        if _TABLE_HEADER.match(line):
+            return i
+    return len(lines)
+
+
 def missing_keys(path: Path = CONFIG_PATH) -> list[str]:
-    """Config keys the current luban knows about that aren't in the file yet."""
+    """Config keys the current luban knows about that aren't in the file yet.
+
+    Only the TOP-LEVEL region counts: a `effort = "xhigh"` sitting under
+    `[permissions]` is not a top-level effort setting, it's `permissions.effort`,
+    which nothing reads. Scanning the whole file (as this used to) reported such a
+    key as present, so --sync-config saw nothing to do and the user was stuck.
+    """
     try:
         text = path.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return []
+    lines = text.splitlines(keepends=True)
+    head = "".join(lines[: _top_level_end(lines)])
     return [k for k, _ in _MIGRATABLE
-            if not re.search(rf"^\s*#?\s*{re.escape(k)}\s*=", text, re.MULTILINE)]
+            if not re.search(rf"^\s*#?\s*{re.escape(k)}\s*=", head, re.MULTILINE)]
+
+
+def misplaced_keys(path: Path = CONFIG_PATH) -> list[tuple[str, str]]:
+    """Top-level settings that TOML has swallowed into a table — (key, table).
+
+    This is what a bare `effort = "xhigh"` appended below `[permissions]` becomes:
+    a live, syntactically valid, completely ignored `permissions.effort`.
+    """
+    try:
+        data = tomllib.loads(path.read_text(encoding="utf-8", errors="replace"))
+    except (tomllib.TOMLDecodeError, OSError):
+        return []
+    found: list[tuple[str, str]] = []
+    for table, body in data.items():
+        if not isinstance(body, dict):
+            continue
+        found.extend((key, table) for key in body if key in _TOP_LEVEL_KEYS)
+    return found
+
+
+def config_warnings(path: Path = CONFIG_PATH) -> list[str]:
+    """Told to the HUMAN at startup: settings that are in the file but ignored."""
+    bad = misplaced_keys(path)
+    if not bad:
+        return []
+    listing = ", ".join(f"{k} (under [{t}])" for k, t in sorted(bad))
+    return [
+        f"warning: {len(bad)} setting(s) in your config.toml are being IGNORED — "
+        f"{listing}. A [table] header captures every key below it, so these became "
+        f"table entries, not settings. Run `luban --sync-config` to move them back "
+        f"to the top of the file."
+    ]
+
+
+_SYNC_BANNER = re.compile(r"^#\s*---\s*settings added by luban --sync-config")
+
+
+def _repair_misplaced(lines: list[str]) -> tuple[list[str], list[str]]:
+    """Lift swallowed top-level keys back above the first table header."""
+    start = _top_level_end(lines)
+    if start >= len(lines):
+        return lines, []
+    keep: list[str] = []
+    lifted: list[str] = []
+    names: list[str] = []
+    for line in lines[start:]:
+        m = re.match(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=", line)
+        if m and m.group(1) in _TOP_LEVEL_KEYS:
+            lifted.append(line if line.endswith("\n") else line + "\n")
+            names.append(m.group(1))
+        elif not _SYNC_BANNER.match(line):
+            keep.append(line)  # our own banner would be left orphaned; drop it
+    if not lifted:
+        return lines, []
+    banner = "# --- moved back to the top level by luban --sync-config ---\n"
+    # (they were under a [table] header, where nothing reads them)
+    body = lines[:start]
+    while body and not body[-1].strip():  # collapse the gap we're inserting into
+        body.pop()
+    return body + ["\n", banner, *lifted, "\n"] + keep, names
 
 
 def sync_config(path: Path = CONFIG_PATH) -> list[str]:
-    """Append the config keys this luban knows about that a pre-existing
-    config.toml is missing — as COMMENTED lines under a version banner. Purely
-    additive: never edits or removes an existing line/value. Returns keys added."""
+    """Bring a pre-existing config.toml up to date. Returns the keys touched.
+
+    Two jobs, both purely mechanical — no value is ever changed:
+      1. REPAIR: lift any top-level setting that a [table] header has swallowed
+         back above that header, where it's actually read.
+      2. ADD: append the keys this luban knows about that the file predates, as
+         COMMENTED lines — inserted in the TOP-LEVEL region, never at EOF, which
+         is what caused (1) in the first place.
+    """
     from luban import __version__
 
-    missing = missing_keys(path)
-    if not missing:
-        return []
-    blocks = dict(_MIGRATABLE)
-    addition = (f"\n# --- settings added by luban --sync-config (v{__version__}) ---\n"
-                + "".join(blocks[k] for k in missing))
     try:
-        with path.open("a", encoding="utf-8") as fh:
-            fh.write(addition)
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines(keepends=True)
     except OSError:
         return []
-    return missing
+    lines, repaired = _repair_misplaced(lines)
+    # Recompute against the REPAIRED text, so a key we just lifted isn't also
+    # re-added as a commented default below it.
+    head = "".join(lines[: _top_level_end(lines)])
+    missing = [k for k, _ in _MIGRATABLE
+               if not re.search(rf"^\s*#?\s*{re.escape(k)}\s*=", head, re.MULTILINE)]
+    added: list[str] = []
+    if missing:
+        blocks = dict(_MIGRATABLE)
+        block = ([f"\n# --- settings added by luban --sync-config (v{__version__}) ---\n"]
+                 + [blocks[k] for k in missing])
+        at = _top_level_end(lines)  # above the first table, not at EOF
+        lines = lines[:at] + block + (["\n"] if at < len(lines) else []) + lines[at:]
+        added = missing
+    if not repaired and not added:
+        return []
+    try:
+        path.write_text("".join(lines), encoding="utf-8")
+    except OSError:
+        return []
+    return sorted(set(repaired) | set(added))
 
 
 def load_config(path: Path = CONFIG_PATH) -> Config:
@@ -168,7 +273,11 @@ def load_config(path: Path = CONFIG_PATH) -> Config:
         return Config(platform=write_default(path))
     try:
         data = tomllib.loads(path.read_text(encoding="utf-8", errors="replace"))
-    except (tomllib.TOMLDecodeError, OSError):
+    except (tomllib.TOMLDecodeError, OSError) as exc:
+        # Don't die — but don't pretend either. Silently returning defaults for a
+        # file the user is actively editing is how a setting goes missing for weeks.
+        print(f"warning: config.toml could not be read ({exc}) — using defaults "
+              f"for EVERY setting. Fix the file at {path}.", file=sys.stderr)
         data = {}
     plat = data.get("platform") or detect_platform()
     if plat not in _VALID_PLATFORMS:

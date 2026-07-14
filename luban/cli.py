@@ -55,6 +55,7 @@ class Session:
     title: str = ""
     pending_context: list = field(default_factory=list)
     journaled: bool = False
+    last_failed: object = None  # the prompt from a turn the network killed (/retry)
     thinking: bool = True
     effort: str = "medium"
     thinking_verbose: bool = False
@@ -163,14 +164,35 @@ def build_tool_context(
     )
 
 
-def stream_retry_notice(exc: BaseException, attempt: int, total: int, delay: int) -> None:
+def stream_retry_notice(exc: BaseException, attempt: int, total: int, delay: float) -> None:
     """Say it out loud when a turn is re-issued. The response restarts from the top,
     so text already on screen is about to be superseded — silently re-streaming would
     look like the model repeating itself."""
+    what = ("the backend is overloaded" if client_mod._is_overload(exc)
+            else "the connection was cut mid-response")
     ui.print_text(
-        f"\n[connection dropped mid-response: {exc}]\n"
-        f"  retrying in {delay}s (attempt {attempt}/{total}) — the response restarts; "
-        "anything printed above this line is from the dead attempt.\n"
+        f"\n[{what}: {exc}]\n"
+        f"  retrying in {delay:.0f}s (attempt {attempt}/{total}) — the response "
+        "restarts; anything printed above this line is from the dead attempt.\n"
+    )
+
+
+def failure_hint(exc: BaseException) -> str:
+    """Why it failed and what actually helps — the two network failures have opposite
+    remedies, and neither is 'raise your timeout'."""
+    if not client_mod.is_transient(exc):
+        return "history preserved — /retry to resend that prompt.\n"
+    if client_mod._is_overload(exc):
+        return (
+            "  the backend is saturated (it said so) — not a luban timeout, and a\n"
+            "  bigger num_retries won't help. Waiting is the only fix. /retry to\n"
+            "  resend the same prompt when you're ready.\n"
+        )
+    return (
+        "  the connection was cut mid-response — a gateway or proxy hung up, not a\n"
+        "  luban timeout. Retries are automatic; this one exhausted them. Long turns\n"
+        "  are cut more often, so a lower /effort or a smaller ask survives better.\n"
+        "  /retry to resend the same prompt.\n"
     )
 
 
@@ -944,14 +966,24 @@ def main(argv: list[str] | None = None) -> None:
             break
         if not line:
             continue
-        status = handle_command(line, session, client, ctx, cfg)
-        if status == "exit":
-            break
-        if status == "handled":
-            continue
-        session.messages.append(
-            {"role": "user", "content": compose_user_message(session, line)}
-        )
+        if line == "/retry":
+            # A gateway that drops or overloads mid-turn shouldn't cost you the prompt
+            # you typed. The failed turn is stashed, not lost — resend it verbatim.
+            if not session.last_failed:
+                ui.print_text("nothing to retry.\n")
+                continue
+            content = session.last_failed
+            session.last_failed = None
+            session.messages.append({"role": "user", "content": content})
+        else:
+            status = handle_command(line, session, client, ctx, cfg)
+            if status == "exit":
+                break
+            if status == "handled":
+                continue
+            session.messages.append(
+                {"role": "user", "content": compose_user_message(session, line)}
+            )
         agent_config = build_agent_config(session, cfg, project_root)
         ui.print_text("\nluban> ")
         try:
@@ -964,15 +996,10 @@ def main(argv: list[str] | None = None) -> None:
             ui.print_text("\n[interrupted]\n")
         except Exception as exc:  # a bad turn must not kill the session (E14)
             if session.messages and session.messages[-1].get("role") == "user":
-                session.messages.pop()  # drop the turn that failed; keep history valid
-            hint = (
-                "  (the connection was cut mid-response — a gateway or proxy, not a "
-                "luban timeout; retries are automatic, this one exhausted them)\n"
-                if client_mod.is_transient(exc) else ""
-            )
-            ui.print_text(
-                f"\n[turn failed: {exc}] — history preserved, try again.\n{hint}"
-            )
+                # Keep the prompt (for /retry) but drop it from history, which must
+                # never end on an unanswered user turn.
+                session.last_failed = session.messages.pop()["content"]
+            ui.print_text(f"\n[turn failed: {exc}]\n{failure_hint(exc)}")
         else:
             save_session(session)
             est = estimate_tokens(session.messages)

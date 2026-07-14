@@ -18,8 +18,9 @@ SYSTEM_PROMPT = (
     "(show or hide the reasoning text), /config (show effective settings), /sessions "
     "(list saved sessions — `/sessions all` spans folders), /resume (reopen this "
     "project's last session; `/resume <number|id|name>` picks a specific one), /new "
-    "(save the current thread and start another one, optionally `/new <title>`), and "
-    "/title (name the current session so it's findable later)."
+    "(save the current thread and start another one, optionally `/new <title>`), "
+    "/title (name the current session so it's findable later), and /retry (resend a "
+    "prompt whose turn the network killed — the typed prompt is not lost)."
 )
 
 _PLATFORM_LINE = {

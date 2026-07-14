@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import random
 import time
 import types
 from pathlib import Path
@@ -120,8 +121,55 @@ def _stream_once(client, base, extras, on_text, on_thinking):
         return stream.get_final_message()
 
 
-STREAM_RETRIES = 3          # attempts after the first, per turn
-_RETRY_BACKOFF = (2, 5, 12)  # seconds; a cut stream usually means a busy gateway
+STREAM_RETRIES = 3  # attempts after the first, per turn
+
+# Two failures, two very different right answers.
+# A CUT STREAM is a one-off: the connection died, the backend is fine, go again soon.
+# An OVERLOAD (429/529) means the backend is saturated — and by the time it reaches
+# us the SDK has ALREADY burned its own max_retries on it with short exponential
+# backoff. Retrying again seconds later just adds load to something that is already
+# telling us it has none to give. Wait properly.
+_BACKOFF_DROPPED = (2, 5, 12)
+_BACKOFF_OVERLOAD = (20, 60, 120)
+_MAX_RETRY_AFTER = 180  # trust the server's retry-after, but don't hang forever on it
+
+
+def _is_overload(exc: BaseException) -> bool:
+    status = getattr(exc, "status_code", None)
+    if isinstance(status, int):
+        return status in (429, 503, 529)
+    text = str(exc).lower()
+    return "overloaded" in text or "rate limit" in text
+
+
+def _retry_after(exc: BaseException) -> float | None:
+    """The server's own answer to 'when should I come back'. Always beats a guess."""
+    response = getattr(exc, "response", None)
+    headers = getattr(response, "headers", None)
+    if headers is None:
+        return None
+    try:
+        raw = headers.get("retry-after")
+    except Exception:
+        return None
+    if raw is None:
+        return None
+    try:
+        return max(0.0, min(float(raw), _MAX_RETRY_AFTER))
+    except (TypeError, ValueError):
+        return None  # HTTP-date form; not worth parsing — fall back to our backoff
+
+
+def retry_delay(exc: BaseException, attempt: int) -> float:
+    """Seconds to wait before attempt N+1. Jittered: a shared corporate gateway sees
+    every colleague's luban at once, and un-jittered backoff marches them all back in
+    lockstep — the retries re-collide and the overload sustains itself."""
+    told = _retry_after(exc)
+    if told is not None:
+        return told
+    table = _BACKOFF_OVERLOAD if _is_overload(exc) else _BACKOFF_DROPPED
+    base = table[min(attempt, len(table) - 1)]
+    return base * random.uniform(0.8, 1.3)
 
 # Matched by NAME and message, not by class, so this works whatever HTTP stack the
 # client wraps (we never import httpx — luban stays zero-dependency).
@@ -173,7 +221,7 @@ def _with_retry(call, on_retry=None):
             if not is_transient(exc) or attempt == STREAM_RETRIES:
                 raise
             last = exc
-            delay = _RETRY_BACKOFF[min(attempt, len(_RETRY_BACKOFF) - 1)]
+            delay = retry_delay(exc, attempt)
             if on_retry is not None:
                 on_retry(exc, attempt + 1, STREAM_RETRIES, delay)
             time.sleep(delay)

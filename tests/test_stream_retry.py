@@ -122,7 +122,10 @@ def test_the_user_is_told_each_retry():
     seen = []
     c = FlakyClient(fails=1)
     _stream(c, on_retry=lambda exc, n, total, delay: seen.append((n, total, delay)))
-    assert seen == [(1, client_mod.STREAM_RETRIES, client_mod._RETRY_BACKOFF[0])]
+    assert len(seen) == 1
+    attempt, total, delay = seen[0]
+    assert (attempt, total) == (1, client_mod.STREAM_RETRIES)
+    assert delay > 0  # and it's announced, so the restart doesn't look like a repeat
 
 
 def test_non_streaming_turns_retry_too():
@@ -162,3 +165,84 @@ def test_a_genuine_rejection_still_disables_extras():
     assert _stream(c, thinking=True, effort="high") == "plain"
     assert client_mod._EXTRAS_SUPPORTED is False
     assert len(c.calls) == 2  # probed with extras, then retried without
+
+
+# ---------------- overload (429/529) is not a dropped stream ----------------
+
+class Overloaded(Exception):
+    status_code = 529
+
+
+class WithRetryAfter(Exception):
+    status_code = 529
+
+    def __init__(self, seconds):
+        super().__init__("overloaded")
+        self.response = type("R", (), {"headers": {"retry-after": str(seconds)}})()
+
+
+def test_overload_is_transient():
+    assert client_mod.is_transient(Overloaded("overloaded_error"))
+    assert client_mod._is_overload(Overloaded("overloaded_error"))
+
+
+def test_a_cut_stream_is_not_treated_as_overload():
+    assert not client_mod._is_overload(FIELD_ERROR)
+
+
+def test_overload_backs_off_far_harder_than_a_cut_stream():
+    """By the time a 529 reaches luban the SDK has already burned its own retries on
+    it. Coming back 2s later just adds load to a backend that said it has none."""
+    overload = client_mod.retry_delay(Overloaded("overloaded"), 0)
+    dropped = client_mod.retry_delay(FIELD_ERROR, 0)
+    assert overload > dropped * 3
+    assert overload >= 16  # 20s base, minus jitter
+
+
+def test_retry_after_header_beats_our_guess():
+    assert client_mod.retry_delay(WithRetryAfter(37), 0) == 37.0
+
+
+def test_retry_after_is_capped():
+    assert client_mod.retry_delay(WithRetryAfter(99999), 0) == client_mod._MAX_RETRY_AFTER
+
+
+def test_garbage_retry_after_falls_back_to_backoff():
+    """An HTTP-date retry-after must not crash the retry path."""
+    exc = WithRetryAfter(0)
+    exc.response.headers = {"retry-after": "Wed, 21 Oct 2026 07:28:00 GMT"}
+    assert client_mod.retry_delay(exc, 0) >= 16  # fell back to the overload table
+
+
+def test_delays_are_jittered():
+    """A shared corporate gateway sees every colleague's luban at once — un-jittered
+    backoff marches them all back in lockstep and the overload sustains itself."""
+    seen = {client_mod.retry_delay(Overloaded("overloaded"), 0) for _ in range(20)}
+    assert len(seen) > 1
+
+
+def test_an_overloaded_turn_still_recovers():
+    c = FlakyClient(fails=2, exc=Overloaded("overloaded_error"))
+    assert _stream(c) == "recovered"
+    assert c.attempts == 3
+
+
+# ---------------- /retry: a dead gateway must not cost you the prompt ----------------
+
+def test_a_failed_turn_stashes_the_prompt_and_leaves_history_valid():
+    from luban import cli
+    s = cli.Session(model="m", max_tokens=10, auto=True, stream=False, messages=[])
+    s.messages.append({"role": "user", "content": "the long prompt I typed"})
+    # what the REPL does when run_turn raises:
+    s.last_failed = s.messages.pop()["content"]
+    assert s.messages == []  # history never ends on an unanswered user turn (E14)
+    assert s.last_failed == "the long prompt I typed"  # …but the prompt survives
+
+
+def test_failure_hint_names_the_real_cause():
+    from luban import cli
+    overload = cli.failure_hint(Overloaded("overloaded_error"))
+    assert "saturated" in overload and "num_retries" in overload  # not your config
+    dropped = cli.failure_hint(FIELD_ERROR)
+    assert "cut mid-response" in dropped and "not a\n  luban timeout" in dropped
+    assert "/retry" in overload and "/retry" in dropped

@@ -93,8 +93,25 @@ luban --model <id>          # pick a model
 luban --version             # print the installed version and exit
 ```
 
-In-session commands: `/auto`, `/model` (list models / switch), `/skills`,
-`/skill <name>`, `/compact`, `/reflect`, `/sessions`, `/clear`, `/exit`.
+### In-session commands
+
+| Command | What it does |
+|---|---|
+| `/model [id]` | Show the available models, or switch to one |
+| `/thinking [on\|off]` | Extended thinking (on by default) |
+| `/effort [low\|medium\|high\|xhigh\|max]` | How hard the model reasons |
+| `/verbose [on\|off]` | Show or hide the reasoning text itself |
+| `/config` | Every setting in effect, plus your always-on context budget |
+| `/auto` | Stop asking before file writes and shell commands |
+| `/skills`, `/skill <name>` | List skills; load one into context |
+| `/compact` | Summarize a long conversation and keep going |
+| `/reflect` | Tidy long-term memory (dedupe, prune, re-index) |
+| `/sessions [all]` | List saved sessions — this folder, or every folder |
+| `/resume [n\|id\|name]` | Reopen the last session here, or a specific one |
+| `/new [title]` | Save the current thread and start another |
+| `/title [text]` | Show or rename the current session |
+| `/clear` | Start fresh (the old session stays on disk) |
+| `/exit` | Leave (the session is already saved) |
 
 > **Warning:** `--auto` (and the `/auto` command) run file writes and shell
 > commands WITHOUT asking. Only use it in a project directory you trust. Deny rules from `[permissions]` still apply under `--auto`.
@@ -105,16 +122,38 @@ Every session is saved automatically (after each completed turn) to
 `~/.luban/sessions/` — never inside your project folder.
 
 ```bash
-luban --continue      # -c: reopen the most recent session for this folder
-luban --resume        # -r: pick a past session for this folder from a list
-luban --resume --all  # pick from every folder's sessions
+luban --continue        # -c: reopen the most recent session for this folder
+luban --resume          # -r: list this folder's sessions and pick one
+luban --resume market   # -r <n|id|name>: go straight to one, no picker
+luban --resume --all    # pick from every folder's sessions
 ```
 
 Resuming restores the full conversation and the model it was using, and shows
-the last exchange so you remember where you were. In-session: `/sessions`
-lists this folder's saved sessions; `/clear` starts a fresh session (the old
-one stays on disk). Resuming another folder's session (via --all) moves that
-session to your current folder.
+the last exchange so you remember where you were. Resuming another folder's
+session (via `--all`) moves that session to your current folder — luban warns
+loudly when that happens, since it's rarely what you meant.
+
+### Two threads in one folder
+
+You don't have to name a session. The first thing you type becomes its title,
+and `/sessions` numbers them, so `/resume 2` is always enough.
+
+Naming earns its keep when you keep **parallel threads** in one project — say a
+long-running research thread and a quick bug fix — because auto-titles can look
+alike in the list:
+
+```
+/new market update        # saves the thread you're in, starts a named one
+/title portfolio notes    # rename the current thread (saved immediately)
+/sessions                 # numbered list; the current thread is marked
+/resume market            # back into it — by name, number, or id
+```
+
+`/resume` takes whatever identifies the session: its number in the `/sessions`
+list, its full id, or any fragment of its title or id that matches only one
+session. If a fragment matches several, luban lists them instead of guessing.
+`/new` always saves the thread you're leaving first, so switching never loses
+work.
 
 luban can look this up itself, too: the read-only `sessions` tool lists this
 folder's saved sessions (or every folder's, with `all: true`) so you can ask

@@ -96,7 +96,19 @@ def resolve_tool_path(
     if not (target == home or home in target.parents):
         if allow_out_of_tree:
             return target
-        raise ValueError(f"Path escapes the project root and ~/.luban: {path}")
+        # Say WHERE the alias actually points. On a relocated home the model's guess
+        # ("C:/Users/me/.luban/…", or a shell '~' it expanded itself) lands on the OS
+        # home and is refused — and the old message ("escapes the project root and
+        # ~/.luban") gave it nothing to correct with, so it would try the same wrong
+        # path again. Naming the real home makes the next attempt right.
+        raise ValueError(
+            f"Path is outside both the project root and luban's home: {path}\n"
+            f"  project root: {root_resolved}\n"
+            f"  luban home:   {home}\n"
+            "  Use the '~/.luban/...' alias with the FILE TOOLS to reach luban's home "
+            "— it maps to the path above. Do NOT expand '~' yourself, and do not reach "
+            "it through run_command: a shell '~' resolves to the OS home, not here."
+        )
     # Windows strips trailing dots/spaces from the final component at open time,
     # so "client_local.py " and "tools_local.py." reach the real .py file while
     # pathlib keeps the tail lexically. Normalize before classifying. Case-folded:

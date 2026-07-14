@@ -77,9 +77,11 @@ def test_audit_log_read_only(env):
 def test_absolute_outside_home_rejected(env, tmp_path):
     home, proj, ctx = env
     secret = tmp_path / "secret.txt"
-    secret.write_text("no", encoding="utf-8")
+    secret.write_text("SUPERSECRETCONTENTS", encoding="utf-8")
     out = tools.run_tool("read_file", {"path": str(secret)}, ctx)
-    assert out.is_error and "no" not in out.content
+    assert out.is_error and "SUPERSECRETCONTENTS" not in out.content
+    # the refusal names the real home so the model can retry with the right alias
+    assert str(home) in out.content and "~/.luban" in out.content
 
 
 def test_prefix_sibling_rejected(env):

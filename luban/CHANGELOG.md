@@ -4,6 +4,96 @@ Release notes, newest first. Bundled inside the package so luban can show
 "what's new" and reconcile its enhancement tracker offline, with no network.
 Each entry tags the tracker IDs (E-/F-) it resolves.
 
+## v0.5.14 — settings that take effect, turns that don't vanish, and a network that fights back
+
+A batch of reliability fixes, most of them about the same failure shape: something goes
+wrong and *nothing tells you*. A setting silently ignored, a write silently dropped, a
+connection silently cut. Every one of these now speaks up.
+
+### Your config settings actually take effect now (E19 follow-up)
+
+`--sync-config` used to append new keys to the **end** of the file. In TOML, a `[table]`
+header (like `[permissions]`) captures every key below it — so any key appended after
+your `[permissions]` section became `permissions.effort`, `permissions.thinking`, etc.,
+which nothing reads. Your setting was valid, present, and completely ignored.
+
+- New keys are now inserted **above** the first `[table]` header, never at end-of-file.
+- `luban --sync-config` now **repairs** an already-broken file: it lifts any swallowed
+  top-level setting back above the header, keeping your value exactly as written.
+- Every startup now **warns** about any setting that is present but being ignored, naming
+  the table that captured it — so this can never hide again.
+- `load_config` no longer swallows a parse error in silence; an unreadable `config.toml`
+  says so on stderr instead of quietly reverting every setting to its default.
+
+**If a setting of yours seems ignored, run `luban --sync-config` once.** It moves it back.
+
+### A tool call cut off mid-turn no longer vanishes (E23, E24)
+
+`max_tokens` is the ceiling on **one whole turn** — thinking + text + the tool call
+combined. The old default (8192) was set before extended thinking existed, and raising
+`effort` grows the thinking allocation without moving that ceiling. So reasoning could
+consume the budget and the tool call at the end would be **cut off mid-write**.
+
+luban has to strip a half-finished tool call (an unanswered one breaks the next request),
+and it used to do that **silently** — so the model announced a write, no file changed, no
+error appeared, and the model itself never learned the call was dropped, so it reported
+success. That is the "it said it did it but nothing happened" symptom.
+
+- A turn cut off mid-tool-call now tells **you** (a clear warning that nothing was
+  written) and tells the **model** (so it retries the write smaller instead of assuming
+  success). Bounded retries.
+- `max_tokens` is now a **`config.toml` key** (default raised to 32000). Raise it if you
+  run high/xhigh effort or ask for large writes. `--no-stream` clamps it (a large
+  non-streamed response times out on the wire).
+- The system prompt no longer invites the failure: an "I'll write the file now" and the
+  actual tool call must be in the **same turn** — luban won't end a turn on work not done.
+
+### The network fights back (transient-drop resilience)
+
+Corporate gateways and proxies cut long-lived streaming responses ("peer closed
+connection without sending complete message body") and return overloaded errors under
+load. The SDK's own retries cannot cover a stream that dies **after** it started — only a
+fresh request can.
+
+- luban now **retries** a turn killed mid-stream, automatically and announced (the
+  response restarts, so it says so rather than looking like the model repeating itself).
+- **Overload (429/529) backs off far harder** than a dropped stream — and honors the
+  server's `retry-after`. Retries are jittered so many clients behind one gateway don't
+  march back in lockstep and sustain the overload.
+- When retries are exhausted, **`/retry`** resends your prompt verbatim — a flaky gateway
+  no longer costs you the message you just typed.
+- Failure messages name the real cause (a proxy hung up, or the backend is saturated) and
+  the actual remedy — never a misleading "raise your timeout."
+
+### Sessions are named threads you can pick (E21 follow-up)
+
+Running two threads in one project folder now works.
+
+- `/new [title]` saves the current thread and starts another; `/title` renames the
+  current one; both make sessions tell-apart-able.
+- `/resume <number|id|name>` reopens a specific session (from `/sessions`, now numbered);
+  `luban -r <number|id|name>` does the same from the shell. Bare `/resume` and `-r` are
+  unchanged. `/sessions all` spans every folder.
+- Fixed: switching threads used to carry the journal flag across, so the thread you
+  switched *to* silently skipped its journal entry.
+
+### Memory hygiene (H1–H3)
+
+- The journal window now shows the two most recent **non-empty** days, so it no longer
+  goes blank after a weekend gap.
+- The memory index, when it overflows its budget, now drops **descriptions** before it
+  ever drops a **fact** — so a fact never silently disappears from what luban knows exists
+  (roughly 200 facts fit instead of ~50).
+- Fixed an inverted cap warning that claimed your *newest* journal entries were being
+  dropped when the opposite was true.
+
+### Also
+
+- A rejected file path now names luban's real home directory in the error, so on a
+  relocated home (`LUBAN_HOME`) the next attempt can use the right `~/.luban` alias.
+- README documents the full in-session command set and the two-threads-in-one-folder
+  workflow.
+
 ## v0.5.13 — always-on context you can see, and continuity you can trust
 
 **Your always-on files are no longer silently truncated.** Every turn, luban injects

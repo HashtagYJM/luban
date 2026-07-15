@@ -5,7 +5,15 @@ import subprocess
 import sys
 from pathlib import Path
 
-FORBIDDEN = ["dimsum_lite", "ApolloAnthropic", "Apollo", "UAT"]
+# Distinctive internal identifiers that must never reach the public repo. "Apollo"
+# also covers ApolloOpenAI/ApolloAnthropic. The second group was added after handling
+# colleagues' internal study docs — libraries, project names, and credential handles
+# that would be damaging to leak and are unlikely to collide with real luban code.
+FORBIDDEN = [
+    "dimsum_lite", "ApolloAnthropic", "Apollo", "UAT",
+    "bar_library", "bar_toolkit", "gaia_core_data", "rrp_macro",
+    "sinnpack", "thepack",
+]
 SELF_EXCLUDE = {"scripts/check_no_leak.py", "tests/test_no_leak.py"}
 
 

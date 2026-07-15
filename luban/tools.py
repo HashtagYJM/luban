@@ -606,6 +606,11 @@ def active_tools(memory_enabled: bool = True) -> list[dict]:
 
 
 _CUSTOM_NAMES: set[str] = set()
+# name -> guidance: per-tool usage hints (when/how/cross-tool) that a TOOLS entry can
+# contribute to the system prompt. The API `tools` param carries each tool's
+# `description`, but there is no channel there for orchestration guidance across a
+# suite of tools — this is it (E25).
+_CUSTOM_GUIDANCE: dict[str, str] = {}
 _PREVIEW_MAX = 200  # chars of input preview rendered before confirming
 
 
@@ -647,9 +652,19 @@ def register_custom(specs: list[dict]) -> list[str]:
         target = spec.get("permission_target")
         if isinstance(target, str) and target:
             permissions_mod._TARGET_KEY[name] = target
+        guidance = spec.get("guidance")
+        if isinstance(guidance, str) and guidance.strip():
+            _CUSTOM_GUIDANCE[name] = guidance.strip()
         _CUSTOM_NAMES.add(name)
         registered.append(name)
     return registered
+
+
+def custom_guidance() -> list[tuple[str, str]]:
+    """(tool_name, guidance) for every custom tool that supplied usage guidance,
+    in registration order. Fed into the system prompt so a growing tool suite can
+    carry orchestration hints, not just per-tool descriptions (E25)."""
+    return list(_CUSTOM_GUIDANCE.items())  # dict preserves registration order
 
 
 def reset_custom() -> None:
@@ -659,6 +674,7 @@ def reset_custom() -> None:
         READ_ONLY_TOOLS.discard(name)
         permissions_mod._TARGET_KEY.pop(name, None)
     TOOLS[:] = [t for t in TOOLS if t["name"] not in _CUSTOM_NAMES]
+    _CUSTOM_GUIDANCE.clear()
     _CUSTOM_NAMES.clear()
 
 

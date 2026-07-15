@@ -16,6 +16,7 @@ The module contract (documented in README):
             "handler": my_func,                 # callable(inp: dict, project_root: Path) -> str
             "read_only": True,                  # optional, default False
             "permission_target": "sql",         # optional input key for "<tool>:<pattern>" rules
+            "guidance": "Use before X; ...",    # optional usage/orchestration hint for the prompt
         },
     ]
 """
@@ -65,6 +66,9 @@ def _valid(entry: object, index: int) -> bool:
         return False
     if not callable(entry["handler"]):
         warn("handler must be callable")
+        return False
+    if "guidance" in entry and not isinstance(entry["guidance"], str):
+        warn("guidance must be a string")  # optional; when/how/cross-tool usage hints
         return False
     return True
 

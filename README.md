@@ -223,10 +223,15 @@ TOOLS = [
         "handler": query_sql,          # callable(inp: dict, project_root: Path) -> str
         "read_only": True,             # optional: skips the confirm prompt
         "permission_target": "sql",    # optional: rules can match e.g. "query_sql:DROP*"
-    },
+        "guidance": "Prefer this over raw shell for DB reads; cap rows with `limit`.",
+    },                                 # optional: when/how/cross-tool usage hint
 ]
 ```
 
+- `description` tells the model *what* the tool is (it rides on the tool schema).
+  `guidance` is optional and tells it *when and how* to use it, and how tools in a
+  suite combine — that text is folded into the system prompt. Useful once you have
+  more than a couple of custom tools.
 - Keep heavy company code in an installed internal package; `tools_local.py` should
   be thin wrappers over its entry points.
 - Custom tools go through the same permission rules, confirmation prompts, and audit

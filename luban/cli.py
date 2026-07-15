@@ -445,6 +445,7 @@ def build_agent_config(session: Session, cfg: config_mod.Config, project_root: P
         memory=read_project_memory(project_root, cfg.memory_file),
         global_memory=memory_mod.bootstrap_block() if cfg.memory_enabled else "",
         tools=tool_list,
+        tool_guidance=tools.custom_guidance(),
         web_search=cfg.web_search,
         web_search_tool_type=cfg.web_search_tool_type,
         thinking=session.thinking,

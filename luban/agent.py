@@ -35,7 +35,9 @@ _PLATFORM_LINE = {
 }
 
 
-def system_prompt_for(platform: str, skills: list[dict] | None = None, memory: str = "", global_memory: str = "") -> str:
+def system_prompt_for(platform: str, skills: list[dict] | None = None, memory: str = "",
+                      global_memory: str = "",
+                      tool_guidance: list[tuple[str, str]] | None = None) -> str:
     prompt = SYSTEM_PROMPT
     line = _PLATFORM_LINE.get(platform)
     if line:
@@ -44,6 +46,12 @@ def system_prompt_for(platform: str, skills: list[dict] | None = None, memory: s
         prompt = f"{prompt}\n\n{global_memory}"
     if memory:
         prompt = f"{prompt}\n\nProject instructions (from the project's memory file):\n{memory}"
+    if tool_guidance:
+        # Per-tool usage guidance from custom tools: when to reach for each, how, and
+        # how they combine — the orchestration layer the tool `description` can't carry
+        # for a growing suite (E25). Descriptions still live on the tool schemas.
+        block = "\n".join(f"- {name}: {text}" for name, text in tool_guidance)
+        prompt = f"{prompt}\n\nCustom tool usage guidance:\n{block}"
     if skills:
         catalog = "\n".join(
             f"- {s['name']}: {s['description']}"
@@ -67,6 +75,7 @@ class AgentConfig:
     memory: str = ""
     global_memory: str = ""
     tools: list | None = None
+    tool_guidance: list | None = None  # (name, guidance) from custom tools (E25)
     web_search: bool = False
     web_search_tool_type: str = "web_search_20250305"
     thinking: bool = False
@@ -75,7 +84,8 @@ class AgentConfig:
 
 
 def _run_model_turn(client, config, messages, on_text, on_thinking, on_retry=None):
-    system = system_prompt_for(config.platform, config.skills, config.memory, config.global_memory)
+    system = system_prompt_for(config.platform, config.skills, config.memory,
+                               config.global_memory, config.tool_guidance)
     tool_schemas = config.tools if config.tools is not None else tools_mod.TOOLS
     if config.web_search:
         # Server-side tool: the API runs the search and returns results inline; luban

@@ -11,8 +11,12 @@ docs/superpowers/
 # ledger) — internal, may reference internal identifiers; NEVER publish
 .superpowers/
 
-# Local progress notes — may reference internal details, never publish
+# Local progress notes — may reference internal details, never publish.
+# All three project-memory filenames luban itself looks for, so a copy under any
+# of them can't be accidentally committed.
 CLAUDE.md
+AGENTS.md
+LUBAN.md
 
 # Local scratch (screenshots, corporate error logs) — never publish
 _local/

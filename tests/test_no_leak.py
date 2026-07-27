@@ -15,3 +15,14 @@ def test_guard_passes_on_own_repo():
     # this test file contain forbidden tokens as literals (they are self-excluded).
     from scripts.check_no_leak import main
     assert main() == 0
+
+
+def test_short_acronyms_match_whole_words_only():
+    """A bare 3-letter acronym matched as a substring inside ordinary English
+    (gradUATe, evalUATe, sitUATe). A guard that cries wolf on prose gets ignored."""
+    from scripts.check_no_leak import find_forbidden
+    assert find_forbidden({"a.py": "5. GRADUATE the fact"}) == []
+    assert find_forbidden({"a.py": "we evaluate the results"}) == []
+    assert find_forbidden({"a.py": "situate the code"}) == []
+    # a real standalone occurrence is still caught
+    assert find_forbidden({"a.py": "env='" + "UAT" + "'"}) == ["a.py"]

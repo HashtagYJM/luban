@@ -140,12 +140,5 @@ def test_ordinary_turns_never_carry_the_audit_payload(mem):
     assert "THE COMPLETE FACT STORE" not in block
 
 
-# ---------------- the leak guard no longer cries wolf ----------------
-
-def test_leak_guard_ignores_uat_inside_ordinary_words():
-    import sys
-    sys.path.insert(0, "scripts")
-    from check_no_leak import find_forbidden
-    assert find_forbidden({"a.py": "5. GRADUATE the fact"}) == []
-    assert find_forbidden({"a.py": "we evaluate the results"}) == []
-    assert find_forbidden({"a.py": "env='UAT'"}) == ["a.py"]  # a real one still caught
+# (the leak-guard word-boundary test lives in tests/test_no_leak.py — that file is
+#  self-excluded from the guard, so it can hold a literal forbidden token as a fixture)

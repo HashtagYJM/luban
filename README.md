@@ -30,7 +30,7 @@ Download `luban-<version>-py3-none-any.whl` from the
 file directly — no internet, no build, no dependencies to resolve:
 
 ```bash
-pip install --no-index luban-0.5.15-py3-none-any.whl
+pip install --no-index luban-0.5.16-py3-none-any.whl
 ```
 
 `--no-index` guarantees pip never contacts a package index. This puts a real

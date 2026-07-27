@@ -4,6 +4,70 @@ Release notes, newest first. Bundled inside the package so luban can show
 "what's new" and reconcile its enhancement tracker offline, with no network.
 Each entry tags the tracker IDs (E-/F-) it resolves.
 
+## v0.5.16 — memory that stays small and true
+
+v0.5.15 made `recall`'s keyword matching smarter. That was the wrong fix: it tuned a
+mechanism that shouldn't have been carrying the work. This release removes it from the
+critical path and puts the effort into **curation** instead.
+
+The reasoning is worth stating, because it changes how you should think about luban's
+memory. Your fact store is small — a few dozen atomic notes — and luban already receives
+an **index of every fact on every turn**. So looking something up was never a search
+problem. It's a *fetch*: pick the entry from the index, read that file. Anthropic's own
+agent memory works exactly this way and has no search layer at all.
+
+### Reading memory
+
+- **Fetch by name is now the primary path.** Passing a fact's slug returns that one fact
+  directly — no ranking, no competing hits. The tool now tells the model to do this, which
+  it previously did not: the parameter had no description at all, so the model guessed with
+  prose and landed on the weak path while the exact name sat in its context.
+- **A miss no longer implies absence.** "(no matches)" read to the model as *"that fact
+  doesn't exist"* — so it would helpfully save a new one, and your store grew a duplicate.
+  That was the real engine of memory clutter. The message now points at the index and says
+  explicitly not to save a fact just because a search missed.
+- Keyword matching still exists for exploring when you don't know the name. It's just no
+  longer what the system depends on.
+
+### Curating memory
+
+- **`/reflect` now sees your entire fact store.** It previously inspected memory through
+  the same capped search everything else used — about a tenth of what it was asked to
+  curate. Rationing the curator is why consolidation never really happened. It now receives
+  the whole store, plus a list of facts that look like duplicates of each other.
+- **`/reflect` is a procedure, not a wish**: survey → merge duplicates → resolve
+  contradictions → delete what's already recorded elsewhere → **graduate** → report.
+- **Graduation is the part that was missing.** A preference that keeps coming up about how
+  you want work done isn't a look-up detail — it's a standing instruction, and it belongs
+  in `USER.md`, which is always in context. A stored fact can't shape behaviour you need
+  *before* you'd think to look it up. `/reflect` now proposes that promotion.
+- Deleting is safe, and the prompt says so: **every session transcript and journal day is
+  kept permanently on disk.** Nothing is lost by pruning a fact, so the bar for keeping one
+  should be high.
+
+### When memory outgrows its budget
+
+luban keeps a size budget on the always-on index. That isn't about saving money — the
+whole store is a rounding error against the context window. It's that a bloated always-on
+block **measurably reduces how well the model follows what's in it**.
+
+Previously, going over budget silently trimmed descriptions to fit — the problem stayed
+hidden forever. Now luban also *tells the model*, so it can suggest `/reflect` and explain
+why. The budget becomes a prompt to consolidate rather than a quiet quota.
+
+### Also
+
+- Fixed the pre-push leak guard flagging ordinary English: a three-letter internal acronym
+  was matching as a substring inside words like *evaluate* and *graduate*. Short acronyms
+  now match whole words only; longer identifiers are unchanged.
+
+### Deliberately not built
+
+No fuzzy-matching library, no embeddings or vector database (they'd break the
+zero-dependency offline install), no extra model call on every lookup, and no dumping the
+whole store into context. Each was considered and rejected for a stated reason — the spec
+records them.
+
 ## v0.5.15 — recall that finds things, context you can see, and turns that stop paying twice
 
 ### `recall` was silently missing facts it had on disk (E26)

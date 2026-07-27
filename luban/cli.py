@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import subprocess
 import sys
@@ -199,6 +200,84 @@ def truncation_notice(cap: int, n: int, total: int) -> None:
     )
 
 
+CACHE_MIN_TOKENS = 4096  # Opus-class minimum cacheable prefix; below this, caching is a NO-OP
+
+
+def count_tokens(client, model: str, system: str) -> int | None:
+    """Ask the API for the REAL token count. Returns None if unavailable.
+
+    luban's own estimator assumes ~4 chars/token; a live probe measured 2.9 — a ~28%
+    undercount. For a number people act on (cache eligibility, when to /compact),
+    measure rather than estimate.
+    """
+    try:
+        r = client.messages.count_tokens(
+            model=model, system=system,
+            messages=[{"role": "user", "content": "."}])
+        return int(r.input_tokens)
+    except Exception:
+        return None
+
+
+def context_report(session: Session, cfg: config_mod.Config, project_root: Path,
+                   client=None) -> str:
+    """What luban actually sends every turn — the answer to 'what is it loaded with?'."""
+    on = cfg.memory_enabled
+    plat = agent._PLATFORM_LINE.get(cfg.platform, "")
+    skills = skills_mod.list_skills(str(project_root))
+    guidance = tools.custom_guidance()
+    stable, volatile = agent.system_blocks(
+        cfg.platform, skills, read_project_memory(project_root, cfg.memory_file),
+        memory_mod.bootstrap_stable() if on else "",
+        guidance, memory_mod.bootstrap_volatile() if on else "")
+
+    sections = [
+        ("base prompt + platform", len(agent.SYSTEM_PROMPT) + len(plat)),
+        ("memory hygiene", len(memory_mod._HYGIENE) if on else 0),
+        ("SOUL.md", len(memory_mod.read_soul()) if on else 0),
+        ("USER.md", len(memory_mod.read_user()) if on else 0),
+        ("project memory", len(read_project_memory(project_root, cfg.memory_file))),
+        ("tool guidance", sum(len(g) for _n, g in guidance)),
+        ("skills catalog", sum(len(s["name"]) + len(s["description"]) for s in skills)),
+        ("— memory index (volatile)", len(memory_mod.read_index()) if on else 0),
+        ("— journal (volatile)", len(memory_mod.read_recent_journal()) if on else 0),
+    ]
+    out = ["\nalways-on context, sent every turn:\n"]
+    for label, n in sections:
+        out.append(f"  {label:<28} {n:>7,} chars\n" if n else
+                   f"  {label:<28} {'—':>7}\n")
+
+    schemas = json.dumps(tools.active_tools(on))
+    real = count_tokens(client, session.model, stable) if client is not None else None
+    est = len(stable) // 4
+    out.append(f"\n  stable prefix (cacheable)    {len(stable):>7,} chars\n")
+    out.append(f"  volatile tail                {len(volatile):>7,} chars\n")
+    out.append(f"  tool schemas (separate)      {len(schemas):>7,} chars\n")
+
+    if real is None:
+        out.append(f"\n  stable prefix ~{est:,} tokens (ESTIMATE — luban's 4 chars/token "
+                   "assumption undercounts by roughly a quarter)\n")
+        verdict_tokens = est
+    else:
+        out.append(f"\n  stable prefix {real:,} tokens (measured via count_tokens)\n")
+        verdict_tokens = real
+
+    if not cfg.cache_prompt:
+        out.append("  caching: OFF (cache_prompt = false)\n")
+    elif verdict_tokens >= CACHE_MIN_TOKENS:
+        out.append(f"  caching: ON and ELIGIBLE (>= {CACHE_MIN_TOKENS:,} tokens) — "
+                   "the prefix is cached at ~0.1x on later turns\n")
+    else:
+        out.append(
+            f"  caching: ON but prefix is UNDER the {CACHE_MIN_TOKENS:,}-token minimum "
+            "— nothing will actually cache (this failure is silent at the API level).\n"
+            "    Add more standing context (SOUL/USER/project memory) or accept it.\n")
+
+    out.append(f"\n  conversation so far          {estimate_tokens(session.messages):>7,} "
+               f"tokens (est) of {cfg.warn_tokens:,} before the /compact nudge\n")
+    return "".join(out)
+
+
 def stream_retry_notice(exc: BaseException, attempt: int, total: int, delay: float) -> None:
     """Say it out loud when a turn is re-issued. The response restarts from the top,
     so text already on screen is about to be superseded — silently re-streaming would
@@ -365,9 +444,18 @@ def reconcile_directive(prev: str, section: str) -> str:
         "prefer running the relevant tool/probe; for a prevention-class fix that "
         "can't be triggered in-session, inspect the installed package code to confirm "
         "the guard exists.\n"
-        "- Move a row to Resolved only with evidence; note the version it was fixed "
-        "in and a one-line note of how you verified it. If a prevention fix can't be "
-        "re-triggered, mark it Resolved with 're-open on recurrence'.\n"
+        "- Move a row to Resolved only with evidence; put the version in the "
+        "Resolution column and a one-line note of how you verified it. If a "
+        "prevention fix can't be re-triggered, resolve it with 're-open on "
+        "recurrence'.\n"
+        "- ALSO honour maintainer verdicts in the notes (look for a Decisions "
+        "section). An item can close without a code fix: use Resolution 'wontfix' "
+        "(a deliberate design decision — record the stated reason), 'mitigated' "
+        "(solved outside luban core, no core change coming), or 'obsolete' (no "
+        "longer applies). Without this an item nobody will ever fix stays Open "
+        "forever and gets re-probed on every upgrade.\n"
+        "- A verdict needs no empirical probe — the maintainer's stated decision IS "
+        "the evidence. Anything with neither a verified fix nor a verdict stays Open.\n"
         "- Don't infer status from stale artifacts (e.g. an old config.toml).\n"
         "Then briefly tell me what you moved and how you checked."
     )
@@ -443,7 +531,9 @@ def build_agent_config(session: Session, cfg: config_mod.Config, project_root: P
         session.model, session.max_tokens, session.stream, platform=cfg.platform,
         skills=skills_mod.list_skills(str(project_root)),
         memory=read_project_memory(project_root, cfg.memory_file),
-        global_memory=memory_mod.bootstrap_block() if cfg.memory_enabled else "",
+        global_memory=memory_mod.bootstrap_stable() if cfg.memory_enabled else "",
+        global_volatile=memory_mod.bootstrap_volatile() if cfg.memory_enabled else "",
+        cache_prompt=cfg.cache_prompt,
         tools=tool_list,
         tool_guidance=tools.custom_guidance(),
         web_search=cfg.web_search,
@@ -752,6 +842,12 @@ def handle_command(line: str, session: Session, client=None, ctx=None, cfg=None)
         if miss:
             ui.print_text(f"({len(miss)} new setting(s) not in your config.toml — "
                           "run `luban --sync-config` to add them)\n")
+        return "handled"
+    if cmd == "/context":
+        if cfg is None or ctx is None:
+            ui.print_text("context inspection needs a live session.\n")
+            return "handled"
+        ui.print_text(context_report(session, cfg, Path(ctx.project_root), client))
         return "handled"
     if cmd == "/resume":
         # First-class continuity: restore a session from its TRANSCRIPT. With no

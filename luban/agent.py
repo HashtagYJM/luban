@@ -19,7 +19,8 @@ SYSTEM_PROMPT = (
     "relevant: /compact (summarize a long conversation and keep going), /reflect "
     "(tidy your long-term memory), /model (show or switch the model), /thinking "
     "(toggle extended thinking), /effort (low..max reasoning depth), /verbose "
-    "(show or hide the reasoning text), /config (show effective settings), /sessions "
+    "(show or hide the reasoning text), /config (show effective settings), /context "
+    "(what is loaded into the prompt every turn, and its token cost), /sessions "
     "(list saved sessions — `/sessions all` spans folders), /resume (reopen this "
     "project's last session; `/resume <number|id|name>` picks a specific one), /new "
     "(save the current thread and start another one, optionally `/new <title>`), "
@@ -33,6 +34,21 @@ _PLATFORM_LINE = {
     "mac": "The user is on macOS: use POSIX shell commands in run_command.",
     "linux": "The user is on Linux: use POSIX shell commands in run_command.",
 }
+
+
+def system_blocks(platform: str, skills: list[dict] | None = None, memory: str = "",
+                  global_memory: str = "",
+                  tool_guidance: list[tuple[str, str]] | None = None,
+                  global_volatile: str = "") -> tuple[str, str]:
+    """The system prompt split into (stable, volatile), in prompt order.
+
+    Prompt caching is a PREFIX match, so anything that changes invalidates every byte
+    after it. Everything luban does NOT rewrite mid-session goes in `stable` (and gets
+    the cache breakpoint); the fact index and journal — which luban rewrites whenever it
+    calls remember/journal — go last, where they can't invalidate the rest (P2).
+    """
+    return (system_prompt_for(platform, skills, memory, global_memory, tool_guidance),
+            global_volatile)
 
 
 def system_prompt_for(platform: str, skills: list[dict] | None = None, memory: str = "",
@@ -74,6 +90,8 @@ class AgentConfig:
     skills: list | None = None
     memory: str = ""
     global_memory: str = ""
+    global_volatile: str = ""  # index + journal: kept LAST so writes can't bust the cache
+    cache_prompt: bool = False  # send the stable prefix as a cacheable block (P2)
     tools: list | None = None
     tool_guidance: list | None = None  # (name, guidance) from custom tools (E25)
     web_search: bool = False
@@ -83,9 +101,32 @@ class AgentConfig:
     thinking_verbose: bool = False  # stream the reasoning (grey text) vs think silently
 
 
+_BLOCK_SYSTEM_SUPPORTED = None  # tri-state probe: does this backend accept block-form system?
+
+
+def build_system_param(stable: str, volatile: str, cache: bool):
+    """Block-form (cacheable) or a plain concatenated string.
+
+    The cache breakpoint sits on the STABLE block only. Note a short prefix caches
+    nothing at all — Opus 4.8 needs ~4,096 tokens — and that failure is SILENT, which
+    is why /context reports cache eligibility rather than leaving it to faith.
+    """
+    if not cache:
+        return "\n\n".join(p for p in (stable, volatile) if p)
+    blocks = [{"type": "text", "text": stable,
+               "cache_control": {"type": "ephemeral"}}]
+    if volatile:
+        blocks.append({"type": "text", "text": volatile})
+    return blocks
+
+
 def _run_model_turn(client, config, messages, on_text, on_thinking, on_retry=None):
-    system = system_prompt_for(config.platform, config.skills, config.memory,
-                               config.global_memory, config.tool_guidance)
+    global _BLOCK_SYSTEM_SUPPORTED
+    stable, volatile = system_blocks(
+        config.platform, config.skills, config.memory, config.global_memory,
+        config.tool_guidance, config.global_volatile)
+    use_blocks = config.cache_prompt and _BLOCK_SYSTEM_SUPPORTED is not False
+    system = build_system_param(stable, volatile, use_blocks)
     tool_schemas = config.tools if config.tools is not None else tools_mod.TOOLS
     if config.web_search:
         # Server-side tool: the API runs the search and returns results inline; luban
@@ -95,20 +136,38 @@ def _run_model_turn(client, config, messages, on_text, on_thinking, on_retry=Non
             *tool_schemas,
             {"type": config.web_search_tool_type, "name": "web_search"},
         ]
-    if config.stream:
-        return client_mod.stream_turn(
+    def _call(system_param):
+        if config.stream:
+            return client_mod.stream_turn(
+                client, model=config.model, max_tokens=config.max_tokens,
+                system=system_param, messages=messages, tools=tool_schemas,
+                on_text=on_text, on_thinking=on_thinking,
+                thinking=config.thinking, effort=config.effort,
+                verbose=config.thinking_verbose, on_retry=on_retry,
+            )
+        return client_mod.create_turn(
             client, model=config.model, max_tokens=config.max_tokens,
-            system=system, messages=messages, tools=tool_schemas,
-            on_text=on_text, on_thinking=on_thinking,
+            system=system_param, messages=messages, tools=tool_schemas,
             thinking=config.thinking, effort=config.effort,
             verbose=config.thinking_verbose, on_retry=on_retry,
         )
-    msg = client_mod.create_turn(
-        client, model=config.model, max_tokens=config.max_tokens,
-        system=system, messages=messages, tools=tool_schemas,
-        thinking=config.thinking, effort=config.effort,
-        verbose=config.thinking_verbose, on_retry=on_retry,
-    )
+
+    try:
+        msg = _call(system)
+    except Exception as exc:
+        # Probe once per process: a backend that rejects block-form system (or
+        # cache_control) must keep working, exactly as _EXTRAS_SUPPORTED does for
+        # thinking/effort. A dropped connection is NOT evidence of rejection.
+        if not (use_blocks and _BLOCK_SYSTEM_SUPPORTED is None
+                and not client_mod.is_transient(exc)):
+            raise
+        _BLOCK_SYSTEM_SUPPORTED = False
+        msg = _call(build_system_param(stable, volatile, False))
+    else:
+        if use_blocks:
+            _BLOCK_SYSTEM_SUPPORTED = True
+    if config.stream:
+        return msg
     for b in msg.content:
         if b.type == "text":
             on_text(b.text)

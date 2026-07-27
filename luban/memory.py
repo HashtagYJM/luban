@@ -71,8 +71,16 @@ _ENHANCEMENTS_TEMPLATE = (
     "\n"
     "Runtime/tooling issues to flag but NOT fix locally. Share Open items with the\n"
     "maintainer (screenshot or text). Lifecycle: OPEN -> SHARED (sent to maintainer)\n"
-    "-> FIXED (confirmed working in a release). After an upgrade, review Open items\n"
-    "against the release notes and MOVE fixed rows to Resolved (keep the audit trail).\n"
+    "-> CLOSED. After an upgrade, review Open items against the release notes and move\n"
+    "closed rows to Resolved (keep the audit trail).\n"
+    "\n"
+    "An item can close FOUR ways — put the reason in the Resolution column:\n"
+    "  <version>  fixed in a release, verified\n"
+    "  wontfix    a deliberate design decision by the maintainer (record WHY)\n"
+    "  mitigated  solved outside luban core; no core change is coming\n"
+    "  obsolete   no longer applies, or turned out not to be a bug\n"
+    "Without the last three, an item the maintainer will never fix stays Open forever,\n"
+    "gets re-probed on every upgrade, and buries the issues that are still real.\n"
     "\n"
     "## Open\n"
     "\n"
@@ -81,8 +89,8 @@ _ENHANCEMENTS_TEMPLATE = (
     "\n"
     "## Resolved\n"
     "\n"
-    "| ID | Fixed in | Notes |\n"
-    "|----|----------|-------|\n"
+    "| ID | Resolution | Notes |\n"
+    "|----|------------|-------|\n"
 )
 
 _journal_writes = 0
@@ -314,8 +322,15 @@ def _is_untouched(text: str, template: str = "") -> bool:
     return not authored
 
 
-def bootstrap_block() -> str:
-    """The global-memory block injected into the system prompt each turn."""
+def bootstrap_stable() -> str:
+    """Global memory that rarely changes mid-session: hygiene + SOUL + USER.
+
+    Split out from the volatile half so the prompt prefix can be laid out
+    cache-friendly — stable first, volatile last (P2). Prompt caching is a PREFIX
+    match, so a byte change anywhere invalidates everything after it; keeping the
+    parts luban rewrites during a session (index, journal) out of this block is what
+    lets the expensive identity/profile text stay cached across turns.
+    """
     parts = [_HYGIENE]
     soul = read_soul()
     if soul and not _is_untouched(soul, _SOUL_TEMPLATE):
@@ -323,6 +338,14 @@ def bootstrap_block() -> str:
     user = read_user()
     if user and not _is_untouched(user, _USER_TEMPLATE):
         parts.append(f"Who you are working with (USER.md):\n{user}")
+    return "\n\n".join(parts)
+
+
+def bootstrap_volatile() -> str:
+    """Global memory luban itself rewrites during a session: the fact index and the
+    journal. Kept LAST in the prompt so a `remember`/`journal` write can't invalidate
+    the cached prefix above it."""
+    parts = []
     index = read_index()
     if index and any(line.lstrip().startswith("- [") for line in index.splitlines()):
         parts.append(f"Long-term memory index (use recall for details):\n{index}")
@@ -330,6 +353,11 @@ def bootstrap_block() -> str:
     if journal:
         parts.append(f"Recent journal:\n{journal}")
     return "\n\n".join(parts)
+
+
+def bootstrap_block() -> str:
+    """The whole global-memory block (stable + volatile), in prompt order."""
+    return "\n\n".join(p for p in (bootstrap_stable(), bootstrap_volatile()) if p)
 
 
 def valid_slug(name: str) -> bool:
@@ -396,19 +424,71 @@ def forget(name: str) -> str:
     return f"Forgot '{name}'."
 
 
-def _recall_match(query: str, *fields: str) -> bool:
-    """Match if the whole query is a substring, OR every whitespace token of the
-    query appears somewhere in the fields. Token matching lets multi-word queries
-    like "coding style" find a fact slugged "yjm-coding-style" whose body mentions
-    both words, without needing the exact contiguous phrase or slug."""
+RECALL_TOP_FACTS = 8      # best-scoring facts returned (wikilinks followed on top of this)
+RECALL_TOP_JOURNAL = 12   # matching journal lines returned — NEWEST kept, not oldest
+_EXACT_BONUS = 1000       # whole-query substring dominates any token-overlap score
+
+# Deliberately small and closed. These carry no retrieval signal, and letting them
+# match is what made "how does the user like their code written" behave like a
+# wildcard. Pure stdlib — no stemmer, no embeddings (E26).
+_STOPWORDS = frozenset("""
+a an the this that these those and or not no but if then than so as of in on at to for
+with about against from by into over under is are was were be been being am do does did
+done have has had can could should would will shall may might must i me my mine we us
+our you your he him his she her it its they them their what which who whom whose when
+where why how all any both each few more most other some such only own same too very
+just like get got make made use used there here
+""".split())
+
+
+def _normalize(token: str) -> str:
+    """Strip punctuation and a trailing possessive/plural.
+
+    Comparison is by substring, so normalising ONE side is enough to match both
+    directions: "results" -> "result" hits a body containing "results", and a query
+    "result" already hits it as-is.
+    """
+    t = token.strip(".,;:!?()[]{}<>\"'`")
+    if t.endswith("'s") or t.endswith("’s"):
+        t = t[:-2]
+    if len(t) > 3 and t.endswith("s") and not t.endswith("ss"):
+        t = t[:-1]
+    return t
+
+
+def _content_tokens(query: str) -> list[str]:
+    """Normalised, de-duplicated, stopword-free tokens — the ones that carry meaning."""
+    seen: list[str] = []
+    for raw in query.lower().split():
+        t = _normalize(raw)
+        if t and t not in _STOPWORDS and t not in seen:
+            seen.append(t)
+    return seen
+
+
+def _recall_score(query: str, *fields: str) -> int:
+    """How well this text answers the query. 0 = no match.
+
+    Was an all-tokens-AND boolean, so a single ordinary absent word ("how", "their")
+    zeroed an otherwise perfect hit and recall reported "(no matches)" for a fact
+    sitting on disk — which then led the model to save a duplicate (E26). Now a
+    RANKED OR: any content token counts, and more distinct tokens ranks higher.
+    """
     hay = " ".join(fields).lower()
     q = query.lower().strip()
     if not q:
-        return True
+        return 1  # empty query = dump everything, unchanged
     if q in hay:
-        return True
-    tokens = q.split()
-    return bool(tokens) and all(t in hay for t in tokens)
+        return _EXACT_BONUS
+    tokens = _content_tokens(q)
+    if not tokens:
+        return 0  # a query of pure stopwords must match NOTHING, not everything
+    return sum(1 for t in tokens if t in hay)
+
+
+def _recall_match(query: str, *fields: str) -> bool:
+    """Boolean view of the score, kept for callers/tests that only ask yes-or-no."""
+    return _recall_score(query, *fields) > 0
 
 
 _WIKILINK = re.compile(r"\[\[([a-z0-9][a-z0-9-]*)\]\]")
@@ -423,9 +503,14 @@ def _fact_text(slug: str) -> str | None:
 
 
 def recall(query: str) -> str:
+    """Search long-term memory. Two independent lanes so the journal — which matches
+    PER LINE and is therefore numerous — can never crowd out the far scarcer facts."""
     hits: list[str] = []
     matched: set[str] = set()
+
+    # --- facts lane: score, rank, take the best few -------------------------------
     if MEMORY_DIR.is_dir():
+        scored: list[tuple[int, str, str]] = []
         for p in sorted(MEMORY_DIR.glob("*.md")):
             if p.name == "MEMORY.md":
                 continue
@@ -433,32 +518,48 @@ def recall(query: str) -> str:
                 text = p.read_text(encoding="utf-8", errors="replace")
             except OSError:
                 continue
-            if _recall_match(query, p.stem, text):
-                hits.append(f"[{p.stem}]\n{text.strip()}")
-                matched.add(p.stem)
+            score = _recall_score(query, p.stem, text)
+            if score > 0:
+                scored.append((score, p.stem, text))
+        # Rank by score, then slug so equal scores are stable/deterministic.
+        scored.sort(key=lambda s: (-s[0], s[1]))
+        for _score, stem, text in scored[:RECALL_TOP_FACTS]:
+            hits.append(f"[{stem}]\n{text.strip()}")
+            matched.add(stem)
         # E9: follow [[wikilinks]] one level so a "pointer" fact that references
         # another (e.g. active-work → [[project-x]]) pulls the linked fact in too.
-        for p in sorted(MEMORY_DIR.glob("*.md")):
-            if p.stem not in matched:
-                continue
-            body = _fact_text(p.stem) or ""
+        for stem in list(matched):
+            body = _fact_text(stem) or ""
             for slug in _WIKILINK.findall(body):
                 if slug in matched:
                     continue
                 linked = _fact_text(slug)
                 if linked is not None:
-                    hits.append(f"[{slug}] (linked from [{p.stem}])\n{linked.strip()}")
+                    hits.append(f"[{slug}] (linked from [{stem}])\n{linked.strip()}")
                     matched.add(slug)
+
+    # --- journal lane: its own cap, and keep the NEWEST ---------------------------
     journal_dir = MEMORY_DIR / "journal"
     if journal_dir.is_dir():
-        for p in sorted(journal_dir.glob("*.md")):
+        lines: list[str] = []
+        for p in sorted(journal_dir.glob("*.md")):  # chronological by filename
             try:
-                lines = p.read_text(encoding="utf-8", errors="replace").splitlines()
+                content = p.read_text(encoding="utf-8", errors="replace").splitlines()
             except OSError:
                 continue
-            hits.extend(
-                f"{p.stem}: {ln.strip()}" for ln in lines if _recall_match(query, ln)
+            lines.extend(
+                f"{p.stem}: {ln.strip()}" for ln in content if _recall_match(query, ln)
             )
+        if lines:
+            # Tail slice = newest. The old code appended every match and then head-
+            # truncated the whole output, so the NEWEST journal was what got cut.
+            kept = lines[-RECALL_TOP_JOURNAL:]
+            dropped = len(lines) - len(kept)
+            label = "--- journal ---" + (
+                f"  ({dropped} older match(es) not shown)" if dropped else ""
+            )
+            hits.append(label + "\n" + "\n".join(kept))
+
     out = "\n\n".join(hits) or "(no matches)"
     if len(out) > RECALL_MAX:
         out = out[:RECALL_MAX] + "\n[recall truncated]"

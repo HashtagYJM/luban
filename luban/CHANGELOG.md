@@ -4,6 +4,85 @@ Release notes, newest first. Bundled inside the package so luban can show
 "what's new" and reconcile its enhancement tracker offline, with no network.
 Each entry tags the tracker IDs (E-/F-) it resolves.
 
+## v0.5.15 — recall that finds things, context you can see, and turns that stop paying twice
+
+### `recall` was silently missing facts it had on disk (E26)
+
+The biggest fix here, and the root cause of a problem that looked like something else.
+
+`recall` required **every** word of your query to appear in a fact — one ordinary absent
+word ("how", "their", "against") zeroed an otherwise perfect match, and you got
+"(no matches)" for a fact sitting right there. Field-reproduced on a real 24-fact store:
+**6 of 8 natural-language questions failed.**
+
+That doesn't just make search annoying — it *rots your memory*. The model asks, hears "no
+such fact", reasonably concludes it doesn't exist, and saves a near-duplicate. And
+`/reflect` couldn't clean up the mess, because `recall` is the tool it inspects memory with.
+
+- Matching is now **scored, not all-or-nothing**: any meaningful word counts, and facts are
+  ranked by how many distinct query words they match. Common words ("how", "the", "does")
+  no longer count — so a naturally-phrased question finds the fact, while a query of
+  nothing but filler correctly matches nothing.
+- Plurals and possessives normalise: "coding styles" and "the user's coding style" both
+  find `coding-style`.
+- **The journal gets its own lane.** It matches line-by-line, so a short query used to bury
+  a handful of facts under dozens of diary lines. Facts and journal are capped separately —
+  and on truncation the journal keeps its **newest** entries, where before the newest were
+  exactly what got cut.
+
+Still pure standard library. No embeddings, no index to rebuild.
+
+### `/context` — see what luban is actually loaded with
+
+New command showing the always-on context sent every turn: each section (SOUL, USER,
+project memory, tool guidance, skills, memory index, journal) with its size, the
+stable/volatile split, tool-schema cost, and your conversation size.
+
+It reports **real** token counts via the API rather than luban's internal estimate — that
+estimate assumes ~4 characters per token and measured **~28% low** against the real
+tokenizer, which is why the `/compact` nudge tends to fire late.
+
+### Turns stop re-paying for the same context
+
+luban re-sent the entire system prompt at full price every single turn. It now marks the
+**stable** half (identity, your profile, project instructions, tool guidance, skills) as
+cacheable — cache reads bill about a tenth of normal input.
+
+Making that work needed a reordering: the **memory index and journal now come last**.
+Caching matches on a prefix, so anything that changes invalidates everything after it — and
+those two are exactly what luban rewrites mid-session whenever it saves a fact or a journal
+line. Kept at the end, a memory write can no longer throw the cache away.
+
+`/context` tells you whether your prefix is actually big enough to cache (below roughly
+4,000 tokens nothing caches at all — and the API reports that failure silently). Set
+`cache_prompt = false` to turn it off; unsupported backends fall back automatically.
+
+### The tracker can retire an item nobody will ever fix
+
+The enhancement tracker had exactly one way to close an issue: a release fixed it. So
+anything *deliberately declined*, or solved outside luban, stayed Open forever — re-probed
+on every upgrade, burying the issues that were still real.
+
+An item can now close four ways: a **version** (fixed and verified), **wontfix** (a
+deliberate design decision, with the reason recorded), **mitigated** (solved outside luban
+core), or **obsolete**. Release notes can carry those verdicts in a **Decisions** section
+and luban applies them on upgrade — so a decision reaches your tracker without a code
+change having to happen first.
+
+### Also
+
+- Custom tools can contribute usage **`guidance`** to the system prompt, not just a
+  description (E25) — useful once you have a suite of tools and the model needs to know
+  when to reach for each and how they combine.
+
+### Decisions
+
+- **E22 — wontfix in core.** Standing per-project methodology reattaching at session start
+  is best served by the project memory file (`LUBAN.md`/`CLAUDE.md`/`AGENTS.md`), which is
+  auto-injected every session. An *enforced* auto-load hook would push skills into the
+  always-on budget every session whether relevant or not — the exact opposite of the
+  context work in this release. The project-memory gateway is the supported path.
+
 ## v0.5.14 — settings that take effect, turns that don't vanish, and a network that fights back
 
 A batch of reliability fixes, most of them about the same failure shape: something goes

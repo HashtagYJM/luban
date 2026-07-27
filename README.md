@@ -30,7 +30,7 @@ Download `luban-<version>-py3-none-any.whl` from the
 file directly — no internet, no build, no dependencies to resolve:
 
 ```bash
-pip install --no-index luban-0.5.14-py3-none-any.whl
+pip install --no-index luban-0.5.15-py3-none-any.whl
 ```
 
 `--no-index` guarantees pip never contacts a package index. This puts a real
@@ -112,6 +112,7 @@ luban --version             # print the installed version and exit
 | `/effort [low\|medium\|high\|xhigh\|max]` | How hard the model reasons |
 | `/verbose [on\|off]` | Show or hide the reasoning text |
 | `/config` | Every setting in effect, plus your always-on context budget |
+| `/context` | What's loaded into the prompt every turn, its token cost, and whether it caches |
 | `/auto` | Stop asking before file writes and shell commands |
 | `/skills`, `/skill <name>` | List skills; load one into context |
 | `/compact` | Summarize a long conversation and keep going |
@@ -364,6 +365,7 @@ platform. The keys:
 | `effort` | `"medium"` | Reasoning depth: `low`…`max` |
 | `thinking_verbose` | `false` | Stream the reasoning as dim text |
 | `max_tokens` | `32000` | Ceiling on one turn: thinking + text + the tool call |
+| `cache_prompt` | `true` | Cache the stable system prompt (cheaper, faster turns) |
 | `memory_enabled` | `true` | Long-term memory |
 | `memory_file` | (chain) | Pin the project memory file |
 | `warn_tokens` | `150000` | When to suggest `/compact` |

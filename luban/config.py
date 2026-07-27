@@ -38,6 +38,10 @@ class Config:
     # ceiling safe; a non-streamed request holds the connection open with nothing
     # flowing, so it gets clamped (see NO_STREAM_MAX_TOKENS).
     max_tokens: int = 32_000
+    # Send the stable half of the system prompt as a cacheable block. Cache reads
+    # bill ~0.1x, so a long session stops paying full price to re-send the same
+    # identity/profile text every turn. Degrades automatically if unsupported.
+    cache_prompt: bool = True
     thinking_verbose: bool = False  # stream the reasoning text; default silent
     auto_continue: bool = False  # reopen the folder's last session on a plain start
     # When to nudge "consider /compact". The old 60k default was set for a much
@@ -90,6 +94,11 @@ def _default_text(plat: str) -> str:
         "# (--no-stream) are clamped lower — an idle connection times out.\n"
         "# max_tokens = 32000\n"
         "\n"
+        "# Cache the stable half of the system prompt so every turn stops re-paying\n"
+        "# for the same identity/profile text. Falls back automatically if your\n"
+        "# backend does not support it. Default on:\n"
+        "# cache_prompt = true\n"
+        "\n"
         "# Reopen this folder's last session automatically on a plain `luban` start\n"
         "# (instead of just reminding you it exists). Default off:\n"
         "# auto_continue = false\n"
@@ -139,6 +148,7 @@ _MIGRATABLE = [
     ("effort", '# effort = "medium"   # low | medium | high | xhigh | max\n'),
     ("thinking_verbose", "# thinking_verbose = false   # stream the reasoning text\n"),
     ("max_tokens", "# max_tokens = 32000   # ceiling on ONE turn: thinking + text + tool call\n"),
+    ("cache_prompt", "# cache_prompt = true   # cache the stable system prompt\n"),
     ("auto_continue", "# auto_continue = false   # reopen the last session on plain start\n"),
     ("warn_tokens", "# warn_tokens = 150000   # when to nudge you to /compact\n"),
     ("allow_out_of_tree_file_edits", "# allow_out_of_tree_file_edits = false\n"),
@@ -324,6 +334,9 @@ def load_config(path: Path = CONFIG_PATH) -> Config:
     effort = data.get("effort")
     if effort not in {"low", "medium", "high", "xhigh", "max"}:
         effort = "medium"
+    cache_prompt = data.get("cache_prompt")
+    if not isinstance(cache_prompt, bool):
+        cache_prompt = True
     max_tokens = data.get("max_tokens")
     if not isinstance(max_tokens, int) or isinstance(max_tokens, bool) or max_tokens <= 0:
         max_tokens = 32_000
@@ -358,6 +371,7 @@ def load_config(path: Path = CONFIG_PATH) -> Config:
         thinking=thinking,
         effort=effort,
         max_tokens=max_tokens,
+        cache_prompt=cache_prompt,
         thinking_verbose=thinking_verbose,
         auto_continue=auto_continue,
         warn_tokens=warn_tokens,

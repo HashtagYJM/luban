@@ -157,7 +157,7 @@ def test_recall_hits_fact_name_body_and_journal(mem):
     assert "Always use plotly." in out
     out2 = memory.recall("sql wrapper")
     assert "debugged the SQL wrapper" in out2
-    assert memory.recall("zzz-nothing") == "(no matches)"
+    assert memory.recall("zzz-nothing").startswith("Nothing in memory matched")
 
 
 def test_recall_capped(mem):

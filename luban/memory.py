@@ -199,6 +199,13 @@ def read_index() -> str:
     return compact[:INDEX_MAX] + "\n[memory index truncated]"
 
 
+def _read_raw_index() -> str:
+    try:
+        return (MEMORY_DIR / "MEMORY.md").read_text(encoding="utf-8", errors="replace").strip()
+    except OSError:
+        return ""
+
+
 def index_slugs_dropped() -> int:
     """How many fact slugs don't fit even in a slug-only index — i.e. facts the
     model will no longer know exist. 0 in every normal case."""
@@ -341,6 +348,26 @@ def bootstrap_stable() -> str:
     return "\n\n".join(parts)
 
 
+def _over_budget_notice() -> str:
+    """Tell the MODEL when the store has outgrown its always-on budget.
+
+    Shedding descriptions to fit (H2) keeps every fact discoverable, but doing only that
+    hides the problem forever — rationing used as a substitute for curation. Anthropic's
+    own memory design errors and tells the model to rewrite the index; this is the same
+    idea: the cap is a forcing function for consolidation, not a silent quota.
+    """
+    dropped = index_slugs_dropped()
+    trimmed = len(_read_raw_index()) > INDEX_MAX
+    if not (dropped or trimmed):
+        return ""
+    detail = (f"{dropped} fact(s) no longer fit at all" if dropped
+              else "descriptions are being trimmed to fit")
+    return (f"NOTE: the long-term memory index is over its always-on budget — {detail}. "
+            "A bloated store degrades how well you follow it. Suggest the user run "
+            "/reflect to consolidate: merge duplicates, delete what the transcripts and "
+            "journal already hold, and graduate standing preferences into USER.md.")
+
+
 def bootstrap_volatile() -> str:
     """Global memory luban itself rewrites during a session: the fact index and the
     journal. Kept LAST in the prompt so a `remember`/`journal` write can't invalidate
@@ -352,12 +379,84 @@ def bootstrap_volatile() -> str:
     journal = read_recent_journal()
     if journal:
         parts.append(f"Recent journal:\n{journal}")
+    notice = _over_budget_notice()
+    if notice:
+        parts.append(notice)
     return "\n\n".join(parts)
 
 
 def bootstrap_block() -> str:
     """The whole global-memory block (stable + volatile), in prompt order."""
     return "\n\n".join(p for p in (bootstrap_stable(), bootstrap_volatile()) if p)
+
+
+def _overlap(a: str, b: str) -> float:
+    """Jaccard overlap of content words — a cheap 'these two look like the same idea'."""
+    ta, tb = set(_content_tokens(a)), set(_content_tokens(b))
+    if not ta or not tb:
+        return 0.0
+    return len(ta & tb) / len(ta | tb)
+
+
+DUPLICATE_THRESHOLD = 0.34  # tuned to flag candidates for a human/model, not to auto-merge
+
+
+def duplicate_candidates() -> list[tuple[str, str, float]]:
+    """Pairs of facts that look like the same idea, most similar first.
+
+    Purely lexical and deliberately loose: this only ever SUGGESTS a merge to the
+    curator, it never merges anything. False positives cost a glance; misses cost a
+    duplicate that lives forever.
+    """
+    facts = []
+    if MEMORY_DIR.is_dir():
+        for p in sorted(MEMORY_DIR.glob("*.md")):
+            if p.name == "MEMORY.md":
+                continue
+            try:
+                facts.append((p.stem, p.read_text(encoding="utf-8", errors="replace")))
+            except OSError:
+                continue
+    pairs = []
+    for i, (sa, ta) in enumerate(facts):
+        for sb, tb in facts[i + 1:]:
+            score = _overlap(f"{sa} {ta}", f"{sb} {tb}")
+            if score >= DUPLICATE_THRESHOLD:
+                pairs.append((sa, sb, round(score, 2)))
+    return sorted(pairs, key=lambda p: -p[2])
+
+
+def audit() -> str:
+    """The COMPLETE fact store plus duplicate candidates — the curator's raw material.
+
+    recall() is capped at RECALL_MAX (8,000 chars), which on a real store lets /reflect
+    see roughly a tenth of what it is being asked to curate; rationing the curator is why
+    consolidation never happened. This is injected into the isolated /reflect turn only,
+    so an ordinary turn never carries it.
+    """
+    facts = []
+    if MEMORY_DIR.is_dir():
+        for p in sorted(MEMORY_DIR.glob("*.md")):
+            if p.name == "MEMORY.md":
+                continue
+            try:
+                facts.append(f"[{p.stem}]\n{p.read_text(encoding='utf-8', errors='replace').strip()}")
+            except OSError:
+                continue
+    if not facts:
+        return "(the fact store is empty)"
+    body = "\n\n".join(facts)
+    parts = [f"THE COMPLETE FACT STORE ({len(facts)} facts, {len(body):,} chars):\n\n{body}"]
+    dupes = duplicate_candidates()
+    if dupes:
+        listing = "\n".join(f"  - [{a}] vs [{b}]  (overlap {s})" for a, b, s in dupes[:20])
+        parts.append("POSSIBLE DUPLICATES (lexical overlap — judge for yourself, these "
+                     f"are only candidates):\n{listing}")
+    over = index_slugs_dropped()
+    if over:
+        parts.append(f"WARNING: the always-on index is over budget — {over} fact(s) no "
+                     "longer fit. Consolidation is overdue.")
+    return "\n\n".join(parts)
 
 
 def valid_slug(name: str) -> bool:
@@ -460,6 +559,12 @@ def _content_tokens(query: str) -> list[str]:
     """Normalised, de-duplicated, stopword-free tokens — the ones that carry meaning."""
     seen: list[str] = []
     for raw in query.lower().split():
+        # Check the RAW word against the stopword list first: normalising "does" to
+        # "doe" would smuggle it past the filter, and "doe" is a substring of
+        # "doesn't" — a false-positive source.
+        bare = raw.strip(".,;:!?()[]{}<>\"'`")
+        if not bare or bare in _STOPWORDS:
+            continue
         t = _normalize(raw)
         if t and t not in _STOPWORDS and t not in seen:
             seen.append(t)
@@ -502,9 +607,32 @@ def _fact_text(slug: str) -> str | None:
         return None
 
 
+NO_MATCH = (
+    "Nothing in memory matched those words. NOTE: this does NOT mean the fact does not "
+    "exist — the memory index in your system prompt lists every fact there is. Look "
+    "there and pass an exact slug to read one. Do not save a new fact just because a "
+    "search missed; check the index first, and update the existing fact if there is one."
+)
+
+
 def recall(query: str) -> str:
-    """Search long-term memory. Two independent lanes so the journal — which matches
-    PER LINE and is therefore numerous — can never crowd out the far scarcer facts."""
+    """Read a fact by slug (the normal path), or explore by keyword (the fallback).
+
+    The index of every fact is already in the model's context, so this is fundamentally
+    a FETCH, not a search — matching exists only for exploration. An empty result must
+    never read as 'that fact does not exist', because that is what makes the model save
+    a duplicate; see NO_MATCH.
+    """
+    # Exact slug: read it directly, no scoring, no competition from other facts.
+    direct = _fact_text(query.strip())
+    if direct is not None:
+        out = f"[{query.strip()}]\n{direct.strip()}"
+        for slug in _WIKILINK.findall(direct):
+            linked = _fact_text(slug)
+            if linked is not None:
+                out += f"\n\n[{slug}] (linked from [{query.strip()}])\n{linked.strip()}"
+        return out if len(out) <= RECALL_MAX else out[:RECALL_MAX] + "\n[recall truncated]"
+
     hits: list[str] = []
     matched: set[str] = set()
 
@@ -560,7 +688,7 @@ def recall(query: str) -> str:
             )
             hits.append(label + "\n" + "\n".join(kept))
 
-    out = "\n\n".join(hits) or "(no matches)"
+    out = "\n\n".join(hits) or NO_MATCH
     if len(out) > RECALL_MAX:
         out = out[:RECALL_MAX] + "\n[recall truncated]"
     return out

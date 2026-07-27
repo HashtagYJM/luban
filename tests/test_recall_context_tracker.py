@@ -35,7 +35,7 @@ def test_natural_language_queries_that_used_to_miss(mem, query, expect):
 
 def test_a_query_of_pure_stopwords_matches_nothing(mem):
     """Relaxing AND->OR must not turn recall into a wildcard."""
-    assert memory.recall("how do I the a of that") == "(no matches)"
+    assert memory.recall("how do I the a of that").startswith("Nothing in memory matched")
 
 
 def test_plural_and_possessive_normalise(mem):
@@ -60,7 +60,7 @@ def test_empty_query_still_dumps_everything(mem):
 
 
 def test_no_match_is_still_reported(mem):
-    assert memory.recall("kubernetes helm chart") == "(no matches)"
+    assert memory.recall("kubernetes helm chart").startswith("Nothing in memory matched")
 
 
 # ---------------- E26: the journal can no longer drown the facts ----------------

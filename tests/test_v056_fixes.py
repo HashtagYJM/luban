@@ -113,4 +113,4 @@ def test_recall_contiguous_substring_still_works(mem):
 
 def test_recall_true_miss_returns_no_matches(mem):
     memory.remember("k", "d", "body about apples")
-    assert memory.recall("quantum chromodynamics") == "(no matches)"
+    assert memory.recall("quantum chromodynamics").startswith("Nothing in memory matched")

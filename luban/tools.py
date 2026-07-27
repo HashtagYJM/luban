@@ -566,11 +566,18 @@ TOOLS = [
     },
     {
         "name": "recall",
-        "description": "Search long-term memory (facts and journal) for details behind "
-        "the memory index shown in the system prompt.",
+        "description": "Read the full text of a long-term memory fact. The memory index "
+        "in your system prompt already lists EVERY fact that exists — normally you should "
+        "pick the one you want from that index and pass its exact slug here.",
         "input_schema": {
             "type": "object",
-            "properties": {"query": {"type": "string"}},
+            "properties": {"query": {
+                "type": "string",
+                "description": "An exact slug from the memory index (e.g. "
+                "'prefers-plotly') to read that fact — this is the normal use. Only "
+                "if no index entry looks right, pass a few distinctive words to "
+                "search bodies and the journal.",
+            }},
             "required": ["query"],
         },
     },

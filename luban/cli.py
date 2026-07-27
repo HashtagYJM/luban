@@ -31,10 +31,28 @@ FLUSH_PROMPT = (
     "Then reply with just: saved."
 )
 REFLECT_PROMPT = (
-    "Housekeeping for your long-term memory. Review the memory index and recent "
-    "journal in your context: use recall to inspect facts, promote durable items "
-    "from the journal into facts with remember, and merge or forget stale, "
-    "duplicate, or wrong facts. Then report briefly what you changed."
+    "Curate your long-term memory. The COMPLETE fact store is given below — you do not "
+    "need recall to inspect it. Memory should stay SMALL and TRUE: a bloated store "
+    "measurably degrades how well you follow what is in it, and every session transcript "
+    "and journal day is kept permanently on disk, so deleting a fact loses nothing. Be "
+    "ruthless.\n\n"
+    "Work through these in order:\n"
+    "1. SURVEY — read the whole store below and the duplicate candidates.\n"
+    "2. MERGE — one fact per idea. Where two facts say the same thing, write the better "
+    "combined fact with remember (reuse the clearer slug) and forget the other.\n"
+    "3. RESOLVE — where two facts contradict, keep what is true NOW and forget the "
+    "stale one. Say which you dropped and why.\n"
+    "4. DELETE — forget anything the project's own files, the journal, or the session "
+    "transcripts already record, and anything that was only ever true for one task.\n"
+    "5. GRADUATE — this is the one people miss. A pattern that keeps recurring about how "
+    "the user wants work done is a STANDING instruction, not a look-up detail: edit it "
+    "into USER.md (always in your context), and forget the fact. A recallable fact cannot "
+    "govern how you behave, because you cannot know to recall it before you act. Only do "
+    "this for genuinely recurring preferences, not one-offs.\n"
+    "6. REPORT — briefly: what you merged, deleted, graduated, and what you deliberately "
+    "left alone.\n\n"
+    "Every change is a normal write: the user sees a diff and confirms. Propose nothing "
+    "you cannot justify.\n\n"
 )
 # Kept for reference; the live threshold is config.warn_tokens (default 150k).
 DEFAULT_WARN_TOKENS = 150_000
@@ -582,7 +600,11 @@ def reflect_session(session: Session, client, ctx, cfg: config_mod.Config) -> No
     )
     ui.print_text("\nluban> ")
     try:
-        agent.run_turn(client, config, [{"role": "user", "content": REFLECT_PROMPT}],
+        # The whole store goes in the PROMPT, not through recall: recall is capped at
+        # RECALL_MAX, which would show the curator about a tenth of what it must curate.
+        # This turn is isolated, so an ordinary turn never carries this payload.
+        agent.run_turn(client, config,
+                       [{"role": "user", "content": REFLECT_PROMPT + memory_mod.audit()}],
                        ctx, ui.print_text, ui.print_thinking)
     except Exception as exc:
         ui.print_text(f"reflect failed ({exc}) — memory unchanged.\n")

@@ -91,6 +91,9 @@ class AgentConfig:
     memory: str = ""
     global_memory: str = ""
     global_volatile: str = ""  # index + journal: kept LAST so writes can't bust the cache
+    # Callable re-rendering the volatile half per model call, so a mid-turn
+    # remember/forget is visible immediately (E28). Falls back to the static string.
+    volatile_fn: object = None
     cache_prompt: bool = False  # send the stable prefix as a cacheable block (P2)
     tools: list | None = None
     tool_guidance: list | None = None  # (name, guidance) from custom tools (E25)
@@ -122,9 +125,16 @@ def build_system_param(stable: str, volatile: str, cache: bool):
 
 def _run_model_turn(client, config, messages, on_text, on_thinking, on_retry=None):
     global _BLOCK_SYSTEM_SUPPORTED
+    # Re-render the volatile half EVERY model call. It was captured once per user turn,
+    # so within a multi-step turn the index went stale the moment the model called
+    # remember/forget — it would then be told a fact it had just saved did not exist,
+    # which is exactly the belief that makes it save a duplicate (E28). This is cheap
+    # precisely because volatile sits AFTER the cache breakpoint: re-rendering it cannot
+    # invalidate the cached stable prefix.
+    volatile_now = config.volatile_fn() if config.volatile_fn else config.global_volatile
     stable, volatile = system_blocks(
         config.platform, config.skills, config.memory, config.global_memory,
-        config.tool_guidance, config.global_volatile)
+        config.tool_guidance, volatile_now)
     use_blocks = config.cache_prompt and _BLOCK_SYSTEM_SUPPORTED is not False
     system = build_system_param(stable, volatile, use_blocks)
     tool_schemas = config.tools if config.tools is not None else tools_mod.TOOLS

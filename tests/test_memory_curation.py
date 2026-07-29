@@ -100,7 +100,7 @@ def test_audit_on_an_empty_store(mem):
 # ---------------- the cap becomes a forcing function ----------------
 
 def test_an_over_budget_index_tells_the_MODEL_to_consolidate(mem):
-    for i in range(80):
+    for i in range(200):
         memory.remember(f"fact-{i:03d}-{'z' * 25}", "a fairly long description " * 3, "b")
     volatile = memory.bootstrap_volatile()
     assert "over its always-on budget" in volatile

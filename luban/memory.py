@@ -18,14 +18,14 @@ SOUL_PATH = paths.luban_home() / "SOUL.md"
 USER_PATH = paths.luban_home() / "USER.md"
 MEMORY_DIR = paths.luban_home() / "memory"
 
-SOUL_MAX = 4000
+SOUL_MAX = 5000
 # A user profile is at least as load-bearing as the agent's character — a real
 # professional profile does not fit in 2,000 chars (a 3,158-char USER.md was being
 # silently truncated in the field, dropping the user's hard coding rules and whole
 # Environment section). Caps stay: an uncapped always-on file bloats EVERY turn
 # with no signal. A cap you can see (cap_warnings) beats no cap.
-USER_MAX = 4000
-INDEX_MAX = 4000
+USER_MAX = 10000
+INDEX_MAX = 10000
 JOURNAL_MAX = 3000
 RECALL_MAX = 8000
 
@@ -92,6 +92,26 @@ _ENHANCEMENTS_TEMPLATE = (
     "| ID | Resolution | Notes |\n"
     "|----|------------|-------|\n"
 )
+
+def apply_caps(soul: int = 0, user: int = 0, index: int = 0, journal: int = 0) -> None:
+    """Let config.toml raise (or lower) the always-on budgets.
+
+    Defaults are derived, not guessed: cap total always-on at 10% of a 150k working
+    budget (~43,500 chars), subtract the fixed prompt+tools, and allocate the rest from
+    each file's MEASURED size plus headroom. A hard-coded USER_MAX silently cut 2,810
+    chars off a real 6,810-char profile — including rules deliberately graduated into
+    always-on context (E29). The budget is the user's to spend.
+    """
+    global SOUL_MAX, USER_MAX, INDEX_MAX, JOURNAL_MAX
+    if soul > 0:
+        SOUL_MAX = soul
+    if user > 0:
+        USER_MAX = user
+    if index > 0:
+        INDEX_MAX = index
+    if journal > 0:
+        JOURNAL_MAX = journal
+
 
 _journal_writes = 0
 
@@ -615,7 +635,16 @@ def _recall_score(query: str, *fields: str) -> int:
     tokens = _content_tokens(q)
     if not tokens:
         return 0  # a query of pure stopwords must match NOTHING, not everything
-    return sum(1 for t in tokens if t in hay)
+    found = sum(1 for t in tokens if t in hay)
+    if not found:
+        return 0
+    # Normalise by length. An unnormalised count rises monotonically with document
+    # size, so the biggest generic files (the tracker, an active-work note) outranked
+    # the fact actually asked for — the intended fact came first in only 2 of 8 probed
+    # queries (E27). Score = coverage, with a mild length penalty as the tiebreak.
+    coverage = found / len(tokens)
+    length_penalty = 1.0 + (len(hay) / 20_000)
+    return int(round(1000 * coverage / length_penalty))
 
 
 def _recall_match(query: str, *fields: str) -> bool:
@@ -678,8 +707,15 @@ def recall(query: str) -> str:
                 scored.append((score, p.stem, text))
         # Rank by score, then slug so equal scores are stable/deterministic.
         scored.sort(key=lambda s: (-s[0], s[1]))
+        # Cap each fact's share of the budget. One oversized fact used to consume the
+        # whole RECALL_MAX, truncating INSIDE hit #1 so the correct lower-ranked fact
+        # was silently dropped (E27). A fetch by slug is never capped this way.
+        share = max(1200, RECALL_MAX // max(1, min(len(scored), RECALL_TOP_FACTS)))
         for _score, stem, text in scored[:RECALL_TOP_FACTS]:
-            hits.append(f"[{stem}]\n{text.strip()}")
+            body = text.strip()
+            if len(body) > share:
+                body = body[:share] + f"\n[trimmed — read it whole with recall('{stem}')]"
+            hits.append(f"[{stem}]\n{body}")
             matched.add(stem)
         # E9: follow [[wikilinks]] one level so a "pointer" fact that references
         # another (e.g. active-work → [[project-x]]) pulls the linked fact in too.

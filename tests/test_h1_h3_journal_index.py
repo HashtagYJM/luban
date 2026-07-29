@@ -26,7 +26,7 @@ def test_over_cap_journal_emits_no_warning(mem):
 
 
 def test_over_cap_user_md_still_warns(mem):
-    memory.USER_PATH.write_text("## About me\n" + "u" * 5000, encoding="utf-8")
+    memory.USER_PATH.write_text("## About me\n" + "u" * (memory.USER_MAX + 1000), encoding="utf-8")
     warns = memory.cap_warnings(memory.always_on_usage())
     assert len(warns) == 1 and "USER.md" in warns[0]
 
@@ -55,7 +55,7 @@ def _many_facts(n):
 
 
 def test_index_over_budget_keeps_every_slug(mem):
-    _many_facts(80)  # blows past INDEX_MAX with descriptions
+    _many_facts(200)  # blows past INDEX_MAX with descriptions
     raw = (mem / "MEMORY.md").read_text(encoding="utf-8")
     assert len(raw) > memory.INDEX_MAX
     idx = memory.read_index()
@@ -68,7 +68,7 @@ def test_index_over_budget_keeps_every_slug(mem):
 
 def test_late_alphabet_fact_survives_and_is_recallable(mem):
     """The old head-truncation cut late-alphabet slugs first — 'zzz-*' vanished."""
-    _many_facts(80)
+    _many_facts(200)
     memory.remember("zzz-last-in-alphabet", "the canary", "it survived")
     idx = memory.read_index()
     assert "zzz-last-in-alphabet" in idx           # still in the catalog

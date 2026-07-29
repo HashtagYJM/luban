@@ -31,9 +31,10 @@ def test_read_soul_missing_is_empty(mem):
 
 
 def test_read_soul_capped(mem):
-    (mem / "SOUL.md").write_text("x" * 5000, encoding="utf-8")
+    (mem / "SOUL.md").write_text("x" * (memory.SOUL_MAX + 1000), encoding="utf-8")
     out = memory.read_soul()
-    assert len(out) < 5000 and out.endswith("[SOUL.md truncated]")
+    assert len(out) < memory.SOUL_MAX + 1000  # shorter than the input
+    assert out.endswith("[SOUL.md truncated]")
 
 
 def test_read_soul_binary_never_crashes(mem):

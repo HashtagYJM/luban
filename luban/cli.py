@@ -308,6 +308,63 @@ def context_report(session: Session, cfg: config_mod.Config, project_root: Path,
     return "".join(out)
 
 
+TIDY_PROMPT = (
+    "This always-on file is over its budget, so its tail is being CUT before the model "
+    "ever sees it. Rewrite it to fit, using edit_file/write_file.\n"
+    "Keep every distinct instruction — this is compaction, not deletion: tighten wording, "
+    "merge overlapping bullets, drop restatements and filler. Preserve the author's voice "
+    "and section structure. If two rules say the same thing, keep the clearer one.\n"
+    "Show the diff and let the user confirm.\n\n"
+)
+
+
+def offer_tidy(client, ctx, cfg: config_mod.Config, session: Session) -> None:
+    """An over-budget always-on file is a MECHANICAL condition — detect it, offer the
+    fix, and let the user approve. Asking the model to remember to tidy up during
+    /reflect was the myopic version: the failure is detectable, so it should be offered.
+    """
+    over = [(label, path, size, cap) for label, path, size, cap in (
+        ("USER.md", memory_mod.USER_PATH, _file_len(memory_mod.USER_PATH), memory_mod.USER_MAX),
+        ("SOUL.md", memory_mod.SOUL_PATH, _file_len(memory_mod.SOUL_PATH), memory_mod.SOUL_MAX),
+    ) if size > cap]
+    if not over or client is None:
+        return
+    for label, path, size, cap in over:
+        ui.print_text(
+            f"\n⚠ {label} is {size:,} chars but the budget is {cap:,} — the last "
+            f"{size - cap:,} chars are NOT reaching the model.\n"
+        )
+        try:
+            answer = input(f"  compact {label} now? [y/N] ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            ui.print_text("\n")
+            return
+        if answer not in ("y", "yes"):
+            ui.print_text(f"  left as-is. Raise the budget in {config_mod.CONFIG_PATH} "
+                          f"({label.split('.')[0].lower()}_max) or compact later.\n")
+            continue
+        config = agent.AgentConfig(
+            session.model, session.max_tokens, session.stream, platform=cfg.platform,
+            tools=tools.active_tools(True),
+        )
+        body = path.read_text(encoding="utf-8", errors="replace")
+        ui.print_text("\nluban> ")
+        try:
+            agent.run_turn(client, config, [{"role": "user", "content":
+                TIDY_PROMPT + f"File: ~/.luban/{label}  ({size:,} chars, budget "
+                f"{cap:,})\n\n{body}"}], ctx, ui.print_text, ui.print_thinking)
+        except Exception as exc:
+            ui.print_text(f"compaction failed ({exc}) — {label} unchanged.\n")
+        ui.print_text("\n")
+
+
+def _file_len(path: Path) -> int:
+    try:
+        return len(path.read_text(encoding="utf-8", errors="replace").strip())
+    except OSError:
+        return 0
+
+
 def stream_retry_notice(exc: BaseException, attempt: int, total: int, delay: float) -> None:
     """Say it out loud when a turn is re-issued. The response restarts from the top,
     so text already on screen is about to be superseded — silently re-streaming would
@@ -563,6 +620,7 @@ def build_agent_config(session: Session, cfg: config_mod.Config, project_root: P
         memory=read_project_memory(project_root, cfg.memory_file),
         global_memory=memory_mod.bootstrap_stable() if cfg.memory_enabled else "",
         global_volatile=memory_mod.bootstrap_volatile() if cfg.memory_enabled else "",
+        volatile_fn=(memory_mod.bootstrap_volatile if cfg.memory_enabled else None),
         cache_prompt=cfg.cache_prompt,
         tools=tool_list,
         tool_guidance=tools.custom_guidance(),
@@ -1056,6 +1114,9 @@ def main(argv: list[str] | None = None) -> None:
     if notice:
         ui.print_text(notice + "\n")
     cfg = config_mod.load_config()
+    # Spend the always-on budget where the USER chose to (E29) — before anything reads
+    # a capped file, so the first bootstrap already honours it.
+    memory_mod.apply_caps(cfg.soul_max, cfg.user_max, cfg.index_max, cfg.journal_max)
     session = Session(
         model=resolve_model(ns.model, cfg),
         max_tokens=resolve_max_tokens(ns.max_tokens, cfg, ns.stream),
@@ -1122,6 +1183,8 @@ def main(argv: list[str] | None = None) -> None:
     # otherwise luban silently never sees the tail and looks like it's ignoring you.
     for warning in memory_mod.cap_warnings(always_on_usage(project_root, cfg)):
         ui.print_text(warning + "\n")
+    if cfg.memory_enabled:
+        offer_tidy(client, ctx, cfg, session)  # over-budget file -> offer, you approve
     # Same principle for config: a setting that's in the file but silently ignored
     # (swallowed by a [table] header) looks exactly like luban disobeying you.
     for warning in config_mod.config_warnings():

@@ -38,10 +38,26 @@ def _parse_frontmatter(lines: list[str]) -> tuple[str, str] | None:
     for end in range(1, len(lines)):
         if lines[end].strip() == "---":
             desc = ""
-            for ln in lines[1:end]:
-                if ln.strip().lower().startswith(_DESC_PREFIX):
-                    desc = ln.split(":", 1)[1].strip().strip("\"'")
-                    break
+            for i in range(1, end):
+                ln = lines[i]
+                if not ln.strip().lower().startswith(_DESC_PREFIX):
+                    continue
+                desc = ln.split(":", 1)[1].strip().strip("\"'")
+                # YAML BLOCK SCALAR: `description: >` (folded) or `|` (literal) puts the
+                # text on INDENTED CONTINUATION LINES. Taking only this line left the
+                # description as a bare ">" or "|", so the catalog showed the skill with
+                # no trigger text at all — and it happened to exactly the richest skills,
+                # the ones whose descriptions were long enough to need folding (E30).
+                if desc in (">", "|", ">-", "|-", ">+", "|+"):
+                    folded = desc.startswith(">")
+                    parts = []
+                    for cont in lines[i + 1:end]:
+                        if cont.strip() and not cont[:1].isspace():
+                            break  # dedented: next frontmatter key
+                        if cont.strip():
+                            parts.append(cont.strip())
+                    desc = (" " if folded else "\n").join(parts)
+                break
             body = "\n".join(lines[end + 1:]).strip()
             if not desc:
                 desc = next((ln.strip() for ln in body.splitlines() if ln.strip()), "")[:_DESC_MAX]

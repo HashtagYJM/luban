@@ -17,8 +17,10 @@ def mem(tmp_path, monkeypatch):
 
 # ---- C2: the field bug — a real 3,158-char USER.md was silently truncated ----
 
-def test_user_max_is_peer_of_soul_max():
-    assert memory.USER_MAX == 4000 == memory.SOUL_MAX
+def test_user_max_is_at_least_soul_max():
+    # A profile is bigger than character text, so USER.md gets the larger budget.
+    # Both are config-overridable now (E29) — assert the relationship, not a constant.
+    assert memory.USER_MAX >= memory.SOUL_MAX > 0
 
 
 def test_field_bug_3158_char_user_md_now_passes_through_whole(mem):
@@ -31,7 +33,7 @@ def test_field_bug_3158_char_user_md_now_passes_through_whole(mem):
 
 
 def test_over_cap_still_truncates_and_marks(mem):
-    (mem / "USER.md").write_text("## About me\n" + "y" * 5000, encoding="utf-8")
+    (mem / "USER.md").write_text("## About me\n" + "y" * (memory.USER_MAX + 1000), encoding="utf-8")
     out = memory.read_user()
     assert "[USER.md truncated]" in out  # caps still exist — they're just visible now
 
@@ -39,12 +41,13 @@ def test_over_cap_still_truncates_and_marks(mem):
 # ---- C1: the human is TOLD, not just the model ----
 
 def test_cap_warning_names_file_size_and_dropped_amount(mem):
-    (mem / "USER.md").write_text("## About me\n" + "z" * 5000, encoding="utf-8")
+    (mem / "USER.md").write_text("## About me\n" + "z" * (memory.USER_MAX + 1000), encoding="utf-8")
     warns = memory.cap_warnings(memory.always_on_usage())
     assert len(warns) == 1
     w = warns[0]
-    # "## About me\n" (12) + 5000 = 5,012 chars; 1,012 over the 4,000 cap
-    assert "USER.md" in w and "5,012" in w and "4,000" in w and "1,012" in w
+    total = 12 + memory.USER_MAX + 1000  # "## About me\n" + the filler
+    assert "USER.md" in w and f"{total:,}" in w and f"{memory.USER_MAX:,}" in w \
+        and f"{total - memory.USER_MAX:,}" in w
     assert "NOT being sent to the model" in w
 
 
@@ -69,8 +72,8 @@ def test_cli_usage_includes_project_memory_file(tmp_path, mem):
 # ---- C3: templates declare the budget, and suppression SURVIVES the change ----
 
 def test_templates_state_their_budget():
-    assert "4,000 characters" in memory._SOUL_TEMPLATE
-    assert "4,000 characters" in memory._USER_TEMPLATE
+    assert f"{memory.SOUL_MAX:,} characters" in memory._SOUL_TEMPLATE
+    assert f"{memory.USER_MAX:,} characters" in memory._USER_TEMPLATE
 
 
 def test_untouched_scaffold_still_suppressed_after_template_change(mem):
@@ -113,7 +116,7 @@ def test_bootstrap_order_unchanged(mem):
 # ---- C5: /config shows the budget ----
 
 def test_slash_config_shows_always_on_budget(tmp_path, mem, monkeypatch):
-    (mem / "USER.md").write_text("## About me\n" + "q" * 5000, encoding="utf-8")
+    (mem / "USER.md").write_text("## About me\n" + "q" * (memory.USER_MAX + 1000), encoding="utf-8")
     out = []
     monkeypatch.setattr(cli.ui, "print_text", lambda t: out.append(t))
     s = cli.Session(model="m", max_tokens=100, auto=True, stream=False, messages=[],
@@ -122,5 +125,5 @@ def test_slash_config_shows_always_on_budget(tmp_path, mem, monkeypatch):
                             render_diff=lambda *a: None, render_command=lambda c: None)
     cli.handle_command("/config", s, ctx=ctx, cfg=config_mod.Config(platform="mac"))
     text = "".join(out)
-    assert "always-on context" in text and "USER.md: 5,012/4,000" in text
+    assert "always-on context" in text and f"USER.md: {12 + memory.USER_MAX + 1000:,}/{memory.USER_MAX:,}" in text
     assert "OVER CAP" in text

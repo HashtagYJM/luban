@@ -4,6 +4,34 @@ Release notes, newest first. Bundled inside the package so luban can show
 "what's new" and reconcile its enhancement tracker offline, with no network.
 Each entry tags the tracker IDs (E-/F-) it resolves.
 
+## v0.5.17 — graduation is a trade, not a dumping ground
+
+A follow-up to v0.5.16, fixing a flaw in it.
+
+v0.5.16 taught `/reflect` to **graduate** recurring preferences out of the fact store and
+into `USER.md`. That was right in principle, but it created an inbound pipeline into a
+capped file without telling the curator a cap existed — so the fix for clutter in one place
+quietly opened a path to clutter in another. Worse: the fact store degrades *gracefully*
+when it overflows (it drops descriptions but keeps every fact), while `USER.md` does not —
+past its limit the **end of the file is simply cut**. Graduation was moving knowledge from
+the forgiving store into the unforgiving one.
+
+Now:
+
+- **`/reflect` sees the always-on budget.** Before it proposes promoting anything, it is
+  shown how full `USER.md` and `SOUL.md` are, how much room is left, and that they do not
+  degrade gracefully.
+- **Graduation is a trade, not an append.** To promote a line, the same edit must tighten or
+  drop weaker ones so the file stays under budget. The bar is explicit: would you want this
+  in front of the model on *every* turn for the next year? Promoting nothing is a valid
+  outcome.
+- **New TIGHTEN step.** If `USER.md` is over budget, `/reflect` edits it down whether or not
+  anything was promoted — because an over-budget `USER.md` is silently losing its tail right
+  now.
+
+The principle, stated once: **every store that can be written to needs a retire path.** The
+fact store got one in v0.5.16; this gives one to the file it promotes into.
+
 ## v0.5.16 — memory that stays small and true
 
 v0.5.15 made `recall`'s keyword matching smarter. That was the wrong fix: it tuned a

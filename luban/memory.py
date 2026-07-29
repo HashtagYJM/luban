@@ -426,6 +426,32 @@ def duplicate_candidates() -> list[tuple[str, str, float]]:
     return sorted(pairs, key=lambda p: -p[2])
 
 
+def always_on_budget() -> str:
+    """USER.md / SOUL.md usage against their caps — the curator must see this before it
+    promotes anything INTO them.
+
+    Graduation moves knowledge from the fact store (which degrades gracefully: over
+    budget it sheds descriptions but keeps every fact) into an always-on file that does
+    NOT degrade gracefully — over budget, the tail is simply cut. Promoting without
+    showing the budget is how a fix for one accumulation problem creates another.
+    """
+    rows = []
+    for label, path, cap in (("USER.md", USER_PATH, USER_MAX),
+                             ("SOUL.md", SOUL_PATH, SOUL_MAX)):
+        try:
+            n = len(path.read_text(encoding="utf-8", errors="replace").strip())
+        except OSError:
+            n = 0
+        state = "OVER BUDGET — the tail is being cut" if n > cap else f"{cap - n:,} free"
+        rows.append(f"  {label}  {n:,} / {cap:,} chars  ({state})")
+    return (
+        "ALWAYS-ON FILES — sent on EVERY turn, so every line costs forever:\n"
+        + "\n".join(rows)
+        + "\nThese do NOT degrade gracefully: past the cap the end of the file is simply "
+          "dropped. Anything you graduate here spends this budget permanently."
+    )
+
+
 def audit() -> str:
     """The COMPLETE fact store plus duplicate candidates — the curator's raw material.
 
@@ -444,9 +470,10 @@ def audit() -> str:
             except OSError:
                 continue
     if not facts:
-        return "(the fact store is empty)"
+        return always_on_budget() + "\n\n(the fact store is empty)"
     body = "\n\n".join(facts)
-    parts = [f"THE COMPLETE FACT STORE ({len(facts)} facts, {len(body):,} chars):\n\n{body}"]
+    parts = [always_on_budget(),
+             f"THE COMPLETE FACT STORE ({len(facts)} facts, {len(body):,} chars):\n\n{body}"]
     dupes = duplicate_candidates()
     if dupes:
         listing = "\n".join(f"  - [{a}] vs [{b}]  (overlap {s})" for a, b, s in dupes[:20])

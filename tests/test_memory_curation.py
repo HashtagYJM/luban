@@ -117,7 +117,7 @@ def test_a_healthy_store_adds_no_nagging(mem):
 
 def test_reflect_prompt_is_a_procedure_with_graduation():
     p = cli.REFLECT_PROMPT
-    for step in ("SURVEY", "MERGE", "RESOLVE", "DELETE", "GRADUATE", "REPORT"):
+    for step in ("SURVEY", "MERGE", "RESOLVE", "DELETE", "GRADUATE", "TIGHTEN", "REPORT"):
         assert step in p
     assert "USER.md" in p
     assert "cannot know to recall it before you act" in p   # why graduation exists
@@ -142,3 +142,34 @@ def test_ordinary_turns_never_carry_the_audit_payload(mem):
 
 # (the leak-guard word-boundary test lives in tests/test_no_leak.py — that file is
 #  self-excluded from the guard, so it can hold a literal forbidden token as a fixture)
+
+
+# ---------------- graduation must not make USER.md the new dumping ground ----------
+
+def test_graduation_is_bounded_by_the_always_on_budget():
+    """The fix for fact-store rot must not open a rot pathway into USER.md — which is
+    WORSE, because it head-truncates instead of degrading gracefully."""
+    p = cli.REFLECT_PROMPT
+    assert "NOT A DUMPING GROUND" in p
+    assert "TRADE, not an append" in p
+    assert "every line costs forever" in p
+    assert "tighten or drop weaker lines" in p     # you must pay for what you add
+    assert "Promoting nothing is a fine outcome" in p
+
+
+def test_audit_shows_always_on_headroom(mem):
+    memory.USER_PATH.write_text("## About me\n" + "x" * 500, encoding="utf-8")
+    out = memory.audit()
+    assert "ALWAYS-ON FILES" in out
+    assert "USER.md" in out and "free" in out
+    assert "do NOT degrade gracefully" in out
+
+
+def test_audit_flags_an_over_budget_user_md(mem):
+    memory.USER_PATH.write_text("y" * (memory.USER_MAX + 500), encoding="utf-8")
+    assert "OVER BUDGET" in memory.always_on_budget()
+
+
+def test_budget_report_survives_missing_files(mem):
+    out = memory.always_on_budget()
+    assert "USER.md  0" in out and "SOUL.md  0" in out

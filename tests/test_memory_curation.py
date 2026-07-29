@@ -100,17 +100,17 @@ def test_audit_on_an_empty_store(mem):
 # ---------------- the cap becomes a forcing function ----------------
 
 def test_an_over_budget_index_tells_the_MODEL_to_consolidate(mem):
-    for i in range(200):
+    for i in range(400):
         memory.remember(f"fact-{i:03d}-{'z' * 25}", "a fairly long description " * 3, "b")
     volatile = memory.bootstrap_volatile()
-    assert "over its always-on budget" in volatile
+    assert "against a" in volatile and "budget" in volatile
     assert "/reflect" in volatile          # names the remedy
     assert "degrades how well you follow" in volatile  # says WHY, not just that
 
 
 def test_a_healthy_store_adds_no_nagging(mem):
     memory.remember("one", "a fact", "body")
-    assert "over its always-on budget" not in memory.bootstrap_volatile()
+    assert "budget" not in memory.bootstrap_volatile()
 
 
 # ---------------- the reflect procedure ----------------
@@ -160,16 +160,16 @@ def test_graduation_is_bounded_by_the_always_on_budget():
 def test_audit_shows_always_on_headroom(mem):
     memory.USER_PATH.write_text("## About me\n" + "x" * 500, encoding="utf-8")
     out = memory.audit()
-    assert "ALWAYS-ON FILES" in out
-    assert "USER.md" in out and "free" in out
-    assert "do NOT degrade gracefully" in out
+    assert "ALWAYS-ON LEDGER" in out
+    assert "USER.md" in out and "TOTAL" in out
+    assert "silently" in out
 
 
 def test_audit_flags_an_over_budget_user_md(mem):
-    memory.USER_PATH.write_text("y" * (memory.USER_MAX + 500), encoding="utf-8")
-    assert "OVER BUDGET" in memory.always_on_budget()
+    memory.USER_PATH.write_text("y" * (memory.ALWAYS_ON_BUDGET + 500), encoding="utf-8")
+    assert "OVER — consolidate" in memory.always_on_budget()
 
 
 def test_budget_report_survives_missing_files(mem):
     out = memory.always_on_budget()
-    assert "USER.md  0" in out and "SOUL.md  0" in out
+    assert "USER.md" in out and "SOUL.md" in out and "TOTAL" in out

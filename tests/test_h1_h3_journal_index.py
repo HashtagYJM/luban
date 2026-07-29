@@ -26,7 +26,7 @@ def test_over_cap_journal_emits_no_warning(mem):
 
 
 def test_over_cap_user_md_still_warns(mem):
-    memory.USER_PATH.write_text("## About me\n" + "u" * (memory.USER_MAX + 1000), encoding="utf-8")
+    memory.USER_PATH.write_text("## About me\n" + "u" * (memory.ALWAYS_ON_BUDGET + 1000), encoding="utf-8")
     warns = memory.cap_warnings(memory.always_on_usage())
     assert len(warns) == 1 and "USER.md" in warns[0]
 
@@ -34,17 +34,16 @@ def test_over_cap_user_md_still_warns(mem):
 def test_journal_still_shown_in_usage_for_config(mem):
     (mem / "journal" / f"{date.today()}.md").write_text("j" * 5000, encoding="utf-8")
     entry = next(u for u in memory.always_on_usage() if u[0] == "journal")
-    label, size, cap, warnable = entry
-    assert size == 5000 + len(f"## {date.today()}\n")  # displayed…
-    assert warnable is False  # …but never warned about
+    label, size = entry
+    assert size == 5000 + len(f"## {date.today()}\n")
 
 
-def test_journal_truncation_keeps_the_NEWEST(mem):
+def test_journal_is_not_char_capped(mem):
     """Proves the warning text would have been inverted: the newest survives."""
     (mem / "journal" / f"{date.today()}.md").write_text(
         "OLDEST" + "x" * 4000 + "NEWEST", encoding="utf-8")
     out = memory.read_recent_journal()
-    assert "NEWEST" in out and "OLDEST" not in out
+    assert "NEWEST" in out and "OLDEST" in out  # whole days, no char cap
 
 
 # ================= H2: the index sheds descriptions, never slugs =================
@@ -54,16 +53,13 @@ def _many_facts(n):
         memory.remember(f"fact-{i:03d}-{'z' * 20}", "a fairly long description " * 3, "body")
 
 
-def test_index_over_budget_keeps_every_slug(mem):
+def test_index_is_never_trimmed_for_size(mem):
     _many_facts(200)  # blows past INDEX_MAX with descriptions
     raw = (mem / "MEMORY.md").read_text(encoding="utf-8")
-    assert len(raw) > memory.INDEX_MAX
     idx = memory.read_index()
-    assert len(idx) <= memory.INDEX_MAX
-    for i in range(80):
-        assert f"fact-{i:03d}" in idx  # not one slug lost
-    assert "descriptions trimmed" in idx
-    assert memory.index_slugs_dropped() == 0
+    for i in range(200):
+        assert f"fact-{i:03d}" in idx  # every slug AND its description survive
+    assert memory.index_slugs_dropped() == 0  # nothing is ever dropped now
 
 
 def test_late_alphabet_fact_survives_and_is_recallable(mem):

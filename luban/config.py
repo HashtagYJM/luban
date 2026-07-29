@@ -42,11 +42,6 @@ class Config:
     # bill ~0.1x, so a long session stops paying full price to re-send the same
     # identity/profile text every turn. Degrades automatically if unsupported.
     cache_prompt: bool = True
-    # Always-on budgets (chars). 0 = use luban's derived default. See /context.
-    soul_max: int = 0
-    user_max: int = 0
-    index_max: int = 0
-    journal_max: int = 0
     thinking_verbose: bool = False  # stream the reasoning text; default silent
     auto_continue: bool = False  # reopen the folder's last session on a plain start
     # When to nudge "consider /compact". The old 60k default was set for a much
@@ -104,14 +99,6 @@ def _default_text(plat: str) -> str:
         "# backend does not support it. Default on:\n"
         "# cache_prompt = true\n"
         "\n"
-        "# Always-on budgets, in characters. These files are sent EVERY turn, so the\n"
-        "# total competes with your conversation for the model's attention. Defaults\n"
-        "# hold the whole always-on block near 10% of a 150k working budget. Raise if\n"
-        "# your profile or fact index needs the room; /context shows what you use.\n"
-        "# user_max = 10000\n"
-        "# soul_max = 5000\n"
-        "# index_max = 10000\n"
-        "\n"
         "# Reopen this folder's last session automatically on a plain `luban` start\n"
         "# (instead of just reminding you it exists). Default off:\n"
         "# auto_continue = false\n"
@@ -162,9 +149,6 @@ _MIGRATABLE = [
     ("thinking_verbose", "# thinking_verbose = false   # stream the reasoning text\n"),
     ("max_tokens", "# max_tokens = 32000   # ceiling on ONE turn: thinking + text + tool call\n"),
     ("cache_prompt", "# cache_prompt = true   # cache the stable system prompt\n"),
-    ("user_max", "# user_max = 10000   # always-on budget for USER.md, in characters\n"),
-    ("soul_max", "# soul_max = 5000    # always-on budget for SOUL.md\n"),
-    ("index_max", "# index_max = 10000  # always-on budget for the memory index\n"),
     ("auto_continue", "# auto_continue = false   # reopen the last session on plain start\n"),
     ("warn_tokens", "# warn_tokens = 150000   # when to nudge you to /compact\n"),
     ("allow_out_of_tree_file_edits", "# allow_out_of_tree_file_edits = false\n"),
@@ -353,10 +337,6 @@ def load_config(path: Path = CONFIG_PATH) -> Config:
     cache_prompt = data.get("cache_prompt")
     if not isinstance(cache_prompt, bool):
         cache_prompt = True
-    caps = {}
-    for _k in ("soul_max", "user_max", "index_max", "journal_max"):
-        _v = data.get(_k)
-        caps[_k] = _v if isinstance(_v, int) and not isinstance(_v, bool) and _v > 0 else 0
     max_tokens = data.get("max_tokens")
     if not isinstance(max_tokens, int) or isinstance(max_tokens, bool) or max_tokens <= 0:
         max_tokens = 32_000
@@ -392,7 +372,6 @@ def load_config(path: Path = CONFIG_PATH) -> Config:
         effort=effort,
         max_tokens=max_tokens,
         cache_prompt=cache_prompt,
-        **caps,
         thinking_verbose=thinking_verbose,
         auto_continue=auto_continue,
         warn_tokens=warn_tokens,

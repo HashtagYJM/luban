@@ -30,11 +30,11 @@ def test_read_soul_missing_is_empty(mem):
     assert memory.read_soul() == ""
 
 
-def test_read_soul_capped(mem):
-    (mem / "SOUL.md").write_text("x" * (memory.SOUL_MAX + 1000), encoding="utf-8")
+def test_soul_only_trimmed_if_it_alone_blows_the_whole_budget(mem):
+    (mem / "SOUL.md").write_text("x" * (memory.ALWAYS_ON_BUDGET + 1000), encoding="utf-8")
     out = memory.read_soul()
-    assert len(out) < memory.SOUL_MAX + 1000  # shorter than the input
-    assert out.endswith("[SOUL.md truncated]")
+    assert len(out) < memory.ALWAYS_ON_BUDGET + 1000  # shorter than the input
+    assert "EXCEEDS THE ENTIRE ALWAYS-ON BUDGET" in out
 
 
 def test_read_soul_binary_never_crashes(mem):
@@ -67,15 +67,15 @@ def test_recent_journal_today_and_yesterday_only(mem, monkeypatch):
     assert "now" in out and "then" in out and "ancient" not in out
 
 
-def test_recent_journal_tail_truncation_keeps_newest(mem):
+def test_recent_journal_keeps_whole_days(mem):
     import datetime as dt
     jdir = mem / "memory" / "journal"
     jdir.mkdir(parents=True)
     body = "\n".join(f"[10:{i%60:02}] entry {i}" for i in range(400))
     (jdir / f"{dt.date.today().isoformat()}.md").write_text(body, encoding="utf-8")
     out = memory.read_recent_journal()
-    assert len(out) <= memory.JOURNAL_MAX + 40
-    assert "entry 399" in out and out.startswith("[journal truncated]")
+    # No char cap: a journal day is bounded by being ONE day, not by a number.
+    assert "entry 399" in out and "entry 0" in out
 
 
 def test_bootstrap_block_composition(mem):
@@ -229,10 +229,10 @@ def test_scaffold_never_overwrites_user_md(tmp_path, monkeypatch):
 
 def test_read_user_capped(tmp_path, monkeypatch):
     monkeypatch.setattr(memory, "USER_PATH", tmp_path / "USER.md")
-    (tmp_path / "USER.md").write_text("x" * (memory.USER_MAX + 500), encoding="utf-8")
+    (tmp_path / "USER.md").write_text("x" * (memory.ALWAYS_ON_BUDGET + 500), encoding="utf-8")
     out = memory.read_user()
-    assert out.endswith("[USER.md truncated]")
-    assert len(out) <= memory.USER_MAX + len("\n[USER.md truncated]")
+    assert "EXCEEDS THE ENTIRE ALWAYS-ON BUDGET" in out
+    assert len(out) < memory.ALWAYS_ON_BUDGET + 500  # trimmed, with a loud marker
 
 
 def test_read_user_missing_is_empty(tmp_path, monkeypatch):

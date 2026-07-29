@@ -60,6 +60,13 @@ def _parse_frontmatter(lines: list[str]) -> tuple[str, str] | None:
                 break
             body = "\n".join(lines[end + 1:]).strip()
             if not desc:
+                # Falling back to the body's first line MASKS a broken description —
+                # which is how a bare ">" went unnoticed. We hand-roll YAML, so there
+                # will be another gap; make the whole CLASS loud rather than patching
+                # one indicator at a time.
+                print(f"warning: skill frontmatter has no usable `description:` — the "
+                      f"model will have no trigger text for it. Use a single line, or a "
+                      f"`>`/`|` block with indented lines.", file=sys.stderr)
                 desc = next((ln.strip() for ln in body.splitlines() if ln.strip()), "")[:_DESC_MAX]
             return desc[:_FRONT_DESC_MAX], body
     return None  # unterminated block: treat the file as plain markdown

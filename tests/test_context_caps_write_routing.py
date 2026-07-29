@@ -20,7 +20,7 @@ def mem(tmp_path, monkeypatch):
 def test_user_max_is_at_least_soul_max():
     # A profile is bigger than character text, so USER.md gets the larger budget.
     # Both are config-overridable now (E29) — assert the relationship, not a constant.
-    assert memory.USER_MAX >= memory.SOUL_MAX > 0
+    assert memory.ALWAYS_ON_BUDGET >= memory.ALWAYS_ON_BUDGET > 0
 
 
 def test_field_bug_3158_char_user_md_now_passes_through_whole(mem):
@@ -33,22 +33,20 @@ def test_field_bug_3158_char_user_md_now_passes_through_whole(mem):
 
 
 def test_over_cap_still_truncates_and_marks(mem):
-    (mem / "USER.md").write_text("## About me\n" + "y" * (memory.USER_MAX + 1000), encoding="utf-8")
+    (mem / "USER.md").write_text("## About me\n" + "y" * (memory.ALWAYS_ON_BUDGET + 1000), encoding="utf-8")
     out = memory.read_user()
-    assert "[USER.md truncated]" in out  # caps still exist — they're just visible now
+    assert "EXCEEDS THE ENTIRE ALWAYS-ON BUDGET" in out  # only when ALONE over the total
 
 
 # ---- C1: the human is TOLD, not just the model ----
 
 def test_cap_warning_names_file_size_and_dropped_amount(mem):
-    (mem / "USER.md").write_text("## About me\n" + "z" * (memory.USER_MAX + 1000), encoding="utf-8")
+    (mem / "USER.md").write_text("## About me\n" + "z" * (memory.ALWAYS_ON_BUDGET + 1000), encoding="utf-8")
     warns = memory.cap_warnings(memory.always_on_usage())
     assert len(warns) == 1
     w = warns[0]
-    total = 12 + memory.USER_MAX + 1000  # "## About me\n" + the filler
-    assert "USER.md" in w and f"{total:,}" in w and f"{memory.USER_MAX:,}" in w \
-        and f"{total - memory.USER_MAX:,}" in w
-    assert "NOT being sent to the model" in w
+    assert "always-on context is" in w and f"{memory.ALWAYS_ON_BUDGET:,} budget" in w
+    assert "still being sent" in w  # nothing is cut — it is a consolidation prompt
 
 
 def test_no_warning_when_within_cap(mem):
@@ -57,7 +55,7 @@ def test_no_warning_when_within_cap(mem):
 
 
 def test_always_on_usage_covers_every_layer(mem):
-    labels = [lbl for lbl, _, _, _ in memory.always_on_usage()]
+    labels = [lbl for lbl, _ in memory.always_on_usage()]
     assert labels == ["SOUL.md", "USER.md", "memory index", "journal"]
 
 
@@ -66,14 +64,14 @@ def test_cli_usage_includes_project_memory_file(tmp_path, mem):
     cfg = config_mod.Config(platform="mac")
     usage = cli.always_on_usage(tmp_path, cfg)
     # head-biased like SOUL/USER, so it IS warnable
-    assert ("CLAUDE.md", len("project rules"), cli.MEMORY_MAX_CHARS, True) in usage
+    assert ("CLAUDE.md", len("project rules")) in usage
 
 
 # ---- C3: templates declare the budget, and suppression SURVIVES the change ----
 
 def test_templates_state_their_budget():
-    assert f"{memory.SOUL_MAX:,} characters" in memory._SOUL_TEMPLATE
-    assert f"{memory.USER_MAX:,} characters" in memory._USER_TEMPLATE
+    assert f"{memory.ALWAYS_ON_BUDGET:,}-char budget" in memory._SOUL_TEMPLATE
+    assert f"{memory.ALWAYS_ON_BUDGET:,}-char budget" in memory._USER_TEMPLATE
 
 
 def test_untouched_scaffold_still_suppressed_after_template_change(mem):
@@ -116,7 +114,7 @@ def test_bootstrap_order_unchanged(mem):
 # ---- C5: /config shows the budget ----
 
 def test_slash_config_shows_always_on_budget(tmp_path, mem, monkeypatch):
-    (mem / "USER.md").write_text("## About me\n" + "q" * (memory.USER_MAX + 1000), encoding="utf-8")
+    (mem / "USER.md").write_text("## About me\n" + "q" * (memory.ALWAYS_ON_BUDGET + 1000), encoding="utf-8")
     out = []
     monkeypatch.setattr(cli.ui, "print_text", lambda t: out.append(t))
     s = cli.Session(model="m", max_tokens=100, auto=True, stream=False, messages=[],
@@ -125,5 +123,4 @@ def test_slash_config_shows_always_on_budget(tmp_path, mem, monkeypatch):
                             render_diff=lambda *a: None, render_command=lambda c: None)
     cli.handle_command("/config", s, ctx=ctx, cfg=config_mod.Config(platform="mac"))
     text = "".join(out)
-    assert "always-on context" in text and f"USER.md: {12 + memory.USER_MAX + 1000:,}/{memory.USER_MAX:,}" in text
-    assert "OVER CAP" in text
+    assert "always-on context (one shared budget)" in text and "TOTAL:" in text

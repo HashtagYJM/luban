@@ -18,25 +18,41 @@ SOUL_PATH = paths.luban_home() / "SOUL.md"
 USER_PATH = paths.luban_home() / "USER.md"
 MEMORY_DIR = paths.luban_home() / "memory"
 
-SOUL_MAX = 5000
-# A user profile is at least as load-bearing as the agent's character — a real
-# professional profile does not fit in 2,000 chars (a 3,158-char USER.md was being
-# silently truncated in the field, dropping the user's hard coding rules and whole
-# Environment section). Caps stay: an uncapped always-on file bloats EVERY turn
-# with no signal. A cap you can see (cap_warnings) beats no cap.
-USER_MAX = 10000
-INDEX_MAX = 10000
-JOURNAL_MAX = 3000
-RECALL_MAX = 8000
+# ONE budget for everything sent on every turn — SOUL + USER + fact index + journal +
+# the project's memory file. There are no per-file caps.
+#
+# There used to be five, each head-truncating independently and silently, and every time
+# one bit the answer was to bump it or make it configurable. That is not architecture:
+# a knob is an admission that the right value is unknown, handed to the user. The five
+# numbers also could not express the only property that actually matters — how much of
+# the model's attention the always-on block consumes IN TOTAL.
+#
+# Derivation, not taste: hold always-on near 10% of a 150k working budget. At a measured
+# 2.9 chars/token that is ~43,500 chars; the base prompt and tool schemas take ~5,400.
+ALWAYS_ON_BUDGET = 38_000
+
+# Nothing is silently cut. A single file is only ever trimmed if it ALONE exceeds the
+# entire budget — a paste accident, not a big profile — and then it is marked and the
+# user is told. Below that, files are rendered WHOLE and the total is reported.
+RECALL_MAX = 8000  # a TOOL RESULT bound, not always-on — different concern, stays internal
 
 _SLUG_RX = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}\Z")
+
+# Maintained DOCUMENTS that live in the memory dir but are not atomic facts. They are
+# large, they are edited by hand, and the tracker is self-referential — it quotes past
+# search queries verbatim, so it wins any search about a problem it once recorded.
+# Ranking tweaks only masked that; the real error was filing a document as a fact.
+# Still fully reachable: by its own path, or by naming it exactly.
+_DOCUMENTS = {"enhancements"}
 
 _SOUL_TEMPLATE = (
     "<!-- SOUL.md — luban's character and standing behavior when working with you. -->\n"
     "<!-- Edit freely; luban reads this at the start of every session. -->\n"
     "<!-- Facts about you personally go in USER.md instead. -->\n"
-    f"<!-- Keep it under {SOUL_MAX:,} characters: anything past that is NOT sent to -->\n"
-    "<!-- the model. Move task-specific detail into a skill instead. -->\n"
+    f"<!-- This file is sent on EVERY turn. It shares one {ALWAYS_ON_BUDGET:,}-char budget -->\n"
+    "<!-- with USER.md, the fact index, the journal, and the project memory file. -->\n"
+    "<!-- Nothing here is ever silently cut: luban tells you if the TOTAL is over, -->\n"
+    "<!-- and offers to compact. Move task-specific detail into a skill instead. -->\n"
     "\n"
     "## How I should work\n"
     "<!-- standing behavior, e.g. 'add type hints', 'ask before installing', 'keep changes minimal' -->\n"
@@ -51,8 +67,9 @@ _SOUL_TEMPLATE = (
 _USER_TEMPLATE = (
     "<!-- USER.md — who luban is working with. luban reads this every session and -->\n"
     "<!-- may update it (with your confirmation) as it learns about you. -->\n"
-    f"<!-- Keep it under {USER_MAX:,} characters: anything past that is NOT sent to -->\n"
-    "<!-- the model. luban warns you at startup if you go over. -->\n"
+    f"<!-- This file is sent on EVERY turn. It shares one {ALWAYS_ON_BUDGET:,}-char budget -->\n"
+    "<!-- with SOUL.md, the fact index, the journal, and the project memory file. -->\n"
+    "<!-- Nothing here is ever silently cut: luban tells you if the TOTAL is over. -->\n"
     "\n"
     "## About me\n"
     "<!-- your name, role, team -->\n"
@@ -92,26 +109,6 @@ _ENHANCEMENTS_TEMPLATE = (
     "| ID | Resolution | Notes |\n"
     "|----|------------|-------|\n"
 )
-
-def apply_caps(soul: int = 0, user: int = 0, index: int = 0, journal: int = 0) -> None:
-    """Let config.toml raise (or lower) the always-on budgets.
-
-    Defaults are derived, not guessed: cap total always-on at 10% of a 150k working
-    budget (~43,500 chars), subtract the fixed prompt+tools, and allocate the rest from
-    each file's MEASURED size plus headroom. A hard-coded USER_MAX silently cut 2,810
-    chars off a real 6,810-char profile — including rules deliberately graduated into
-    always-on context (E29). The budget is the user's to spend.
-    """
-    global SOUL_MAX, USER_MAX, INDEX_MAX, JOURNAL_MAX
-    if soul > 0:
-        SOUL_MAX = soul
-    if user > 0:
-        USER_MAX = user
-    if index > 0:
-        INDEX_MAX = index
-    if journal > 0:
-        JOURNAL_MAX = journal
-
 
 _journal_writes = 0
 
@@ -167,22 +164,31 @@ def ensure_scaffold() -> None:
         pass  # memory must never break startup
 
 
-def _read_capped(path: Path, cap: int, label: str) -> str:
+def _read_whole(path: Path, label: str) -> str:
+    """Read an always-on file in full.
+
+    Truncation happens only when ONE file exceeds the ENTIRE always-on budget, which
+    means something went wrong (a paste, a runaway write) rather than a profile that
+    grew. The old per-file caps cut a real 6,810-char profile down to 4,000 and told
+    nobody who could act on it.
+    """
     try:
         text = path.read_text(encoding="utf-8", errors="replace").strip()
     except OSError:
         return ""
-    if len(text) > cap:
-        text = text[:cap] + f"\n[{label} truncated]"
+    if len(text) > ALWAYS_ON_BUDGET:
+        text = text[:ALWAYS_ON_BUDGET] + (
+            f"\n[{label} EXCEEDS THE ENTIRE ALWAYS-ON BUDGET ON ITS OWN and was cut "
+            "here — tell the user; this is not normal]")
     return text
 
 
 def read_soul() -> str:
-    return _read_capped(SOUL_PATH, SOUL_MAX, "SOUL.md")
+    return _read_whole(SOUL_PATH, "SOUL.md")
 
 
 def read_user() -> str:
-    return _read_capped(USER_PATH, USER_MAX, "USER.md")
+    return _read_whole(USER_PATH, "USER.md")
 
 
 _INDEX_LINE = re.compile(r"^- \[([a-z0-9][a-z0-9-]*)\]")
@@ -196,27 +202,9 @@ def _slug_only_index(lines: list[str]) -> str:
 
 
 def read_index() -> str:
-    """The always-on catalog of facts. Degrades by dropping DESCRIPTIONS, never
-    SLUGS.
-
-    _rebuild_index sorts alphabetically and this used to head-truncate, so once the
-    index passed its cap the late-alphabet facts silently fell off the list. The
-    index is the only thing telling the model a fact EXISTS — a fact missing from it
-    is one the model will never think to recall. A slug-only line is ~20 chars, so
-    dropping descriptions keeps ~200 facts discoverable instead of ~50 (H2).
-    """
-    try:
-        text = (MEMORY_DIR / "MEMORY.md").read_text(encoding="utf-8", errors="replace").strip()
-    except OSError:
-        return ""
-    if len(text) <= INDEX_MAX:
-        return text
-    compact = _slug_only_index(text.splitlines())
-    if len(compact) <= INDEX_MAX:
-        return compact
-    # Extreme: even slug-only overflows. Now a fact really is falling off the
-    # catalog — cap_warnings says so out loud.
-    return compact[:INDEX_MAX] + "\n[memory index truncated]"
+    """The whole fact index. No per-file cap: the TOTAL always-on budget is what is
+    watched, and going over is reported rather than quietly trimmed."""
+    return _read_whole(MEMORY_DIR / "MEMORY.md", "memory index")
 
 
 def _read_raw_index() -> str:
@@ -227,19 +215,8 @@ def _read_raw_index() -> str:
 
 
 def index_slugs_dropped() -> int:
-    """How many fact slugs don't fit even in a slug-only index — i.e. facts the
-    model will no longer know exist. 0 in every normal case."""
-    try:
-        text = (MEMORY_DIR / "MEMORY.md").read_text(encoding="utf-8", errors="replace").strip()
-    except OSError:
-        return 0
-    lines = text.splitlines()
-    total = sum(1 for ln in lines if _INDEX_LINE.match(ln))
-    compact = _slug_only_index(lines)
-    if len(compact) <= INDEX_MAX:
-        return 0
-    kept = sum(1 for ln in compact[:INDEX_MAX].splitlines() if _INDEX_LINE.match(ln))
-    return max(0, total - kept)
+    """Always 0 now — the index is never trimmed for size. Kept so callers don't break."""
+    return 0
 
 
 JOURNAL_DAYS = 2
@@ -275,8 +252,6 @@ def read_recent_journal() -> str:
     the NEWEST entries survive and the OLDEST roll off (the opposite of
     _read_capped) — and losslessly, since the full day files stay on disk."""
     combined = _recent_journal_text()
-    if len(combined) > JOURNAL_MAX:
-        combined = "[journal truncated]\n" + combined[-JOURNAL_MAX:]
     return combined
 
 
@@ -290,45 +265,31 @@ def _raw_len(path: Path) -> int:
         return 0
 
 
-def always_on_usage() -> list[tuple[str, int, int, bool]]:
-    """(label, actual_chars, cap, warnable) for each memory file injected every turn.
-
-    `warnable` marks the HEAD-biased, genuinely-lossy files. The journal is
-    tail-biased and rolls off losslessly (full day files stay on disk), and the
-    index now sheds descriptions rather than facts — warning about either would be
-    noise, and the head-biased wording would be flat wrong for them (H1).
-    """
+def always_on_usage() -> list[tuple[str, int]]:
+    """(label, chars) per always-on component. cli adds the project memory file."""
     return [
-        ("SOUL.md", _raw_len(SOUL_PATH), SOUL_MAX, True),
-        ("USER.md", _raw_len(USER_PATH), USER_MAX, True),
-        ("memory index", _raw_len(MEMORY_DIR / "MEMORY.md"), INDEX_MAX, False),
-        ("journal", len(_recent_journal_text()), JOURNAL_MAX, False),
+        ("SOUL.md", _raw_len(SOUL_PATH)),
+        ("USER.md", _raw_len(USER_PATH)),
+        ("memory index", _raw_len(MEMORY_DIR / "MEMORY.md")),
+        ("journal", len(_recent_journal_text())),
     ]
 
 
-def cap_warnings(usage: list[tuple[str, int, int, bool]]) -> list[str]:
-    """Human-facing warnings for always-on content that is genuinely being LOST.
+def cap_warnings(usage: list[tuple[str, int]]) -> list[str]:
+    """One warning about the TOTAL — the only property that matters.
 
-    The `[label truncated]` marker only ever reached the MODEL — the human was never
-    told, so an over-cap USER.md looked like luban ignoring their instructions when
-    it had simply never seen them. Say it out loud — but only where it's true: this
-    wording ("the last N chars are dropped") describes head-biased truncation, and
-    must never be applied to the tail-biased journal (H1).
+    Five per-file warnings could all stay silent while the block as a whole was far too
+    big, and each per-file cut was invisible to the person who could fix it.
     """
-    out = [
-        f"warning: {label} is {size:,} chars but the cap is {cap:,} — the last "
-        f"{size - cap:,} chars are NOT being sent to the model. Trim it, or move "
-        "task-specific detail into a skill."
-        for label, size, cap, warnable in usage
-        if warnable and size > cap
-    ]
-    dropped = index_slugs_dropped()
-    if dropped:
-        out.append(
-            f"warning: {dropped:,} fact(s) no longer fit in the memory index — luban "
-            "won't know they exist (they're still on disk). Use forget to prune."
-        )
-    return out
+    total = sum(n for _label, n in usage)
+    if total <= ALWAYS_ON_BUDGET:
+        return []
+    worst = ", ".join(f"{lbl} {n:,}" for lbl, n in
+                      sorted(usage, key=lambda u: -u[1])[:3] if n)
+    return [f"warning: always-on context is {total:,} chars against a "
+            f"{ALWAYS_ON_BUDGET:,} budget — it is all still being sent, but a large "
+            f"always-on block measurably weakens how well luban follows it. Biggest: "
+            f"{worst}. Run /reflect to consolidate, or trim a file."]
 
 
 def _is_untouched(text: str, template: str = "") -> bool:
@@ -369,23 +330,20 @@ def bootstrap_stable() -> str:
 
 
 def _over_budget_notice() -> str:
-    """Tell the MODEL when the store has outgrown its always-on budget.
+    """Tell the MODEL when the always-on block is over its single shared budget.
 
-    Shedding descriptions to fit (H2) keeps every fact discoverable, but doing only that
-    hides the problem forever — rationing used as a substitute for curation. Anthropic's
-    own memory design errors and tells the model to rewrite the index; this is the same
-    idea: the cap is a forcing function for consolidation, not a silent quota.
+    Nothing is cut any more, so this is not a truncation warning — it is a prompt to
+    consolidate. A budget that only trims silently teaches nobody; a budget that speaks
+    is a forcing function for curation.
     """
-    dropped = index_slugs_dropped()
-    trimmed = len(_read_raw_index()) > INDEX_MAX
-    if not (dropped or trimmed):
+    total = sum(n for _l, n in always_on_usage())
+    if total <= ALWAYS_ON_BUDGET:
         return ""
-    detail = (f"{dropped} fact(s) no longer fit at all" if dropped
-              else "descriptions are being trimmed to fit")
-    return (f"NOTE: the long-term memory index is over its always-on budget — {detail}. "
-            "A bloated store degrades how well you follow it. Suggest the user run "
-            "/reflect to consolidate: merge duplicates, delete what the transcripts and "
-            "journal already hold, and graduate standing preferences into USER.md.")
+    return (f"NOTE: always-on context is {total:,} chars against a "
+            f"{ALWAYS_ON_BUDGET:,} budget. Nothing has been cut, but a bloated "
+            "always-on block degrades how well you follow any of it. Suggest /reflect: "
+            "merge duplicates, delete what the transcripts and journal already hold, "
+            "and tighten USER.md.")
 
 
 def bootstrap_volatile() -> str:
@@ -447,29 +405,16 @@ def duplicate_candidates() -> list[tuple[str, str, float]]:
 
 
 def always_on_budget() -> str:
-    """USER.md / SOUL.md usage against their caps — the curator must see this before it
-    promotes anything INTO them.
-
-    Graduation moves knowledge from the fact store (which degrades gracefully: over
-    budget it sheds descriptions but keeps every fact) into an always-on file that does
-    NOT degrade gracefully — over budget, the tail is simply cut. Promoting without
-    showing the budget is how a fix for one accumulation problem creates another.
-    """
-    rows = []
-    for label, path, cap in (("USER.md", USER_PATH, USER_MAX),
-                             ("SOUL.md", SOUL_PATH, SOUL_MAX)):
-        try:
-            n = len(path.read_text(encoding="utf-8", errors="replace").strip())
-        except OSError:
-            n = 0
-        state = "OVER BUDGET — the tail is being cut" if n > cap else f"{cap - n:,} free"
-        rows.append(f"  {label}  {n:,} / {cap:,} chars  ({state})")
-    return (
-        "ALWAYS-ON FILES — sent on EVERY turn, so every line costs forever:\n"
-        + "\n".join(rows)
-        + "\nThese do NOT degrade gracefully: past the cap the end of the file is simply "
-          "dropped. Anything you graduate here spends this budget permanently."
-    )
+    """The always-on ledger, for the curator — one shared budget, not five caps."""
+    rows = [f"  {lbl:<16}{n:>8,} chars" for lbl, n in always_on_usage()]
+    total = sum(n for _l, n in always_on_usage())
+    state = ("OVER — consolidate" if total > ALWAYS_ON_BUDGET
+             else f"{ALWAYS_ON_BUDGET - total:,} chars free")
+    return ("ALWAYS-ON LEDGER — one shared budget for everything sent every turn:\n"
+            + "\n".join(rows)
+            + f"\n  {'TOTAL':<16}{total:>8,} / {ALWAYS_ON_BUDGET:,}  ({state})\n"
+              "Promoting into USER.md spends this shared budget. Nothing is silently "
+              "cut, but the bigger it gets the less reliably luban follows any of it.")
 
 
 def audit() -> str:
@@ -702,6 +647,8 @@ def recall(query: str) -> str:
                 text = p.read_text(encoding="utf-8", errors="replace")
             except OSError:
                 continue
+            if p.stem in _DOCUMENTS and query.strip() != p.stem:
+                continue  # a document only surfaces when asked for BY NAME
             score = _recall_score(query, p.stem, text)
             if score > 0:
                 scored.append((score, p.stem, text))

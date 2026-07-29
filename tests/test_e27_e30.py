@@ -49,49 +49,56 @@ def test_plain_single_line_description_unchanged():
     assert desc == "A one liner"
 
 
-# ---------------- E29: caps are configurable ----------------
+# ------------- E29: ONE budget, no per-file caps, no config knobs -------------
 
-def test_caps_are_config_overridable(mem, monkeypatch):
-    monkeypatch.setattr(memory, "USER_MAX", 10_000)
-    memory.apply_caps(user=25_000)
-    assert memory.USER_MAX == 25_000
-
-
-def test_zero_means_keep_the_default(mem, monkeypatch):
-    monkeypatch.setattr(memory, "USER_MAX", 10_000)
-    memory.apply_caps(user=0)
-    assert memory.USER_MAX == 10_000
+def test_there_is_exactly_one_always_on_budget():
+    """Five per-file caps (and the four config keys I added for them) were the wrong
+    shape: a knob is an admission the right value is unknown, handed to the user."""
+    for gone in ("SOUL_MAX", "USER_MAX", "INDEX_MAX", "JOURNAL_MAX"):
+        assert not hasattr(memory, gone)
+    assert memory.ALWAYS_ON_BUDGET > 0
 
 
-def test_config_exposes_the_cap_keys(tmp_path):
-    p = tmp_path / "config.toml"
-    p.write_text('platform = "mac"\nuser_max = 20000\nindex_max = 15000\n', encoding="utf-8")
-    cfg = config_mod.load_config(p)
-    assert cfg.user_max == 20_000 and cfg.index_max == 15_000
-    assert config_mod.Config(platform="mac").user_max == 0  # 0 = derived default
+def test_no_cap_config_keys_remain():
+    cfg = config_mod.Config(platform="mac")
+    assert [k for k in vars(cfg) if k.endswith("_max")] == []
 
 
-def test_a_real_profile_now_fits(mem):
+def test_a_real_profile_is_never_truncated(mem):
     """The field case: a 6,810-char profile lost 2,810 chars to a hard-coded 4,000."""
     memory.USER_PATH.write_text("## About me\n" + "x" * 6_798, encoding="utf-8")
-    assert len(memory.USER_PATH.read_text()) == 6_810
-    assert "truncated" not in memory.read_user()
+    out = memory.read_user()
+    assert len(out) == 6_810 and "EXCEEDS" not in out
+
+
+def test_only_a_pathological_file_is_trimmed(mem):
+    memory.USER_PATH.write_text("x" * (memory.ALWAYS_ON_BUDGET + 5_000), encoding="utf-8")
+    assert "EXCEEDS THE ENTIRE ALWAYS-ON BUDGET" in memory.read_user()
+
+
+def test_the_total_is_what_warns(mem):
+    memory.USER_PATH.write_text("u" * 20_000, encoding="utf-8")
+    memory.SOUL_PATH.write_text("s" * 20_000, encoding="utf-8")
+    w = memory.cap_warnings(memory.always_on_usage())
+    assert len(w) == 1 and "always-on context is" in w[0]
+    assert "still being sent" in w[0]  # nothing cut; it is a prompt to consolidate
 
 
 # ---------------- E29: auto-compaction is offered, not silent ----------------
 
 def test_over_budget_file_is_offered_for_compaction(mem, monkeypatch):
-    memory.USER_PATH.write_text("y" * (memory.USER_MAX + 3_000), encoding="utf-8")
+    memory.USER_PATH.write_text("y" * (memory.ALWAYS_ON_BUDGET + 3_000), encoding="utf-8")
+    monkeypatch.setattr(cli, "always_on_usage", lambda *a: [("USER.md", memory.ALWAYS_ON_BUDGET + 3_000)])
     out, asked = [], []
     monkeypatch.setattr(cli.ui, "print_text", lambda t: out.append(t))
     monkeypatch.setattr("builtins.input", lambda p: asked.append(p) or "n")
     s = cli.Session(model="m", max_tokens=100, auto=True, stream=False, messages=[])
     cli.offer_tidy(client=object(), ctx=None, cfg=config_mod.Config(platform="mac"), session=s)
     text = "".join(out)
-    assert "NOT reaching the model" in text
-    assert any("compact USER.md now?" in a for a in asked)   # ASKS, never acts alone
+    assert "against a" in text and "budget" in text
+    assert any("compact USER.md" in a for a in asked)   # ASKS, never acts alone
     assert "left as-is" in text                              # declining is respected
-    assert "user_max" in text                                # names the other way out
+    assert "/reflect" in text                                # names the way out
 
 
 def test_a_file_within_budget_is_not_nagged(mem, monkeypatch):
@@ -99,6 +106,7 @@ def test_a_file_within_budget_is_not_nagged(mem, monkeypatch):
     out = []
     monkeypatch.setattr(cli.ui, "print_text", lambda t: out.append(t))
     monkeypatch.setattr("builtins.input", lambda p: pytest.fail("should not ask"))
+    monkeypatch.setattr(cli, "always_on_usage", lambda *a: [("USER.md", 50)])
     s = cli.Session(model="m", max_tokens=100, auto=True, stream=False, messages=[])
     cli.offer_tidy(client=object(), ctx=None, cfg=config_mod.Config(platform="mac"), session=s)
     assert out == []
@@ -178,3 +186,28 @@ def test_coverage_beats_repetition(mem):
     out = memory.recall("ruff type hints plotly")
     first = next(l for l in out.splitlines() if l.startswith("["))
     assert first == "[covers]"
+
+
+# ---------------- root-cause completions (from auditing my own fixes) ----------------
+
+def test_any_broken_frontmatter_is_loud_not_just_block_scalars(capsys):
+    """I fixed ONE YAML gap (block scalars) and left the class silent. We hand-roll
+    YAML, so there will be another gap — the failure has to be visible."""
+    from luban.skills import _parse
+    _parse("---\nname: x\n---\nsome body text")
+    assert "no usable `description:`" in capsys.readouterr().err
+
+
+def test_a_maintained_document_does_not_compete_in_the_fact_lane(mem):
+    """The tracker is a large hand-edited DOCUMENT filed as an atomic fact, and it is
+    self-referential — it quotes past queries, so it wins searches about problems it
+    recorded. Normalising scores masked that; the category error was the real cause."""
+    memory.remember("enhancements", "tracker", "E27 recall ranking coding style problem")
+    memory.remember("yjm-coding-style", "how code is written", "Prefers ruff.")
+    facts = [l for l in memory.recall("coding style").splitlines() if l.startswith("[")]
+    assert facts == ["[yjm-coding-style]"]
+
+
+def test_a_document_is_still_reachable_by_name(mem):
+    memory.remember("enhancements", "tracker", "the open items")
+    assert memory.recall("enhancements").startswith("[enhancements]")

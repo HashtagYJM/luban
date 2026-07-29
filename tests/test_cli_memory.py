@@ -10,11 +10,14 @@ def test_read_project_memory_missing(tmp_path):
     assert cli.read_project_memory(tmp_path) == ""
 
 
-def test_read_project_memory_truncated(tmp_path):
+def test_read_project_memory_only_trimmed_at_the_whole_budget(tmp_path):
+    # A 9k project memory file used to be cut at 8k. It now shares ONE budget
+    # with the rest of always-on, and is only trimmed if it alone blows the whole
+    # thing — so a normal-sized file passes through untouched.
     (tmp_path / "LUBAN.md").write_text("x" * 9000, encoding="utf-8")
-    got = cli.read_project_memory(tmp_path)
-    assert got.endswith("[memory file truncated]")
-    assert len(got) <= cli.MEMORY_MAX_CHARS + 30
+    assert len(cli.read_project_memory(tmp_path)) == 9000
+    (tmp_path / "LUBAN.md").write_text("x" * (cli.MEMORY_MAX_CHARS + 5000), encoding="utf-8")
+    assert "truncated" in cli.read_project_memory(tmp_path)
 
 
 def test_read_project_memory_binary_never_crashes(tmp_path):

@@ -70,7 +70,9 @@ REFLECT_PROMPT = (
 DEFAULT_WARN_TOKENS = 150_000
 # First match wins; a `memory_file` key in config.toml overrides the chain.
 MEMORY_FILES = ("LUBAN.md", "CLAUDE.md", "AGENTS.md")
-MEMORY_MAX_CHARS = 8000
+# Project memory has no cap of its own — it is one contributor to memory's single
+# ALWAYS_ON_BUDGET, like SOUL.md and USER.md. Kept as a name for older callers.
+MEMORY_MAX_CHARS = memory_mod.ALWAYS_ON_BUDGET
 
 
 @dataclass
@@ -309,8 +311,9 @@ def context_report(session: Session, cfg: config_mod.Config, project_root: Path,
 
 
 TIDY_PROMPT = (
-    "This always-on file is over its budget, so its tail is being CUT before the model "
-    "ever sees it. Rewrite it to fit, using edit_file/write_file.\n"
+    "The always-on context — everything sent on every turn — is over its shared budget. "
+    "Nothing is being cut, but a bloated always-on block measurably weakens how well the "
+    "model follows any of it. Compact this file with edit_file/write_file.\n"
     "Keep every distinct instruction — this is compaction, not deletion: tighten wording, "
     "merge overlapping bullets, drop restatements and filler. Preserve the author's voice "
     "and section structure. If two rules say the same thing, keep the clearer one.\n"
@@ -318,44 +321,48 @@ TIDY_PROMPT = (
 )
 
 
-def offer_tidy(client, ctx, cfg: config_mod.Config, session: Session) -> None:
-    """An over-budget always-on file is a MECHANICAL condition — detect it, offer the
-    fix, and let the user approve. Asking the model to remember to tidy up during
-    /reflect was the myopic version: the failure is detectable, so it should be offered.
-    """
-    over = [(label, path, size, cap) for label, path, size, cap in (
-        ("USER.md", memory_mod.USER_PATH, _file_len(memory_mod.USER_PATH), memory_mod.USER_MAX),
-        ("SOUL.md", memory_mod.SOUL_PATH, _file_len(memory_mod.SOUL_PATH), memory_mod.SOUL_MAX),
-    ) if size > cap]
-    if not over or client is None:
+def offer_tidy(client, ctx, cfg: config_mod.Config, session: Session,
+               project_root: Path | None = None) -> None:
+    """One budget, one question. Over the TOTAL is a mechanical condition — detect it,
+    name the biggest contributor, and compact only on approval."""
+    if client is None or not cfg.memory_enabled:
         return
-    for label, path, size, cap in over:
-        ui.print_text(
-            f"\n⚠ {label} is {size:,} chars but the budget is {cap:,} — the last "
-            f"{size - cap:,} chars are NOT reaching the model.\n"
-        )
-        try:
-            answer = input(f"  compact {label} now? [y/N] ").strip().lower()
-        except (EOFError, KeyboardInterrupt):
-            ui.print_text("\n")
-            return
-        if answer not in ("y", "yes"):
-            ui.print_text(f"  left as-is. Raise the budget in {config_mod.CONFIG_PATH} "
-                          f"({label.split('.')[0].lower()}_max) or compact later.\n")
-            continue
-        config = agent.AgentConfig(
-            session.model, session.max_tokens, session.stream, platform=cfg.platform,
-            tools=tools.active_tools(True),
-        )
-        body = path.read_text(encoding="utf-8", errors="replace")
-        ui.print_text("\nluban> ")
-        try:
-            agent.run_turn(client, config, [{"role": "user", "content":
-                TIDY_PROMPT + f"File: ~/.luban/{label}  ({size:,} chars, budget "
-                f"{cap:,})\n\n{body}"}], ctx, ui.print_text, ui.print_thinking)
-        except Exception as exc:
-            ui.print_text(f"compaction failed ({exc}) — {label} unchanged.\n")
+    usage = always_on_usage(project_root or Path("."), cfg)
+    total = sum(n for _l, n in usage)
+    if total <= memory_mod.ALWAYS_ON_BUDGET:
+        return
+    files = {"USER.md": memory_mod.USER_PATH, "SOUL.md": memory_mod.SOUL_PATH}
+    label, size = max(((l, n) for l, n in usage if l in files), key=lambda u: u[1],
+                      default=(None, 0))
+    ui.print_text(
+        f"\n⚠ always-on context is {total:,} chars against a "
+        f"{memory_mod.ALWAYS_ON_BUDGET:,} budget. Nothing is being cut — but the bigger "
+        "it gets, the less reliably luban follows any of it.\n")
+    if label is None:
+        ui.print_text("  run /reflect to consolidate the fact store.\n")
+        return
+    try:
+        answer = input(f"  compact {label} ({size:,} chars) now? [y/N] ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
         ui.print_text("\n")
+        return
+    if answer not in ("y", "yes"):
+        ui.print_text("  left as-is. /reflect consolidates the whole store when ready.\n")
+        return
+    config = agent.AgentConfig(
+        session.model, session.max_tokens, session.stream, platform=cfg.platform,
+        tools=tools.active_tools(True),
+    )
+    body = files[label].read_text(encoding="utf-8", errors="replace")
+    ui.print_text("\nluban> ")
+    try:
+        agent.run_turn(client, config, [{"role": "user", "content":
+            TIDY_PROMPT + f"File: ~/.luban/{label}  ({size:,} chars; always-on total "
+            f"{total:,} of {memory_mod.ALWAYS_ON_BUDGET:,})\n\n{body}"}],
+            ctx, ui.print_text, ui.print_thinking)
+    except Exception as exc:
+        ui.print_text(f"compaction failed ({exc}) — {label} unchanged.\n")
+    ui.print_text("\n")
 
 
 def _file_len(path: Path) -> int:
@@ -450,10 +457,8 @@ def read_project_memory(project_root: Path, memory_file: str = "") -> str:
     return ""
 
 
-def always_on_usage(project_root: Path, cfg: config_mod.Config) -> list[tuple[str, int, int, bool]]:
-    """(label, chars, cap, warnable) for everything injected into EVERY turn's system
-    prompt — the memory files plus this project's memory file. Used to tell the HUMAN
-    when content is being dropped (the truncation marker only ever reached the model)."""
+def always_on_usage(project_root: Path, cfg: config_mod.Config) -> list[tuple[str, int]]:
+    """Every always-on contributor, including the project's memory file."""
     usage = list(memory_mod.always_on_usage()) if cfg.memory_enabled else []
     names = (cfg.memory_file,) if cfg.memory_file else MEMORY_FILES
     for name in names:
@@ -462,8 +467,8 @@ def always_on_usage(project_root: Path, cfg: config_mod.Config) -> list[tuple[st
             size = len(path.read_text(encoding="utf-8", errors="replace").strip())
         except OSError:
             continue
-        usage.append((name, size, MEMORY_MAX_CHARS, True))  # head-biased: really lossy
-        break  # first match only, same as read_project_memory
+        usage.append((name, size))
+        break
     return usage
 
 
@@ -917,17 +922,11 @@ def handle_command(line: str, session: Session, client=None, ctx=None, cfg=None)
         if cfg is not None and ctx is not None:
             usage = always_on_usage(Path(ctx.project_root), cfg)
             if usage:
-                ui.print_text("always-on context (sent every turn):\n")
-                for label, size, cap, warnable in usage:
-                    if size <= cap:
-                        note = ""
-                    elif warnable:
-                        note = "  ⚠ OVER CAP — tail dropped"
-                    elif label == "journal":
-                        note = "  (oldest entries roll off; still on disk)"
-                    else:
-                        note = "  (descriptions trimmed; every fact still listed)"
-                    ui.print_text(f"  {label}: {size:,}/{cap:,} chars{note}\n")
+                total = sum(n for _l, n in usage)
+                ui.print_text("always-on context (one shared budget):\n")
+                for label, size in usage:
+                    ui.print_text(f"  {label}: {size:,} chars\n")
+                ui.print_text(f"  TOTAL: {total:,}/{memory_mod.ALWAYS_ON_BUDGET:,}\n")
                 for warning in memory_mod.cap_warnings(usage):
                     ui.print_text(warning + "\n")
         miss = config_mod.missing_keys() if cfg is not None else []
@@ -1114,9 +1113,6 @@ def main(argv: list[str] | None = None) -> None:
     if notice:
         ui.print_text(notice + "\n")
     cfg = config_mod.load_config()
-    # Spend the always-on budget where the USER chose to (E29) — before anything reads
-    # a capped file, so the first bootstrap already honours it.
-    memory_mod.apply_caps(cfg.soul_max, cfg.user_max, cfg.index_max, cfg.journal_max)
     session = Session(
         model=resolve_model(ns.model, cfg),
         max_tokens=resolve_max_tokens(ns.max_tokens, cfg, ns.stream),
@@ -1184,7 +1180,7 @@ def main(argv: list[str] | None = None) -> None:
     for warning in memory_mod.cap_warnings(always_on_usage(project_root, cfg)):
         ui.print_text(warning + "\n")
     if cfg.memory_enabled:
-        offer_tidy(client, ctx, cfg, session)  # over-budget file -> offer, you approve
+        offer_tidy(client, ctx, cfg, session, project_root)
     # Same principle for config: a setting that's in the file but silently ignored
     # (swallowed by a [table] header) looks exactly like luban disobeying you.
     for warning in config_mod.config_warnings():

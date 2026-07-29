@@ -4,6 +4,63 @@ Release notes, newest first. Bundled inside the package so luban can show
 "what's new" and reconcile its enhancement tracker offline, with no network.
 Each entry tags the tracker IDs (E-/F-) it resolves.
 
+## v0.5.18 — one budget instead of five caps, and skills that actually trigger
+
+The headline is a simplification: **luban's config gets smaller, not bigger.**
+
+### Your always-on files are no longer capped individually
+
+luban used to hold five separate size limits — one each for `SOUL.md`, `USER.md`, the fact
+index, the journal, and the project memory file. Each cut its own file **silently** when
+it was exceeded. A real 6,810-character profile lost 2,810 characters that way, including
+rules that had been deliberately promoted into always-on context on luban's own advice.
+
+There is now **one budget for the whole always-on block**, and **nothing is ever silently
+cut**. Files are sent whole. If the total runs over, luban tells you and the model, and
+offers to compact — going over is a prompt to consolidate, not a quiet quota. A single
+file is only ever trimmed if it exceeds the entire budget on its own, which means
+something went wrong rather than that your profile grew, and it says so loudly.
+
+Practically: a big `USER.md` now reaches the model intact.
+
+### Skills whose descriptions were invisible
+
+A skill using YAML's multi-line description form —
+
+```yaml
+description: >
+  Methodology for quant research: plan-then-code,
+  TDD, verify before scaffold.
+```
+
+— was listed in the catalog with its description showing as a bare `>`. luban read only
+the first line, so the folded text was dropped, which meant the model had **no trigger
+text at all** for exactly the skills whose descriptions were long enough to need folding
+— the richest ones. It could only guess from the folder name, so they usually went
+unloaded. Both block forms are now read properly, and frontmatter with no usable
+description warns instead of failing silently.
+
+### Memory the model can trust mid-turn
+
+The fact index in the prompt was captured once per message and reused for the rest of that
+turn. So if luban saved a fact and then looked, it could be told the fact it had just
+written didn't exist — which is precisely what makes it save a duplicate. The index is now
+re-rendered on every model call.
+
+### Search stops being hijacked by big documents
+
+Two fixes. Relevance no longer rises with document length, so the largest generic file
+stopped outranking the small fact you actually asked for. And the enhancement tracker —
+a large hand-maintained document that happens to live in the memory folder — no longer
+competes in keyword search at all. It quotes past search queries verbatim, so it won any
+search about a problem it had recorded. It is still reachable by name and by its path;
+it just isn't a search result any more.
+
+### Config
+
+Nothing new to learn — this release **removes** settings rather than adding them. The
+per-file size limits are gone entirely, along with the knobs for them.
+
 ## v0.5.17 — graduation is a trade, not a dumping ground
 
 A follow-up to v0.5.16, fixing a flaw in it.

@@ -4,9 +4,15 @@ Release notes, newest first. Bundled inside the package so luban can show
 "what's new" and reconcile its enhancement tracker offline, with no network.
 Each entry tags the tracker IDs (E-/F-) it resolves.
 
-## Unreleased
+## v0.5.19 — the journal stops eating your context
 
-**The journal no longer eats your context (E31).** Measured in the field: the journal was
+Three fixes to the always-on context block, two of them regressions in v0.5.18.
+Tracker items: **E31**, the **E30** description residual, plus **E27/E28** confirmed fixed in
+v0.5.18 and **E29** now obsolete.
+
+### The journal was 71% of everything sent every turn (E31)
+
+Measured in the field: the journal was
 29,446 chars of a 41,471-char always-on block against a 38,000 budget — 71% of everything
 sent every turn, and the only component with no size bound at all. One day file was 37,547
 chars on its own, more than the whole budget.
@@ -31,15 +37,22 @@ boundaries — and when a single day is itself too large, on entry boundaries, n
 nobody is told about is indistinguishable from a bug. Your `SOUL.md` and `USER.md` are still
 never cut.
 
-Two smaller fixes alongside it:
+There is also a guard against the whole class of mistake, not just this instance: a test now
+requires **every** always-on component to be either bounded to a declared allowance or to have
+a remedy that can actually shrink it. Unbounded *and* nothing-can-fix-it fails the build —
+which is precisely the state the journal was in.
+
+### Two smaller fixes
 
 - **The over-budget warning printed twice at startup**, once from each of two code paths
   stating the same total in different words. Now once, from the one that also names the
   biggest contributor and its correct remedy.
-- **Long skill descriptions cut mid-word, silently.** They now cut on a word boundary and
-  warn you, so you can put the trigger words first.
+- **Long skill descriptions cut mid-word, silently** (the tail of E30). They now cut on a
+  word boundary and warn you, so you can put the trigger words first.
 
-**A shared budget needs a remedy for every contributor.** v0.5.18 replaced five per-file
+### A shared budget needs a remedy for every contributor
+
+v0.5.18 replaced five per-file
 caps with one shared always-on budget, but only the *accounting* was made shared — the
 *remedy* stayed where it was. `offer_tidy` considered only `SOUL.md` and `USER.md`, then
 picked the larger of those two. With a bloated fact index it therefore offered to compact

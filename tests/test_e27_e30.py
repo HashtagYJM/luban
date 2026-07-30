@@ -408,3 +408,17 @@ def test_startup_does_not_print_the_over_budget_message_twice(mem, monkeypatch, 
     assert not calls, (
         f"cap_warnings is called again in the startup path just before offer_tidy: {calls} "
         "— that is the duplicate over-budget message the user saw twice")
+
+
+def test_cap_warnings_states_the_facts_without_prescribing_reflect(mem):
+    """/config's warning must not prescribe /reflect universally.
+
+    It used to end "Run /reflect to consolidate, or trim a file" for every case. /reflect
+    curates FACTS: it is the right advice for one of five contributors and cannot shrink a
+    journal, a repo file, or SOUL.md at all. Per-contributor routing lives in
+    cli.offer_tidy, which has the config and project root to do it properly.
+    """
+    usage = [("journal", 30_000), ("USER.md", 9_000)]
+    w = " ".join(memory.cap_warnings(usage))
+    assert "39,000" in w and "journal 30,000" in w   # states the total and the biggest
+    assert "/reflect" not in w, "must not prescribe /reflect for a journal-driven overage"

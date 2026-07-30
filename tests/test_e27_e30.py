@@ -96,7 +96,7 @@ def test_over_budget_file_is_offered_for_compaction(mem, monkeypatch):
     cli.offer_tidy(client=object(), ctx=None, cfg=config_mod.Config(platform="mac"), session=s)
     text = "".join(out)
     assert "against a" in text and "budget" in text
-    assert any("compact USER.md" in a for a in asked)   # ASKS, never acts alone
+    assert any("USER.md" in a and "compact" in a for a in asked)  # ASKS, never acts
     assert "left as-is" in text                              # declining is respected
     assert "/reflect" in text                                # names the way out
 
@@ -211,3 +211,67 @@ def test_a_maintained_document_does_not_compete_in_the_fact_lane(mem):
 def test_a_document_is_still_reachable_by_name(mem):
     memory.remember("enhancements", "tracker", "the open items")
     assert memory.recall("enhancements").startswith("[enhancements]")
+
+
+# --- v0.5.18 follow-up: a SHARED budget needs a remedy for EVERY contributor ----------
+# offer_tidy used to consider only SOUL.md and USER.md, then pick the biggest of those
+# two. So a 30,000-char fact index made it offer to compact an innocent 2,000-char
+# USER.md, and the project memory file was never offered at all.
+
+def _tidy(monkeypatch, usage, answer="n"):
+    out, asked = [], []
+    monkeypatch.setattr(cli, "always_on_usage", lambda *a: usage)
+    monkeypatch.setattr(cli.ui, "print_text", lambda t: out.append(t))
+    monkeypatch.setattr("builtins.input", lambda p: asked.append(p) or answer)
+    s = cli.Session(model="m", max_tokens=100, auto=True, stream=False, messages=[])
+    cli.offer_tidy(client=object(), ctx=None, cfg=config_mod.Config(platform="mac"),
+                   session=s)
+    return "".join(out), asked
+
+
+def test_bloated_index_is_not_blamed_on_an_innocent_user_md(mem, monkeypatch):
+    """The index is the culprit; USER.md must NOT be the file put up for compaction."""
+    text, asked = _tidy(monkeypatch, [("USER.md", 2_000), ("SOUL.md", 1_000),
+                                      ("memory index", 40_000)])
+    assert "memory index" in text and "/reflect" in text
+    assert not asked, f"offered a compaction prompt for the wrong file: {asked}"
+
+
+def test_project_memory_file_is_offered_for_compaction(mem, monkeypatch, tmp_path):
+    """It contributes to the budget, so it must have a remedy — it previously had none."""
+    (tmp_path / "LUBAN.md").write_text("z" * 40_000, encoding="utf-8")
+    out, asked = [], []
+    monkeypatch.setattr(cli, "always_on_usage", lambda *a: [("LUBAN.md", 40_000)])
+    monkeypatch.setattr(cli.ui, "print_text", lambda t: out.append(t))
+    monkeypatch.setattr("builtins.input", lambda p: asked.append(p) or "n")
+    s = cli.Session(model="m", max_tokens=100, auto=True, stream=False, messages=[])
+    cli.offer_tidy(client=object(), ctx=None, cfg=config_mod.Config(platform="mac"),
+                   session=s, project_root=tmp_path)
+    assert any("LUBAN.md" in a and "compact" in a for a in asked)
+
+
+def test_self_limiting_journal_does_not_stall_the_offer(mem, monkeypatch):
+    """The journal auto-decays, so it is skipped for the next ACTIONABLE contributor."""
+    memory.USER_PATH.write_text("y" * 20_000, encoding="utf-8")
+    text, asked = _tidy(monkeypatch, [("journal", 25_000), ("USER.md", 20_000)])
+    assert any("USER.md" in a for a in asked), "journal at the top blocked the offer"
+
+
+def test_every_contributor_is_listed_so_the_user_can_see_the_real_culprit(mem, monkeypatch):
+    text, _ = _tidy(monkeypatch, [("USER.md", 2_000), ("memory index", 40_000),
+                                  ("journal", 500)])
+    for label in ("USER.md", "memory index", "journal"):
+        assert label in text
+
+
+def test_reflect_ledger_includes_the_project_memory_file(mem, tmp_path):
+    """A ledger that omits a contributor under-reports the total it is policing."""
+    ledger = memory.always_on_budget([("LUBAN.md", 9_000)])
+    assert "LUBAN.md" in ledger and "9,000" in ledger
+
+
+def test_every_contributor_has_a_declared_remedy(mem, tmp_path):
+    cfg = config_mod.Config(platform="mac")
+    for label in ("USER.md", "SOUL.md", "memory index", "journal", "LUBAN.md"):
+        kind, _path = cli.always_on_remedy(label, tmp_path, cfg)
+        assert kind in ("compact", "reflect", "none"), label

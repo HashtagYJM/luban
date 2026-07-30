@@ -4,6 +4,28 @@ Release notes, newest first. Bundled inside the package so luban can show
 "what's new" and reconcile its enhancement tracker offline, with no network.
 Each entry tags the tracker IDs (E-/F-) it resolves.
 
+## Unreleased
+
+**A shared budget needs a remedy for every contributor.** v0.5.18 replaced five per-file
+caps with one shared always-on budget, but only the *accounting* was made shared — the
+*remedy* stayed where it was. `offer_tidy` considered only `SOUL.md` and `USER.md`, then
+picked the larger of those two. With a bloated fact index it therefore offered to compact
+an innocent 2,000-char `USER.md` while never naming the 30,000-char culprit, and the
+project memory file (`LUBAN.md`/`CLAUDE.md`/`AGENTS.md`) had no remedy at all.
+
+Now every contributor declares one, because they are not the same kind of thing:
+
+| contributor | remedy |
+| --- | --- |
+| `SOUL.md`, `USER.md`, project memory file | compact — an LLM rewrite you confirm as a diff |
+| fact index | `/reflect` — it is machine-generated from the fact files, so it shrinks by curating them |
+| journal | none needed — it already self-limits to recent non-empty days |
+
+The over-budget notice now lists **every** contributor with its size, names whichever is
+actually biggest, and offers the remedy that fits it — skipping self-limiting contributors
+so the journal at the top cannot stall the offer. The `/reflect` ledger also counts the
+project memory file, which it previously omitted from the very total it was policing.
+
 ## v0.5.18 — one budget instead of five caps, and skills that actually trigger
 
 The headline is a simplification: **luban's config gets smaller, not bigger.**

@@ -4,5 +4,5 @@ requires-python = ">=3.11"
 
 [[package]]
 name = "luban"
-version = "0.5.14"
+version = "0.5.18"
 source = { editable = "." }

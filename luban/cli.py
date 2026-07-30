@@ -321,48 +321,96 @@ TIDY_PROMPT = (
 )
 
 
+def always_on_remedy(label: str, project_root: Path, cfg: config_mod.Config):
+    """How you actually shrink a given contributor to the shared budget.
+
+    Every contributor is accounted for in the total, so every contributor needs a stated
+    remedy — otherwise "shared budget" is only true of the arithmetic. They are not all
+    the same kind of thing:
+
+      compact  hand-edited prose (SOUL.md, USER.md, the project memory file) — an LLM
+               rewrite, shown as a diff you confirm.
+      reflect  the fact index. It is MACHINE-GENERATED from the fact files, so editing it
+               is meaningless (and _HYGIENE forbids it) — you shrink it by curating the
+               facts behind it.
+      none     the journal. It already self-limits to the most recent non-empty days;
+               there is nothing to compact.
+    """
+    if label == "USER.md":
+        return "compact", memory_mod.USER_PATH
+    if label == "SOUL.md":
+        return "compact", memory_mod.SOUL_PATH
+    if label == "memory index":
+        return "reflect", None
+    if label == "journal":
+        return "none", None
+    if label in MEMORY_FILES or label == cfg.memory_file:
+        return "compact", Path(project_root) / label   # the project's own memory file
+    return "none", None
+
+
 def offer_tidy(client, ctx, cfg: config_mod.Config, session: Session,
                project_root: Path | None = None) -> None:
-    """One budget, one question. Over the TOTAL is a mechanical condition — detect it,
-    name the biggest contributor, and compact only on approval."""
+    """One shared budget, one question — aimed at whatever is ACTUALLY biggest.
+
+    This used to consider only SOUL.md and USER.md, so a bloated fact index would make it
+    offer to compact an innocent 2,000-char USER.md while never mentioning the 30,000-char
+    culprit, and the project memory file was never offered at all.
+    """
     if client is None or not cfg.memory_enabled:
         return
-    usage = always_on_usage(project_root or Path("."), cfg)
+    root = project_root or Path(".")
+    usage = always_on_usage(root, cfg)
     total = sum(n for _l, n in usage)
     if total <= memory_mod.ALWAYS_ON_BUDGET:
         return
-    files = {"USER.md": memory_mod.USER_PATH, "SOUL.md": memory_mod.SOUL_PATH}
-    label, size = max(((l, n) for l, n in usage if l in files), key=lambda u: u[1],
-                      default=(None, 0))
     ui.print_text(
         f"\n⚠ always-on context is {total:,} chars against a "
         f"{memory_mod.ALWAYS_ON_BUDGET:,} budget. Nothing is being cut — but the bigger "
         "it gets, the less reliably luban follows any of it.\n")
-    if label is None:
-        ui.print_text("  run /reflect to consolidate the fact store.\n")
-        return
-    try:
-        answer = input(f"  compact {label} ({size:,} chars) now? [y/N] ").strip().lower()
-    except (EOFError, KeyboardInterrupt):
+    for label, size in sorted(usage, key=lambda u: -u[1]):
+        ui.print_text(f"    {label:<16}{size:>8,}\n")
+
+    # Walk contributors biggest-first and act on the first one that HAS a remedy, so a
+    # self-limiting journal at the top can't stall the offer.
+    for label, size in sorted(usage, key=lambda u: -u[1]):
+        kind, path = always_on_remedy(label, root, cfg)
+        if kind == "none":
+            continue
+        if kind == "reflect":
+            ui.print_text(
+                f"\n  biggest is the {label} ({size:,} chars). That is generated from your "
+                "fact files, so it shrinks by curating them, not by editing it: run "
+                "/reflect to merge duplicates, delete what the transcripts already hold, "
+                "and graduate standing preferences.\n")
+            return
+        try:
+            answer = input(f"\n  biggest is {label} ({size:,} chars) — compact it now? "
+                           "[y/N] ".replace("\n", "")).strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            ui.print_text("\n")
+            return
+        if answer not in ("y", "yes"):
+            ui.print_text("  left as-is. /reflect consolidates the fact store when "
+                          "you are ready.\n")
+            return
+        config = agent.AgentConfig(
+            session.model, session.max_tokens, session.stream, platform=cfg.platform,
+            tools=tools.active_tools(True),
+        )
+        body = path.read_text(encoding="utf-8", errors="replace")
+        where = f"~/.luban/{label}" if path.parent != root else label
+        ui.print_text("\nluban> ")
+        try:
+            agent.run_turn(client, config, [{"role": "user", "content":
+                TIDY_PROMPT + f"File: {where}  ({size:,} chars; always-on total "
+                f"{total:,} of {memory_mod.ALWAYS_ON_BUDGET:,})\n\n{body}"}],
+                ctx, ui.print_text, ui.print_thinking)
+        except Exception as exc:
+            ui.print_text(f"compaction failed ({exc}) — {label} unchanged.\n")
         ui.print_text("\n")
         return
-    if answer not in ("y", "yes"):
-        ui.print_text("  left as-is. /reflect consolidates the whole store when ready.\n")
-        return
-    config = agent.AgentConfig(
-        session.model, session.max_tokens, session.stream, platform=cfg.platform,
-        tools=tools.active_tools(True),
-    )
-    body = files[label].read_text(encoding="utf-8", errors="replace")
-    ui.print_text("\nluban> ")
-    try:
-        agent.run_turn(client, config, [{"role": "user", "content":
-            TIDY_PROMPT + f"File: ~/.luban/{label}  ({size:,} chars; always-on total "
-            f"{total:,} of {memory_mod.ALWAYS_ON_BUDGET:,})\n\n{body}"}],
-            ctx, ui.print_text, ui.print_thinking)
-    except Exception as exc:
-        ui.print_text(f"compaction failed ({exc}) — {label} unchanged.\n")
-    ui.print_text("\n")
+    ui.print_text("  the journal self-limits to recent days — nothing to compact.\n")
 
 
 def _file_len(path: Path) -> int:
@@ -457,9 +505,10 @@ def read_project_memory(project_root: Path, memory_file: str = "") -> str:
     return ""
 
 
-def always_on_usage(project_root: Path, cfg: config_mod.Config) -> list[tuple[str, int]]:
-    """Every always-on contributor, including the project's memory file."""
-    usage = list(memory_mod.always_on_usage()) if cfg.memory_enabled else []
+def _project_memory_usage(project_root: Path,
+                          cfg: config_mod.Config) -> list[tuple[str, int]]:
+    """The project's memory file as a budget row — the one contributor memory.py cannot
+    see, since only cli resolves the LUBAN/CLAUDE/AGENTS chain against a project root."""
     names = (cfg.memory_file,) if cfg.memory_file else MEMORY_FILES
     for name in names:
         path = Path(project_root) / name
@@ -467,9 +516,14 @@ def always_on_usage(project_root: Path, cfg: config_mod.Config) -> list[tuple[st
             size = len(path.read_text(encoding="utf-8", errors="replace").strip())
         except OSError:
             continue
-        usage.append((name, size))
-        break
-    return usage
+        return [(name, size)]
+    return []
+
+
+def always_on_usage(project_root: Path, cfg: config_mod.Config) -> list[tuple[str, int]]:
+    """Every always-on contributor, including the project's memory file."""
+    usage = list(memory_mod.always_on_usage()) if cfg.memory_enabled else []
+    return usage + _project_memory_usage(project_root, cfg)
 
 
 def setup_custom_tools() -> list[str]:
@@ -664,7 +718,8 @@ def flush_memory(session: Session, client, ctx, cfg: config_mod.Config) -> None:
         session.journaled = True  # a journal entry was actually written this segment
 
 
-def reflect_session(session: Session, client, ctx, cfg: config_mod.Config) -> None:
+def reflect_session(session: Session, client, ctx, cfg: config_mod.Config,
+                    project_root: Path | None = None) -> None:
     """Isolated consolidation turn; the live conversation is never touched."""
     if not cfg.memory_enabled:
         ui.print_text("memory is disabled (memory_enabled = false in config.toml).\n")
@@ -679,7 +734,8 @@ def reflect_session(session: Session, client, ctx, cfg: config_mod.Config) -> No
         # RECALL_MAX, which would show the curator about a tenth of what it must curate.
         # This turn is isolated, so an ordinary turn never carries this payload.
         agent.run_turn(client, config,
-                       [{"role": "user", "content": REFLECT_PROMPT + memory_mod.audit()}],
+                       [{"role": "user", "content": REFLECT_PROMPT + memory_mod.audit(
+                           _project_memory_usage(project_root or Path("."), cfg))}],
                        ctx, ui.print_text, ui.print_thinking)
     except Exception as exc:
         ui.print_text(f"reflect failed ({exc}) — memory unchanged.\n")
@@ -1056,7 +1112,9 @@ def handle_command(line: str, session: Session, client=None, ctx=None, cfg=None)
         if client is None or ctx is None or cfg is None:
             ui.print_text("reflect needs a client.\n")
             return "handled"
-        reflect_session(session, client, ctx, cfg)
+        # ctx is already scoped to the project — no new parameter needed.
+        reflect_session(session, client, ctx, cfg,
+                        getattr(ctx, "project_root", None))
         return "handled"
     return "handled"  # unknown /command: swallow rather than send to model
 

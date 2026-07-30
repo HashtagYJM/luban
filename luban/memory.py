@@ -404,10 +404,16 @@ def duplicate_candidates() -> list[tuple[str, str, float]]:
     return sorted(pairs, key=lambda p: -p[2])
 
 
-def always_on_budget() -> str:
-    """The always-on ledger, for the curator — one shared budget, not five caps."""
-    rows = [f"  {lbl:<16}{n:>8,} chars" for lbl, n in always_on_usage()]
-    total = sum(n for _l, n in always_on_usage())
+def always_on_budget(extra: list[tuple[str, int]] | None = None) -> str:
+    """The always-on ledger, for the curator — one shared budget, not five caps.
+
+    `extra` carries contributors this module cannot see on its own: today the project's
+    memory file, which cli resolves per project. A ledger that silently omits a
+    contributor is not a ledger — it under-reports the very total it is asked to police.
+    """
+    usage = always_on_usage() + list(extra or [])
+    rows = [f"  {lbl:<16}{n:>8,} chars" for lbl, n in usage]
+    total = sum(n for _l, n in usage)
     state = ("OVER — consolidate" if total > ALWAYS_ON_BUDGET
              else f"{ALWAYS_ON_BUDGET - total:,} chars free")
     return ("ALWAYS-ON LEDGER — one shared budget for everything sent every turn:\n"
@@ -417,7 +423,7 @@ def always_on_budget() -> str:
               "cut, but the bigger it gets the less reliably luban follows any of it.")
 
 
-def audit() -> str:
+def audit(extra: list[tuple[str, int]] | None = None) -> str:
     """The COMPLETE fact store plus duplicate candidates — the curator's raw material.
 
     recall() is capped at RECALL_MAX (8,000 chars), which on a real store lets /reflect
@@ -435,9 +441,9 @@ def audit() -> str:
             except OSError:
                 continue
     if not facts:
-        return always_on_budget() + "\n\n(the fact store is empty)"
+        return always_on_budget(extra) + "\n\n(the fact store is empty)"
     body = "\n\n".join(facts)
-    parts = [always_on_budget(),
+    parts = [always_on_budget(extra),
              f"THE COMPLETE FACT STORE ({len(facts)} facts, {len(body):,} chars):\n\n{body}"]
     dupes = duplicate_candidates()
     if dupes:

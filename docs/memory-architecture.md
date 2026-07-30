@@ -38,7 +38,7 @@ stores**, each matched to a kind of information.
 | **Journal** | `~/.luban/memory/journal/YYYY-MM-DD.md` | Append-only, timestamped one-liners: *what happened, what was decided, what's next* | **Yes**, but only **today + yesterday** | Auto-decays — old days simply stop being loaded |
 | **Facts** | `~/.luban/memory/*.md` + `MEMORY.md` index | Durable truths, **one per file**, with an always-loaded index | **Index always; full fact via `recall`** | Permanent until you `forget` it |
 
-Plus two always-on blocks that frame every turn:
+Plus the always-on blocks that frame every turn:
 
 - **`SOUL.md`** — luban's *character and standing behavior*. How it should work,
   conventions to always follow, boundaries never to cross. Not about you — it's
@@ -46,6 +46,11 @@ Plus two always-on blocks that frame every turn:
 - **`USER.md`** — *who you are*: role, expertise, environment, preferences. The
   one fact set that must stay always-visible, because the model can't know it's
   relevant until it's already too late to go fetch it.
+- **The project's memory file** — `LUBAN.md`, or `CLAUDE.md`, or `AGENTS.md` in the
+  project root: what's true inside *this* codebase and nowhere else.
+
+Together with the fact index and the recent journal, these share **one budget** —
+see *One shared budget for everything always-on* below.
 
 **The one-line intuition:** the session is the full conversation, the journal is
 a lightweight diary of it, and facts are the few durable truths distilled from
@@ -104,6 +109,98 @@ simple bar:
 A user preference, a standing decision, an environment truth — yes. Session
 events, task progress, "we discussed X today" — no; those belong in the journal
 and the transcript.
+
+---
+
+## One shared budget for everything always-on
+
+Whatever is sent on *every* turn competes for the same scarce thing: the model's
+attention. `SOUL.md`, `USER.md`, the fact index, the recent journal, and the
+project's own memory file are therefore governed by **one budget**, not five
+separate caps.
+
+That was a correction, and the reasoning behind it is worth stating plainly
+because it generalizes to any agent-memory system:
+
+- **Five independent caps couldn't express the thing that matters.** Each file
+  could sit comfortably under its own limit while the total was far too large.
+  The only property with real consequences is how much of the model's attention
+  the always-on block consumes *in total*.
+- **Every time a cap bit, the temptation was to raise it or make it
+  configurable.** A config knob for this is an admission that the right value is
+  unknown, handed to the user — who has even less basis to choose it. The budget
+  is instead *derived*: hold always-on near a tenth of the working context, at a
+  measured (not assumed) characters-per-token ratio, minus what the base prompt
+  and tool schemas already spend.
+- **Nothing is silently cut.** The earlier design head-truncated each file to fit
+  and told only the model, never the human — so a real profile lost its tail and
+  luban looked like it was ignoring instructions it had never seen. Now a file is
+  trimmed only if it *alone* exceeds the entire budget, which means something went
+  wrong rather than something grew. Going over the total produces a warning to the
+  person who can act on it.
+- **Each contributor has its own remedy**, because they aren't the same kind of
+  thing. Hand-edited prose (`SOUL.md`, `USER.md`, project memory) can be
+  compacted. The index is generated from the fact files, so it shrinks by curating
+  *them*, never by editing it. The journal already self-limits to recent days and
+  needs nothing.
+
+The deeper lesson: **rationing is not curation.** A cap is a way of avoiding the
+judgment call about what deserves to be there, and it fails quietly. The budget's
+real job is to be a forcing function for the curation pass below.
+
+## Retrieval: a fetch, not a search
+
+`recall` looks like a search tool and mostly isn't one, by design.
+
+The index — every fact's slug and one-line description — is already in the prompt
+on **every turn**. The model therefore doesn't need to *discover* what exists; it
+can read the catalog and name what it wants. Passing an exact slug returns that
+note whole. This is the intended path, and it's why the system needs no
+embeddings, no vector store, and no ranking model — which also means it works on
+a locked-down machine with no network.
+
+A fuzzy query is the fallback, not the main road. It scores facts by how much of
+the query they cover (normalized for length, so a long note can't win by
+accident), follows `[[wikilinks]]` one level, and returns the best few. Two
+details matter more than the scoring:
+
+- **A miss says so honestly.** It reports that nothing matched *and* that this is
+  not evidence the fact doesn't exist, pointing back at the index. Otherwise the
+  agent's natural response to a failed lookup is to save a duplicate.
+- **Documents are not facts.** A long, hand-maintained document living in the
+  memory folder — an issue tracker, say — will win almost any search about a
+  problem it once recorded, simply by quoting it. Such files are excluded from
+  fuzzy matching and surface only when named exactly. Filing a document as a fact
+  is the actual error; tuning the ranking only masks it.
+
+## Curation: the mechanism that makes the rest work
+
+Every store that can be written to needs a **retire path**, or it becomes a
+landfill. `/reflect` is that path, and it runs as an isolated turn so the live
+conversation is untouched.
+
+It is handed the **complete** fact store — not a search result. An earlier version
+gave the curator a capped `recall` view, roughly a tenth of what it was being
+asked to curate, which is why consolidation never happened. *Don't ration the
+curator.* Along with the store it gets duplicate candidates and the always-on
+ledger, then works through: survey → merge duplicates into one better note →
+resolve contradictions in favour of what's true now → delete anything the
+transcripts, journal, or project files already record → graduate → tighten →
+report. Every change is an ordinary write, shown as a diff you confirm.
+
+**Graduation is the delicate step.** A pattern about *how you want work done* is a
+standing instruction, not a look-up detail — and a recallable fact cannot govern
+behaviour, because the agent can't know to recall it before acting. Such things
+belong in `USER.md`. But `USER.md` is sent every turn, so every line costs
+forever: graduation is a **trade**, not an append. The bar is "would I want this
+in front of the model on every turn for the next year?", the unit is one tight
+line folded into an existing bullet where possible, and if the file is near budget
+something weaker gets tightened or dropped in the *same* edit. Promoting nothing
+is a perfectly good outcome.
+
+Deleting is safe, and that's what makes ruthlessness reasonable: every session
+transcript and journal day stays on disk permanently. A deleted fact loses the
+*re-injection*, not the record.
 
 ---
 
@@ -183,14 +280,17 @@ the system healthy:
    real facts out of the journal, prune stale ones, and catch contradictions.
    Do it occasionally, not every turn.
 6. **Cross-link with `[[wikilinks]]`.** When one fact refers to another, link it
-   by name (`[[some-other-note]]`). Today these are a **convention, not a resolved
-   link**: luban stores and shows them, but `recall` matches text, it does not yet
-   *follow* a `[[slug]]` to pull in the linked note (resolving them is planned).
-   Their value right now is twofold — they document the relationship for a human
-   reader, and if you point a graph-capable markdown editor (Obsidian, Logseq) at
-   `~/.luban/memory/` you get backlinks and a graph view for free, because the
+   by name (`[[some-other-note]]`). `recall` **follows** these one level, pulling
+   in the linked notes alongside the match, so a small hub note that points at
+   several others is a genuinely useful shape. A link to a note that doesn't exist
+   yet is harmless — it marks something worth writing later. They also pay off
+   outside luban: point a graph-capable markdown editor (Obsidian, Logseq) at
+   `~/.luban/memory/` and you get backlinks and a graph view for free, because the
    files are already in that shape. No app is required to *use* the memory; one
    just makes it navigable to browse.
+7. **Watch the total, not each file.** Everything always-on shares one budget
+   (below). Adding a line to `USER.md` spends the same budget the fact index and
+   the journal draw on — so promoting something is a trade, not an append.
 
 ---
 

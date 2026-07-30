@@ -237,8 +237,9 @@ def test_bloated_index_is_not_blamed_on_an_innocent_user_md(mem, monkeypatch):
     assert not asked, f"offered a compaction prompt for the wrong file: {asked}"
 
 
-def test_project_memory_file_is_offered_for_compaction(mem, monkeypatch, tmp_path):
-    """It contributes to the budget, so it must have a remedy — it previously had none."""
+def test_project_memory_file_is_named_but_never_rewritten(mem, monkeypatch, tmp_path):
+    """A repo file may be shared by a team — luban reports it and does NOT offer to
+    rewrite it. Explicit user decision: do not make the project file compactable."""
     (tmp_path / "LUBAN.md").write_text("z" * 40_000, encoding="utf-8")
     out, asked = [], []
     monkeypatch.setattr(cli, "always_on_usage", lambda *a: [("LUBAN.md", 40_000)])
@@ -247,7 +248,16 @@ def test_project_memory_file_is_offered_for_compaction(mem, monkeypatch, tmp_pat
     s = cli.Session(model="m", max_tokens=100, auto=True, stream=False, messages=[])
     cli.offer_tidy(client=object(), ctx=None, cfg=config_mod.Config(platform="mac"),
                    session=s, project_root=tmp_path)
-    assert any("LUBAN.md" in a and "compact" in a for a in asked)
+    text = "".join(out)
+    assert "LUBAN.md" in text and "40,000" in text      # named, with its size
+    assert not asked, f"must not offer to rewrite a repo file: {asked}"
+
+
+def test_project_memory_is_never_a_compact_target(mem, tmp_path):
+    cfg = config_mod.Config(platform="mac")
+    for name in ("LUBAN.md", "CLAUDE.md", "AGENTS.md"):
+        kind, _p = cli.always_on_remedy(name, tmp_path, cfg)
+        assert kind == "advise", f"{name} must not be compactable, got {kind}"
 
 
 def test_self_limiting_journal_does_not_stall_the_offer(mem, monkeypatch):
@@ -274,4 +284,4 @@ def test_every_contributor_has_a_declared_remedy(mem, tmp_path):
     cfg = config_mod.Config(platform="mac")
     for label in ("USER.md", "SOUL.md", "memory index", "journal", "LUBAN.md"):
         kind, _path = cli.always_on_remedy(label, tmp_path, cfg)
-        assert kind in ("compact", "reflect", "none"), label
+        assert kind in ("compact", "advise", "reflect", "none"), label

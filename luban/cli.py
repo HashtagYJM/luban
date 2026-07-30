@@ -328,13 +328,20 @@ def always_on_remedy(label: str, project_root: Path, cfg: config_mod.Config):
     remedy — otherwise "shared budget" is only true of the arithmetic. They are not all
     the same kind of thing:
 
-      compact  hand-edited prose (SOUL.md, USER.md, the project memory file) — an LLM
-               rewrite, shown as a diff you confirm.
+      compact  the user's OWN always-on prose (SOUL.md, USER.md) — an LLM rewrite, shown
+               as a diff they confirm. These live in ~/.luban and belong to nobody else.
+      advise   the project's memory file. Named, never rewritten — see below.
       reflect  the fact index. It is MACHINE-GENERATED from the fact files, so editing it
                is meaningless (and _HYGIENE forbids it) — you shrink it by curating the
                facts behind it.
       none     the journal. It already self-limits to the most recent non-empty days;
                there is nothing to compact.
+
+    The project's memory file is deliberately NOT compactable. It is a repo file: it may be
+    under version control, written by a colleague, and relied on by a whole team. luban
+    proposing to rewrite it is a different act from tidying the user's own profile, and the
+    diff-and-confirm gate does not make it the same one. So it is reported as a contributor
+    and left alone — the user trims their own project file.
     """
     if label == "USER.md":
         return "compact", memory_mod.USER_PATH
@@ -345,7 +352,7 @@ def always_on_remedy(label: str, project_root: Path, cfg: config_mod.Config):
     if label == "journal":
         return "none", None
     if label in MEMORY_FILES or label == cfg.memory_file:
-        return "compact", Path(project_root) / label   # the project's own memory file
+        return "advise", Path(project_root) / label
     return "none", None
 
 
@@ -383,6 +390,13 @@ def offer_tidy(client, ctx, cfg: config_mod.Config, session: Session,
                 "fact files, so it shrinks by curating them, not by editing it: run "
                 "/reflect to merge duplicates, delete what the transcripts already hold, "
                 "and graduate standing preferences.\n")
+            return
+        if kind == "advise":
+            # A repo file. Report it, never offer to rewrite it — see always_on_remedy.
+            ui.print_text(
+                f"\n  biggest is {label} ({size:,} chars), this project's own memory file. "
+                "luban will not rewrite a repo file that a team may share — trim it "
+                "yourself, and keep it to what is true in this codebase and nowhere else.\n")
             return
         try:
             answer = input(f"\n  biggest is {label} ({size:,} chars) — compact it now? "

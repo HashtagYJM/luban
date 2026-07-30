@@ -17,9 +17,16 @@ Now every contributor declares one, because they are not the same kind of thing:
 
 | contributor | remedy |
 | --- | --- |
-| `SOUL.md`, `USER.md`, project memory file | compact — an LLM rewrite you confirm as a diff |
+| `SOUL.md`, `USER.md` | compact — an LLM rewrite you confirm as a diff |
+| your project's memory file | **reported, never rewritten** — see below |
 | fact index | `/reflect` — it is machine-generated from the fact files, so it shrinks by curating them |
 | journal | none needed — it already self-limits to recent non-empty days |
+
+`SOUL.md` and `USER.md` are your own prose in your own home directory, so luban offers to
+tidy them. Your **project's** memory file is different in kind: it lives in a repo, it may
+be under version control and shared with colleagues, and an agent proposing to rewrite a
+shared file is not the same act as tidying your personal profile — a confirmation prompt
+doesn't make it the same. luban names it as your biggest contributor and leaves it to you.
 
 The over-budget notice now lists **every** contributor with its size, names whichever is
 actually biggest, and offers the remedy that fits it — skipping self-limiting contributors

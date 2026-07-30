@@ -139,10 +139,14 @@ because it generalizes to any agent-memory system:
   wrong rather than something grew. Going over the total produces a warning to the
   person who can act on it.
 - **Each contributor has its own remedy**, because they aren't the same kind of
-  thing. Hand-edited prose (`SOUL.md`, `USER.md`, project memory) can be
-  compacted. The index is generated from the fact files, so it shrinks by curating
-  *them*, never by editing it. The journal already self-limits to recent days and
-  needs nothing.
+  thing. `SOUL.md` and `USER.md` — your own prose, in your own home directory —
+  can be compacted on request. The index is generated from the fact files, so it
+  shrinks by curating *them*, never by editing it. The journal already self-limits
+  to recent days and needs nothing. Your **project's** memory file is reported but
+  never rewritten: it lives in a repo, it may be under version control and shared
+  with colleagues, and an agent proposing to rewrite a shared file is a different
+  act from tidying your personal profile. luban tells you it is the biggest
+  contributor; trimming it stays yours.
 
 The deeper lesson: **rationing is not curation.** A cap is a way of avoiding the
 judgment call about what deserves to be there, and it fails quietly. The budget's
@@ -207,8 +211,7 @@ transcript and journal day stays on disk permanently. A deleted fact loses the
 ## Inspiration: the Markdown "LLM wiki" pattern
 
 luban's fact store is a deliberate implementation of the **Markdown knowledge-base
-pattern** popularized by Andrej Karpathy (["LLM
-Wiki"](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f)): rather
+pattern** popularized by Andrej Karpathy (["LLM Wiki"](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f)): rather
 than a vector database or an opaque RAG pipeline, you keep a set of **plain
 markdown files** that the agent incrementally compiles and maintains, with a few
 navigation conventions on top.

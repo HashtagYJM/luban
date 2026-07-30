@@ -280,8 +280,131 @@ def test_reflect_ledger_includes_the_project_memory_file(mem, tmp_path):
     assert "LUBAN.md" in ledger and "9,000" in ledger
 
 
-def test_every_contributor_has_a_declared_remedy(mem, tmp_path):
+def test_policy_every_contributor_is_bounded_or_has_a_working_remedy(mem, tmp_path):
+    """THE class-level guard (E31).
+
+    E31 happened because the journal had NEITHER a size bound NOR a remedy that could
+    shrink it, and nothing detected that combination. An earlier draft of this test asserted
+    "render a worst case, assert the whole block fits ALWAYS_ON_BUDGET" — which is
+    UNSATISFIABLE, because an oversized USER.md is deliberately never cut, so no journal
+    bound can make the total fit. Bounding the block and never cutting authored prose are
+    mutually exclusive, and the design chose the latter.
+
+    So the invariant is per-contributor: each one is either windowed to a declared
+    allowance, or has a remedy that can actually reduce it. Unbounded AND remedy "none"
+    fails — which is precisely the state the journal was in. Add a new always-on component
+    without declaring how it shrinks and this fails, with nobody having to extend it.
+    """
     cfg = config_mod.Config(platform="mac")
-    for label in ("USER.md", "SOUL.md", "memory index", "journal", "LUBAN.md"):
+    reduces = {"compact", "reflect", "advise"}   # something can act on it
+    bounded = {"windowed"}                       # it cannot grow without limit
+    for label, _size in cli.always_on_usage(tmp_path, cfg) + [("LUBAN.md", 1)]:
         kind, _path = cli.always_on_remedy(label, tmp_path, cfg)
-        assert kind in ("compact", "advise", "reflect", "none"), label
+        assert kind in reduces | bounded, (
+            f"{label!r} is an always-on contributor with remedy {kind!r} — it can grow "
+            "without bound and nothing can shrink it. That is the E31 defect class.")
+
+
+# ---------------- E31: the journal is bounded, and says so ----------------
+
+def _write_day(day: str, entries: int, pad: int = 200) -> int:
+    d = memory.MEMORY_DIR / "journal"
+    d.mkdir(parents=True, exist_ok=True)
+    body = "".join(f"[09:{i:02d}] entry {i} {'x' * pad}\n" for i in range(entries))
+    (d / f"{day}.md").write_text(body, encoding="utf-8")
+    return len(body)
+
+
+def test_journal_over_allowance_is_cut_on_a_day_boundary(mem):
+    _write_day("2026-07-20", 40)          # oldest
+    _write_day("2026-07-21", 40)          # newest
+    out = memory.read_recent_journal()
+    assert len(out) <= memory._journal_allowance() + 300      # + the notice line
+    assert "2026-07-21" in out, "the NEWEST day must survive"
+    assert "2026-07-20" not in out, "the OLDEST day must roll off"
+
+
+def test_a_single_oversized_day_yields_its_newest_entries_not_nothing(mem):
+    _write_day("2026-07-23", 300)         # one day far bigger than the whole allowance
+    out = memory.read_recent_journal()
+    assert out, "an oversized day must not produce an empty journal"
+    assert len(out) <= memory._journal_allowance() + 300
+    assert "entry 299" in out, "the NEWEST entries are the ones to keep"
+    assert "entry 0" not in out
+    # cut on an ENTRY boundary — no fragment of a line
+    for line in out.splitlines():
+        if line.startswith("[09:"):
+            assert line.rstrip().endswith("x"), f"cut mid-entry: {line[-40:]!r}"
+
+
+def test_the_omission_is_stated_never_silent(mem):
+    _write_day("2026-07-20", 40)
+    _write_day("2026-07-21", 40)
+    assert "journal:" in memory.read_recent_journal()      # says what it left out
+    assert "~/.luban/memory/journal/" in memory.read_recent_journal()  # and where it lives
+
+
+def test_a_small_journal_is_untouched_and_unannotated(mem):
+    _write_day("2026-07-21", 2)
+    out = memory.read_recent_journal()
+    assert "entry 0" in out and "entry 1" in out
+    assert "journal:" not in out, "no notice when nothing was omitted"
+
+
+def test_reading_never_writes_to_the_day_files(mem):
+    """'Trimming is lossless' is the entire justification for windowing — verify it."""
+    n = _write_day("2026-07-23", 300)
+    before = (memory.MEMORY_DIR / "journal" / "2026-07-23.md").read_bytes()
+    memory.read_recent_journal()
+    memory.bootstrap_volatile()
+    after = (memory.MEMORY_DIR / "journal" / "2026-07-23.md").read_bytes()
+    assert before == after and len(after) == n
+
+
+def test_the_ledger_reports_what_is_actually_sent(mem):
+    """always_on_usage must report the BOUNDED journal, not a file that never went."""
+    _write_day("2026-07-23", 300)
+    journal_row = dict(memory.always_on_usage())["journal"]
+    assert journal_row == len(memory.read_recent_journal())
+    assert journal_row <= memory._journal_allowance() + 300
+
+
+# ---------------- E30 residual: descriptions clip on a word boundary, loudly ----------
+
+def test_long_skill_description_clips_on_a_word_boundary_and_warns(tmp_path, capsys):
+    from luban import skills as skills_mod
+    d = tmp_path / "skills" / "verbose"
+    d.mkdir(parents=True)
+    words = " ".join(f"word{i:03d}" for i in range(60))          # ~480 chars
+    (d / "SKILL.md").write_text(f"---\nname: verbose\ndescription: {words}\n---\nbody",
+                                encoding="utf-8")
+    desc, _body = skills_mod._parse((d / "SKILL.md").read_text(encoding="utf-8"))
+    assert len(desc) <= skills_mod._FRONT_DESC_MAX
+    assert not desc.endswith("wor"), "must not cut mid-word"
+    assert desc.split()[-1].startswith("word"), f"trailing fragment: {desc[-20:]!r}"
+    assert "trimmed" in capsys.readouterr().err   # the author is TOLD
+
+
+def test_a_short_description_is_untouched_and_silent(tmp_path, capsys):
+    from luban import skills as skills_mod
+    text = "---\nname: brief\ndescription: does one small thing\n---\nbody"
+    desc, _b = skills_mod._parse(text)
+    assert desc == "does one small thing"
+    assert capsys.readouterr().err == ""
+
+
+# ---------------- the over-budget message fires ONCE at startup ----------------
+
+def test_startup_does_not_print_the_over_budget_message_twice(mem, monkeypatch, capsys):
+    """cap_warnings ran at cli.py:1252 and offer_tidy at 1254, so the user got two
+    over-budget messages back to back stating the same total in different words."""
+    import inspect
+    src = inspect.getsource(cli)
+    start = src.index('ui.print_text(f"custom tools:')
+    end = src.index("offer_tidy(client, ctx, cfg, session, project_root)", start)
+    # Scan for a CALL, not for the word — the explanatory comment there names the function.
+    calls = [ln for ln in src[start:end].splitlines()
+             if "cap_warnings(" in ln and not ln.lstrip().startswith("#")]
+    assert not calls, (
+        f"cap_warnings is called again in the startup path just before offer_tidy: {calls} "
+        "— that is the duplicate over-budget message the user saw twice")

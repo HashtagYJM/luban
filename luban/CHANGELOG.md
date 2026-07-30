@@ -6,6 +6,39 @@ Each entry tags the tracker IDs (E-/F-) it resolves.
 
 ## Unreleased
 
+**The journal no longer eats your context (E31).** Measured in the field: the journal was
+29,446 chars of a 41,471-char always-on block against a 38,000 budget — 71% of everything
+sent every turn, and the only component with no size bound at all. One day file was 37,547
+chars on its own, more than the whole budget.
+
+This was a regression in the previous release. Replacing five per-file caps with one shared
+budget was right for four of them and wrong for the journal, and the docstring was left still
+promising a truncation the code had stopped doing.
+
+The journal is genuinely different from the other always-on files, which is why it is the one
+that gets a bound:
+
+- It **grows by design** — luban is instructed to write an entry at the close of every
+  working block, in every project. Following the instruction is what caused the breach.
+- It has **no curation lever**. `/reflect` merges and deletes *facts*; there is no equivalent
+  for a timeline, and there shouldn't be — a journal is append-only by definition.
+- Trimming it is **lossless**. Every day file stays on disk and every transcript is kept, so
+  showing fewer days is choosing a window, not deleting anything.
+
+So the journal now fills newest-first within 30% of the shared budget, cutting on day
+boundaries — and when a single day is itself too large, on entry boundaries, never mid-line.
+**What was left out is always stated**, with a pointer to the day files, because a bound
+nobody is told about is indistinguishable from a bug. Your `SOUL.md` and `USER.md` are still
+never cut.
+
+Two smaller fixes alongside it:
+
+- **The over-budget warning printed twice at startup**, once from each of two code paths
+  stating the same total in different words. Now once, from the one that also names the
+  biggest contributor and its correct remedy.
+- **Long skill descriptions cut mid-word, silently.** They now cut on a word boundary and
+  warn you, so you can put the trigger words first.
+
 **A shared budget needs a remedy for every contributor.** v0.5.18 replaced five per-file
 caps with one shared always-on budget, but only the *accounting* was made shared — the
 *remedy* stayed where it was. `offer_tidy` considered only `SOUL.md` and `USER.md`, then

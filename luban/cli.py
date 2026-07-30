@@ -334,8 +334,11 @@ def always_on_remedy(label: str, project_root: Path, cfg: config_mod.Config):
       reflect  the fact index. It is MACHINE-GENERATED from the fact files, so editing it
                is meaningless (and _HYGIENE forbids it) — you shrink it by curating the
                facts behind it.
-      none     the journal. It already self-limits to the most recent non-empty days;
-               there is nothing to compact.
+      windowed the journal. It is bounded to a share of the budget and states what it
+               omitted, so there is nothing to act on. A DECLARED bound — distinct from
+               "none", so the policy test can tell a bounded component from one whose
+               remedy was never thought about (which is exactly how E31 happened).
+      none     nothing applies.
 
     The project's memory file is deliberately NOT compactable. It is a repo file: it may be
     under version control, written by a colleague, and relied on by a whole team. luban
@@ -350,7 +353,7 @@ def always_on_remedy(label: str, project_root: Path, cfg: config_mod.Config):
     if label == "memory index":
         return "reflect", None
     if label == "journal":
-        return "none", None
+        return "windowed", None
     if label in MEMORY_FILES or label == cfg.memory_file:
         return "advise", Path(project_root) / label
     return "none", None
@@ -382,8 +385,8 @@ def offer_tidy(client, ctx, cfg: config_mod.Config, session: Session,
     # self-limiting journal at the top can't stall the offer.
     for label, size in sorted(usage, key=lambda u: -u[1]):
         kind, path = always_on_remedy(label, root, cfg)
-        if kind == "none":
-            continue
+        if kind in ("none", "windowed"):
+            continue  # bounded or inapplicable — move to the next actionable contributor
         if kind == "reflect":
             ui.print_text(
                 f"\n  biggest is the {label} ({size:,} chars). That is generated from your "
@@ -424,7 +427,8 @@ def offer_tidy(client, ctx, cfg: config_mod.Config, session: Session,
             ui.print_text(f"compaction failed ({exc}) — {label} unchanged.\n")
         ui.print_text("\n")
         return
-    ui.print_text("  the journal self-limits to recent days — nothing to compact.\n")
+    ui.print_text("  the journal is bounded to its share of the budget — "
+                  "nothing to compact.\n")
 
 
 def _file_len(path: Path) -> int:
@@ -1247,10 +1251,11 @@ def main(argv: list[str] | None = None) -> None:
     )
     if custom_names:
         ui.print_text(f"custom tools: {', '.join(custom_names)}\n")
-    # Tell the HUMAN when an always-on file is over its cap and being cut (C1) —
-    # otherwise luban silently never sees the tail and looks like it's ignoring you.
-    for warning in memory_mod.cap_warnings(always_on_usage(project_root, cfg)):
-        ui.print_text(warning + "\n")
+    # offer_tidy owns the over-budget message at startup: it lists every contributor with
+    # its size, names the biggest, and offers THAT contributor's own remedy. cap_warnings
+    # used to run here too, so the user got two over-budget messages back to back stating
+    # the same total in different words. Removed rather than made consistent — /config still
+    # calls cap_warnings, where there is no interactive offer.
     if cfg.memory_enabled:
         offer_tidy(client, ctx, cfg, session, project_root)
     # Same principle for config: a setting that's in the file but silently ignored

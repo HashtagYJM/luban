@@ -27,6 +27,25 @@ _DESC_MAX = 80
 _FRONT_DESC_MAX = 240
 
 
+def _clip_desc(desc: str) -> str:
+    """Bound a skill description WITHOUT cutting mid-word, and say so.
+
+    The old `desc[:_FRONT_DESC_MAX]` truncated silently at 240 chars, mid-word — the same
+    silent-truncation class as the block-scalar bug it shipped beside (E30). A trigger
+    description that stops mid-sentence is worse than a short one: the author cannot see it
+    happened, and the model gets a fragment.
+    """
+    if len(desc) <= _FRONT_DESC_MAX:
+        return desc
+    cut = desc[:_FRONT_DESC_MAX]
+    if " " in cut:
+        cut = cut[:cut.rindex(" ")]
+    print(f"warning: skill description is {len(desc)} chars; trimmed to "
+          f"{len(cut)} for the system prompt. Put the trigger words FIRST — "
+          f"the tail is not shown to the model.", file=sys.stderr)
+    return cut.rstrip(" ,;:-")
+
+
 def _project_dir(project_root: Path | str) -> Path:
     return Path(project_root) / ".luban" / "skills"
 
@@ -68,7 +87,7 @@ def _parse_frontmatter(lines: list[str]) -> tuple[str, str] | None:
                       f"model will have no trigger text for it. Use a single line, or a "
                       f"`>`/`|` block with indented lines.", file=sys.stderr)
                 desc = next((ln.strip() for ln in body.splitlines() if ln.strip()), "")[:_DESC_MAX]
-            return desc[:_FRONT_DESC_MAX], body
+            return _clip_desc(desc), body
     return None  # unterminated block: treat the file as plain markdown
 
 

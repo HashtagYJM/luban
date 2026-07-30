@@ -221,38 +221,114 @@ def index_slugs_dropped() -> int:
 
 JOURNAL_DAYS = 2
 
+# The journal is the ONE always-on component that gets a size bound, and it needs one for
+# reasons that do not apply to any other (E31, measured live: it was 29,446 of a 41,471-char
+# always-on block against a 38,000 budget — 71% of everything sent every turn):
+#
+#   - It grows BY DESIGN. _HYGIENE asks for an entry at the close of every working block, in
+#     every project. Following the system prompt is what causes the breach.
+#   - It has NO curation lever. /reflect curates facts; remember/forget act on facts. There
+#     is no operation that consolidates a timeline, and there should not be — a journal is
+#     append-only by definition.
+#   - Trimming it is LOSSLESS. Every day file stays on disk and every transcript is kept, so
+#     showing fewer days is choosing a window, not deleting anything.
+#
+# That last property is what separates this from the five per-file caps deleted in v0.5.18.
+# Head-truncating a user's USER.md destroyed instructions they never knew were missing;
+# windowing a timeline destroys nothing. The bar for windowing ANY component is exactly
+# those two properties: lossless to trim, and no curation path. Today that is the journal
+# and nothing else — a second one would be the five caps returning by increments.
+JOURNAL_SHARE = 0.30
+
+
+def _journal_allowance() -> int:
+    """The journal's share of the ONE budget — computed, so the total stays authoritative.
+
+    A function rather than a module-level int because tests monkeypatch ALWAYS_ON_BUDGET;
+    `int(ALWAYS_ON_BUDGET * SHARE)` at import time would bind before they could.
+    """
+    return int(ALWAYS_ON_BUDGET * JOURNAL_SHARE)
+
+
+def _day_tail(text: str, budget: int) -> str:
+    """The NEWEST whole entries of one day that fit in budget.
+
+    Journal lines are "[HH:MM] ...", so an entry boundary exists and the cut never lands
+    mid-line. Needed for real data: one measured day file was 37,547 chars on its own,
+    more than the whole always-on budget.
+    """
+    kept: list[str] = []
+    used = 0
+    for line in reversed(text.splitlines()):
+        if used + len(line) + 1 > budget:
+            break
+        kept.append(line)
+        used += len(line) + 1
+    return "\n".join(reversed(kept))
+
 
 def _recent_journal_text() -> str:
-    """The most recent JOURNAL_DAYS journal days that actually HAVE content.
+    """The most recent journal days that have content, bounded to the journal's allowance.
 
     Was calendar-based (literally today and yesterday), so it went completely
     blank after any gap — work Friday, return Monday, and both "today" and
     "yesterday" are empty even though Friday's entries are right there on disk.
     Continuity died exactly when you'd been away and needed it most (H3).
+
+    Returns a STRING with the omission line already in it. An earlier draft returned
+    (text, omitted_days, omitted_chars); that rippled into always_on_usage(), which takes
+    len() of this, and the char count was never used.
     """
     try:
         files = sorted((MEMORY_DIR / "journal").glob("*.md"))  # names sort chronologically
     except OSError:
         return ""
-    picked: list[str] = []
+    budget = _journal_allowance()
+    with_content = []
     for path in reversed(files):  # newest first
-        if len(picked) >= JOURNAL_DAYS:
-            break
         try:
             text = path.read_text(encoding="utf-8", errors="replace").strip()
         except OSError:
             continue
         if text:
-            picked.append(f"## {path.stem}\n{text}")
-    return "\n".join(reversed(picked))  # back to chronological order
+            with_content.append((path.stem, text))
+
+    picked: list[str] = []
+    used = 0
+    for stem, text in with_content[:JOURNAL_DAYS]:
+        block = f"## {stem}\n{text}"
+        if used + len(block) <= budget:
+            picked.append(block)
+            used += len(block) + 1
+            continue
+        # Doesn't fit whole. If this is the newest day, keep its newest entries rather than
+        # dropping the most relevant day entirely; otherwise stop at the day boundary.
+        if not picked:
+            tail = _day_tail(text, budget - len(stem) - 4)
+            if tail:
+                picked.append(f"## {stem}\n{tail}")
+        break
+
+    if not picked:
+        return ""
+    shown, total = len(picked), len(with_content)
+    body = "\n".join(reversed(picked))  # back to chronological order
+    if shown < total or used > budget:
+        # State the bound. A bound nobody is told about is indistinguishable from a bug —
+        # that is the whole lesson of E31, where a docstring promised a truncation the code
+        # had stopped doing and no one noticed for three releases.
+        return (f"[journal: showing the {shown} most recent day(s) of {total} within its "
+                f"context allowance — every day file is still on disk in "
+                f"~/.luban/memory/journal/]\n{body}")
+    return body
 
 
 def read_recent_journal() -> str:
-    """Recent journal days. Tail-biased truncation: when the slice is over budget
-    the NEWEST entries survive and the OLDEST roll off (the opposite of
-    _read_capped) — and losslessly, since the full day files stay on disk."""
-    combined = _recent_journal_text()
-    return combined
+    """Recent journal days, newest-first within the journal's allowance.
+
+    Bounded window, full record on disk — and the omission is stated, never silent.
+    """
+    return _recent_journal_text()
 
 
 _SCAFFOLD_COMMENT = re.compile(r"<!--.*?-->", re.DOTALL)
@@ -286,10 +362,15 @@ def cap_warnings(usage: list[tuple[str, int]]) -> list[str]:
         return []
     worst = ", ".join(f"{lbl} {n:,}" for lbl, n in
                       sorted(usage, key=lambda u: -u[1])[:3] if n)
+    # Names the biggest contributors and STOPS. It used to end "Run /reflect to consolidate,
+    # or trim a file" — right for exactly one of five contributors and unable to shrink a
+    # journal at all. Routing each contributor to its own remedy lives in cli.offer_tidy,
+    # which has the config and project root needed to do it properly; this stays a plain
+    # statement of fact for /config, the one caller that has no interactive offer.
     return [f"warning: always-on context is {total:,} chars against a "
             f"{ALWAYS_ON_BUDGET:,} budget — it is all still being sent, but a large "
-            f"always-on block measurably weakens how well luban follows it. Biggest: "
-            f"{worst}. Run /reflect to consolidate, or trim a file."]
+            f"always-on block measurably weakens how well luban follows it. "
+            f"Biggest: {worst}."]
 
 
 def _is_untouched(text: str, template: str = "") -> bool:
@@ -339,11 +420,18 @@ def _over_budget_notice() -> str:
     total = sum(n for _l, n in always_on_usage())
     if total <= ALWAYS_ON_BUDGET:
         return ""
-    return (f"NOTE: always-on context is {total:,} chars against a "
-            f"{ALWAYS_ON_BUDGET:,} budget. Nothing has been cut, but a bloated "
-            "always-on block degrades how well you follow any of it. Suggest /reflect: "
-            "merge duplicates, delete what the transcripts and journal already hold, "
-            "and tighten USER.md.")
+    # Deliberately states NO figure. This function can only see memory's own four
+    # components; the project memory file is resolved by cli, so any total computed here
+    # under-reports what is actually sent (measured: 39,372 claimed vs 41,471 sent).
+    # Plumbing cli's row through bootstrap_volatile would need a closure, which reintroduces
+    # the E28 stale-snapshot hazard to fix a 5% error in a message whose only job is to
+    # suggest consolidation. So drop the claim instead: the model needs to know it is over
+    # budget, not by how much. The human gets exact per-component numbers from cli, which
+    # has all five. No model-facing text asserts a total it cannot compute correctly.
+    return ("NOTE: the always-on context block is over its budget. Nothing has been cut, "
+            "but a bloated always-on block degrades how well you follow any of it. Suggest "
+            "/reflect: merge duplicates, delete what the transcripts and journal already "
+            "hold, and tighten USER.md.")
 
 
 def bootstrap_volatile() -> str:

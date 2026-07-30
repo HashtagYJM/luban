@@ -4,6 +4,8 @@ The model already receives an index of EVERY fact on every turn, so recall is a 
 Matching exists only for exploration, and must fail honestly — '(no matches)' read as
 'that fact does not exist' is what made the model save duplicates in the first place.
 """
+import re
+
 import pytest
 
 from luban import cli, memory
@@ -103,9 +105,14 @@ def test_an_over_budget_index_tells_the_MODEL_to_consolidate(mem):
     for i in range(400):
         memory.remember(f"fact-{i:03d}-{'z' * 25}", "a fairly long description " * 3, "b")
     volatile = memory.bootstrap_volatile()
-    assert "against a" in volatile and "budget" in volatile
+    assert "over its budget" in volatile
     assert "/reflect" in volatile          # names the remedy
     assert "degrades how well you follow" in volatile  # says WHY, not just that
+    # It must NOT state a total. This function can only see memory's four components; the
+    # project memory file is resolved by cli, so any figure here under-reports what is sent
+    # (measured 39,372 claimed vs 41,471 actual). The human gets exact numbers from cli.
+    assert not re.search(r"\d[\d,]{3,}", volatile.split("NOTE:")[-1]), \
+        "the model-facing notice must not assert a total it cannot compute correctly"
 
 
 def test_a_healthy_store_adds_no_nagging(mem):

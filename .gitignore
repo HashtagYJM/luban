@@ -4,8 +4,16 @@ luban/client_local.py
 # User-owned custom tools — lives in ~/.luban/, never commit a copy
 tools_local.py
 
-# Internal design docs / plans — kept locally, not published
-docs/superpowers/
+# docs/ is PRIVATE BY DEFAULT — publishing is an explicit opt-in below.
+#
+# It used to be the other way round: only docs/superpowers/ was ignored, so docs/ was a
+# public folder and any new internal note dropped there would have been published on the
+# next commit, with nothing in the path to warn you. Privacy depended on remembering to
+# nest under a folder whose name says nothing about publication.
+#
+# To publish a new doc, add an explicit negation here and check it reads clean first.
+docs/*
+!docs/memory-architecture.md
 
 # Subagent-driven-development scratch (task briefs, reports, review diffs,
 # ledger) — internal, may reference internal identifiers; NEVER publish

@@ -53,7 +53,7 @@ Now every contributor declares one, because they are not the same kind of thing:
 | `SOUL.md`, `USER.md` | compact — an LLM rewrite you confirm as a diff |
 | your project's memory file | **reported, never rewritten** — see below |
 | fact index | `/reflect` — it is machine-generated from the fact files, so it shrinks by curating them |
-| journal | none needed — it already self-limits to recent non-empty days |
+| journal | none needed — it is bounded to a share of the budget (see above) and states what it omitted |
 
 `SOUL.md` and `USER.md` are your own prose in your own home directory, so luban offers to
 tidy them. Your **project's** memory file is different in kind: it lives in a repo, it may

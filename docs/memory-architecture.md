@@ -141,12 +141,40 @@ because it generalizes to any agent-memory system:
 - **Each contributor has its own remedy**, because they aren't the same kind of
   thing. `SOUL.md` and `USER.md` — your own prose, in your own home directory —
   can be compacted on request. The index is generated from the fact files, so it
-  shrinks by curating *them*, never by editing it. The journal already self-limits
-  to recent days and needs nothing. Your **project's** memory file is reported but
+  shrinks by curating *them*, never by editing it. The journal is windowed to the
+  most recent days — see the note below on why a *timeline* is the one store where
+  trimming is the right answer. Your **project's** memory file is reported but
   never rewritten: it lives in a repo, it may be under version control and shared
   with colleagues, and an agent proposing to rewrite a shared file is a different
   act from tidying your personal profile. luban tells you it is the biggest
   contributor; trimming it stays yours.
+
+### The exception: why a timeline is bounded, not curated
+
+"Nothing is silently cut" is right for the stores you *author* — your `SOUL.md`,
+your `USER.md`, the facts behind the index. Cutting those loses instructions you
+never knew were missing. The journal is different in kind, and it is worth being
+explicit about why, because the distinction is easy to get wrong (luban got it
+wrong: a refactor removed the journal's bound along with four caps that genuinely
+deserved to go, and the journal promptly grew to 71% of everything sent each turn).
+
+Three properties set a timeline apart:
+
+- **It grows by design.** The agent is *instructed* to write an entry at the close
+  of every working block, in every project. Following the instruction is what
+  causes the growth — the write path has no cost signal.
+- **It has no curation lever.** You can merge duplicate facts and delete stale
+  ones. There is no equivalent operation on a diary, and there shouldn't be: a
+  journal is append-only by definition. The only thing that shrinks it is choosing
+  how far back to read.
+- **Trimming it is lossless.** Every day file stays on disk and every session
+  transcript is kept. Showing the two most recent days is not deleting the rest;
+  it is choosing a window.
+
+So the journal's invariant is **bounded window, full record on disk** — with the
+omission *stated* rather than silent, so you always know what you're not seeing
+and where it still lives. That last part is the general rule: a bound nobody is
+told about is indistinguishable from a bug.
 
 The deeper lesson: **rationing is not curation.** A cap is a way of avoiding the
 judgment call about what deserves to be there, and it fails quietly. The budget's

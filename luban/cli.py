@@ -18,6 +18,7 @@ from luban import memory as memory_mod
 from luban import permissions as permissions_mod
 from luban import sessions as sessions_mod
 from luban import skills as skills_mod
+from luban import usage as usage_mod
 
 
 COMPACT_PROMPT = (
@@ -92,6 +93,8 @@ class Session:
     thinking: bool = True
     effort: str = "medium"
     thinking_verbose: bool = False
+    # Measured token accounting, from what the API reports on every response.
+    ledger: object = field(default_factory=lambda: usage_mod.Ledger())
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -703,6 +706,8 @@ def build_agent_config(session: Session, cfg: config_mod.Config, project_root: P
         tool_guidance=tools.custom_guidance(),
         web_search=cfg.web_search,
         web_search_tool_type=cfg.web_search_tool_type,
+        on_usage=session.ledger.add,
+        ctx_mgmt=client_mod.context_management(cfg.warn_tokens),
         thinking=session.thinking,
         effort=session.effort,
         thinking_verbose=session.thinking_verbose,
@@ -1008,6 +1013,14 @@ def handle_command(line: str, session: Session, client=None, ctx=None, cfg=None)
             ui.print_text(f"({len(miss)} new setting(s) not in your config.toml — "
                           "run `luban --sync-config` to add them)\n")
         return "handled"
+    if cmd == "/usage":
+        # Measured from API responses — never estimated. This is the number to watch to
+        # stay under a quota: it counts the system prompt and tool schemas too, which the
+        # old message-text estimator ignored entirely.
+        ui.print_text(usage_mod.report(session.ledger,
+                                       cfg.warn_tokens if cfg else DEFAULT_WARN_TOKENS))
+        return "handled"
+
     if cmd == "/context":
         if cfg is None or ctx is None:
             ui.print_text("context inspection needs a live session.\n")
@@ -1306,10 +1319,16 @@ def main(argv: list[str] | None = None) -> None:
             ui.print_text(f"\n[turn failed: {exc}]\n{failure_hint(exc)}")
         else:
             save_session(session)
-            est = estimate_tokens(session.messages)
-            if est > cfg.warn_tokens:
+            # The live token line: what this turn cost and how full the window is.
+            ui.print_text(usage_mod.turn_line(session.ledger, cfg.warn_tokens) + "\n")
+            # MEASURED, not estimated. The old path compared warn_tokens against a
+            # 4-chars/token estimate of the message text — 36% low against the measured
+            # 2.94, so the nudge arrived ~54k tokens late and ignored the system prompt
+            # and tool schemas entirely. context_tokens is what the model actually read.
+            real = session.ledger.context_tokens or estimate_tokens(session.messages)
+            if real > cfg.warn_tokens:
                 ui.print_text(
-                    f"\nnote: conversation is large (~{est:,} tokens) — consider /compact\n"
+                    f"\nnote: context is {real:,} tokens — consider /compact\n"
                 )
             ui.print_text("\n")
     exit_journal(session, cfg, project_root)

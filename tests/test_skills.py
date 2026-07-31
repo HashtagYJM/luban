@@ -30,12 +30,6 @@ def test_project_shadows_global(tmp_path, monkeypatch):
     assert got[0]["scope"] == "project"
 
 
-def test_description_fallback_first_line_truncated(tmp_path, monkeypatch):
-    monkeypatch.setattr(skills, "GLOBAL_SKILLS_DIR", tmp_path / "g")
-    _mk(tmp_path / "g", "long", "x" * 200 + "\nrest of body")
-    got = skills.list_skills(tmp_path / "proj")
-    assert got[0]["description"] == "x" * 80
-
 
 def test_load_skill_strips_description_line(tmp_path, monkeypatch):
     monkeypatch.setattr(skills, "GLOBAL_SKILLS_DIR", tmp_path / "g")
@@ -95,12 +89,6 @@ def test_folder_skill_discovered_with_frontmatter_description(tmp_path, monkeypa
     }]
 
 
-def test_frontmatter_description_capped_at_240(tmp_path, monkeypatch):
-    monkeypatch.setattr(skills, "GLOBAL_SKILLS_DIR", tmp_path / "g")
-    _mk_folder(tmp_path / "g", "long", f"---\ndescription: {'d' * 400}\n---\nBody.")
-    got = skills.list_skills(tmp_path / "proj")
-    assert got[0]["description"] == "d" * 240
-
 
 def test_frontmatter_without_description_falls_back_to_body_line(tmp_path, monkeypatch):
     monkeypatch.setattr(skills, "GLOBAL_SKILLS_DIR", tmp_path / "g")
@@ -156,3 +144,15 @@ def test_non_utf8_skill_does_not_crash(tmp_path, monkeypatch):
     got = skills.list_skills(tmp_path / "proj")
     assert len(got) == 1 and got[0]["name"] == "ansi"
     assert skills.load_skill("ansi", tmp_path / "proj") is not None
+
+
+def test_descriptions_are_never_truncated(tmp_path):
+    """Replaces the two cap tests. The description is trigger text; cutting it defeats
+    skill discovery, and the catalog is governed by the shared always-on budget instead."""
+    long_first_line = "x" * 500
+    desc, _ = skills._parse(long_first_line + "\n\nrest of body")
+    assert desc == long_first_line
+
+    front = "d" * 900
+    desc2, _ = skills._parse(f"---\nname: n\ndescription: {front}\n---\nbody")
+    assert desc2 == front

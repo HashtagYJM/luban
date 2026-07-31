@@ -4,6 +4,51 @@ Release notes, newest first. Bundled inside the package so luban can show
 "what's new" and reconcile its enhancement tracker offline, with no network.
 Each entry tags the tracker IDs (E-/F-) it resolves.
 
+## Unreleased
+
+### Token consumption you can actually see (and a nudge that was 54,000 tokens late)
+
+luban was **throwing away the exact token counts the API returns on every response** and
+estimating instead, at 4 chars/token against a measured 2.94. That 36% undercount governed
+the `/compact` nudge, so the nudge fired when the *estimate* reached your threshold — about
+**203,900 real tokens** instead of 150,000. A session displayed as 67,861 tokens was really
+around 92,231. The estimate also counted only message text, ignoring the system prompt and
+tool schemas entirely.
+
+Now every number is measured:
+
+- **A live line under each response:** context against your threshold, output this turn,
+  cache hit rate, and cumulative session spend.
+- **`/usage`** — fresh vs cached input, output, session total, and a **cache-weighted**
+  figure that reflects what you are actually consuming (cached input bills at roughly a
+  tenth, so a raw sum badly overstates a well-cached session).
+- The `/compact` nudge now uses real context size, including the system prompt and tools.
+
+If your bill grew faster than your conversation, the cache hit rate in `/usage` is the first
+thing to look at — a low rate on a long session means the cached prefix keeps being
+invalidated.
+
+### Stale tool output is no longer re-sent forever
+
+Tool results could be 20,000 characters each and accumulated for the life of a session,
+re-sent in full on every subsequent turn. luban now uses the Claude API's server-side
+**context editing** to clear old tool results once a session grows, keeping the recent ones
+and never touching memory-tool results. `/usage` reports exactly how many tokens this saved.
+
+This is **not** automatic compaction: your conversation is never summarised or dropped, only
+stale tool *output*, and the full transcript stays on disk. On a backend without the feature,
+luban detects that once and carries on unchanged.
+
+### Skill descriptions are no longer truncated
+
+Two hidden caps cut them — 240 characters for frontmatter, 80 for a plain `.md`. The
+description **is** the trigger text the model matches your task against, so cutting it
+defeats the feature it belongs to: a measured install had 943-, 886- and 785-character
+descriptions reduced to about 235, discarding three quarters of the trigger text on exactly
+the richest skills. v0.5.19 made one of them warn rather than removing it, which produced a
+warning *per skill per command* — 18 lines of noise on a real install. Both caps and the
+warning are gone; the skills catalog is governed by the one shared always-on budget instead.
+
 ## v0.5.19 — the journal stops eating your context
 
 Three fixes to the always-on context block, two of them regressions in v0.5.18.

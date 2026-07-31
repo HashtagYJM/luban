@@ -23,27 +23,20 @@ from luban import paths
 GLOBAL_SKILLS_DIR = paths.luban_home() / "skills"
 
 _DESC_PREFIX = "description:"
-_DESC_MAX = 80
-_FRONT_DESC_MAX = 240
-
-
-def _clip_desc(desc: str) -> str:
-    """Bound a skill description WITHOUT cutting mid-word, and say so.
-
-    The old `desc[:_FRONT_DESC_MAX]` truncated silently at 240 chars, mid-word — the same
-    silent-truncation class as the block-scalar bug it shipped beside (E30). A trigger
-    description that stops mid-sentence is worse than a short one: the author cannot see it
-    happened, and the model gets a fragment.
-    """
-    if len(desc) <= _FRONT_DESC_MAX:
-        return desc
-    cut = desc[:_FRONT_DESC_MAX]
-    if " " in cut:
-        cut = cut[:cut.rindex(" ")]
-    print(f"warning: skill description is {len(desc)} chars; trimmed to "
-          f"{len(cut)} for the system prompt. Put the trigger words FIRST — "
-          f"the tail is not shown to the model.", file=sys.stderr)
-    return cut.rstrip(" ,;:-")
+# NO length cap on skill descriptions. There were two — 240 for frontmatter, 80 for a
+# plain .md — and both were wrong for the same reason: the description IS the trigger
+# text. It is the only thing the model matches a task against when deciding whether to
+# load a skill, so truncating it defeats the feature it belongs to. A field measurement
+# found descriptions of 943, 886 and 785 chars cut to ~235: three quarters of the trigger
+# text discarded, on precisely the richest skills. That is the same outcome as E30 (skills
+# that never trigger), reached by a different route.
+#
+# v0.5.19 made the 240 cut warn instead of removing it, which produced one warning PER
+# SKILL PER COMMAND — 18 lines on a real install. Decorating a bad bound is not fixing it.
+#
+# The catalog is not unbounded: it is one contributor to the single always-on budget, and
+# is counted there like every other. Long descriptions are a budget question, answered by
+# the budget, not by a hidden per-item cap nobody was told about.
 
 
 def _project_dir(project_root: Path | str) -> Path:
@@ -86,8 +79,8 @@ def _parse_frontmatter(lines: list[str]) -> tuple[str, str] | None:
                 print(f"warning: skill frontmatter has no usable `description:` — the "
                       f"model will have no trigger text for it. Use a single line, or a "
                       f"`>`/`|` block with indented lines.", file=sys.stderr)
-                desc = next((ln.strip() for ln in body.splitlines() if ln.strip()), "")[:_DESC_MAX]
-            return _clip_desc(desc), body
+                desc = next((ln.strip() for ln in body.splitlines() if ln.strip()), "")
+            return desc, body
     return None  # unterminated block: treat the file as plain markdown
 
 
@@ -102,7 +95,7 @@ def _parse(text: str) -> tuple[str, str]:
         body = "\n".join(lines[1:]).strip()
         return desc, body
     first = next((ln.strip() for ln in lines if ln.strip()), "")
-    return first[:_DESC_MAX], text.strip()
+    return first, text.strip()
 
 
 def _read(path: Path) -> str:

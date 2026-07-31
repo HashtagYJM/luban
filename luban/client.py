@@ -82,12 +82,109 @@ def _thinking_extras(thinking: bool, effort: str, verbose: bool = False) -> dict
     return extras
 
 
+
+# ---------------------------------------------------------------- context editing ----
+# Server-side clearing of stale TOOL RESULTS before the prompt reaches the model. This is
+# the single largest lever on an agentic session's token use: a file-heavy session accrues
+# dozens of results at up to MAX_OUTPUT (20,000 chars) each, and nothing ever removed them.
+# Anthropic call tool-result clearing "the safest lightest touch form of compaction".
+#
+# It is NOT auto-compaction: conversation is never summarised or dropped, only stale tool
+# OUTPUT, and the client keeps the full unmodified history on disk either way.
+#
+# Values are derived, not offered as knobs:
+#   trigger        0.6 x warn_tokens - clear well before compaction is needed
+#   keep           the recent tool pairs that are still the working set
+#   clear_at_least clearing invalidates the cached prefix at that point, so many small
+#                  clears are strictly worse than a few large ones. This floor makes each
+#                  clear worth the cache write it costs.
+#   exclude_tools  memory results are small and semantically load-bearing; clearing them
+#                  would make the model re-fetch what it already had.
+CONTEXT_MGMT_BETA = "context-management-2025-06-27"
+_CONTEXT_MGMT_SUPPORTED = None  # tri-state probe, same pattern as _EXTRAS_SUPPORTED
+_KEEP_TOOL_USES = 6
+_CLEAR_AT_LEAST = 8_000
+_MEMORY_TOOLS = ["remember", "recall", "forget", "journal", "sessions"]
+
+
+def context_management(warn_tokens: int) -> dict:
+    return {"edits": [{
+        "type": "clear_tool_uses_20250919",
+        "trigger": {"type": "input_tokens", "value": max(20_000, int(warn_tokens * 0.6))},
+        "keep": {"type": "tool_uses", "value": _KEEP_TOOL_USES},
+        "clear_at_least": {"type": "input_tokens", "value": _CLEAR_AT_LEAST},
+        "exclude_tools": _MEMORY_TOOLS,
+    }]}
+
+
+def _beta_fn(client, method: str):
+    """The beta surface, or None if this backend has no beta surface.
+
+    A corporate proxy that lacks it must keep working, so the caller falls back to the
+    ordinary path rather than failing.
+    """
+    beta = getattr(client, "beta", None)
+    msgs = getattr(beta, "messages", None) if beta is not None else None
+    return getattr(msgs, method, None) if msgs is not None else None
+
+
+
+
+def _try_context_managed(client, method, base, extras, ctx_mgmt, on_retry,
+                         on_text=None, on_thinking=None):
+    """Issue via the beta surface with context editing on. None => caller falls back.
+
+    Probed once per process like _EXTRAS_SUPPORTED: a backend without the beta surface,
+    or one that rejects the parameter, must keep working rather than fail the turn.
+    """
+    global _CONTEXT_MGMT_SUPPORTED
+    if _CONTEXT_MGMT_SUPPORTED is False:
+        return None
+    fn = _beta_fn(client, method)
+    if fn is None:
+        _CONTEXT_MGMT_SUPPORTED = False
+        return None
+    kw = dict(**base, **extras, betas=[CONTEXT_MGMT_BETA], context_management=ctx_mgmt)
+    try:
+        if method == "stream":
+            msg = _with_retry(
+                lambda: _stream_with(fn, kw, on_text, on_thinking), on_retry)
+        else:
+            msg = _with_retry(lambda: fn(**kw), on_retry)
+    except Exception as exc:
+        if _CONTEXT_MGMT_SUPPORTED is True or is_transient(exc):
+            raise  # it worked before, or the network died — not a rejection
+        _CONTEXT_MGMT_SUPPORTED = False
+        return None
+    _CONTEXT_MGMT_SUPPORTED = True
+    return msg
+
+
+def _stream_with(fn, kw, on_text, on_thinking):
+    with fn(**kw) as stream:
+        for event in stream:
+            if getattr(event, "type", None) != "content_block_delta":
+                continue
+            delta = event.delta
+            dtype = getattr(delta, "type", None)
+            if dtype == "text_delta":
+                on_text(delta.text)
+            elif dtype == "thinking_delta" and on_thinking is not None:
+                on_thinking(delta.thinking)
+        return stream.get_final_message()
+
+
 def create_turn(client, *, model, max_tokens, system, messages, tools,
-                thinking=False, effort="medium", verbose=False, on_retry=None):
+                thinking=False, effort="medium", verbose=False, on_retry=None,
+                ctx_mgmt=None):
     global _EXTRAS_SUPPORTED
     base = dict(model=model, max_tokens=max_tokens, system=system,
                 messages=messages, tools=tools)
     extras = _thinking_extras(thinking, effort, verbose) if _EXTRAS_SUPPORTED is not False else {}
+    if ctx_mgmt:
+        msg = _try_context_managed(client, "create", base, extras, ctx_mgmt, on_retry)
+        if msg is not None:
+            return msg
     if not extras:
         return _with_retry(lambda: client.messages.create(**base), on_retry)
     try:
@@ -230,11 +327,16 @@ def _with_retry(call, on_retry=None):
 
 def stream_turn(client, *, model, max_tokens, system, messages, tools, on_text,
                 on_thinking=None, thinking=False, effort="medium", verbose=False,
-                on_retry=None):
+                on_retry=None, ctx_mgmt=None):
     global _EXTRAS_SUPPORTED
     base = dict(model=model, max_tokens=max_tokens, system=system,
                 messages=messages, tools=tools)
     extras = _thinking_extras(thinking, effort, verbose) if _EXTRAS_SUPPORTED is not False else {}
+    if ctx_mgmt:
+        msg = _try_context_managed(client, "stream", base, extras, ctx_mgmt, on_retry,
+                                   on_text=on_text, on_thinking=on_thinking)
+        if msg is not None:
+            return msg
     if not extras:
         return _with_retry(lambda: _stream_once(client, base, {}, on_text, on_thinking),
                            on_retry)

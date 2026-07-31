@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from luban import client as client_mod
+from luban import usage as usage_mod
 from luban import tools as tools_mod
 
 SYSTEM_PROMPT = (
@@ -102,6 +103,13 @@ class AgentConfig:
     thinking: bool = False
     effort: str = "medium"
     thinking_verbose: bool = False  # stream the reasoning (grey text) vs think silently
+    # Sink for the REAL token counts every response carries. luban used to discard them
+    # and estimate at 4 chars/token instead — a 36% undercount that made the /compact
+    # nudge fire ~54k tokens late. These cost nothing: they arrive with the response.
+    on_usage: object = None
+    # Server-side tool-result clearing config (None = off). Derived from
+    # warn_tokens by cli; not a knob.
+    ctx_mgmt: dict | None = None
 
 
 _BLOCK_SYSTEM_SUPPORTED = None  # tri-state probe: does this backend accept block-form system?
@@ -154,12 +162,14 @@ def _run_model_turn(client, config, messages, on_text, on_thinking, on_retry=Non
                 on_text=on_text, on_thinking=on_thinking,
                 thinking=config.thinking, effort=config.effort,
                 verbose=config.thinking_verbose, on_retry=on_retry,
+                ctx_mgmt=config.ctx_mgmt,
             )
         return client_mod.create_turn(
             client, model=config.model, max_tokens=config.max_tokens,
             system=system_param, messages=messages, tools=tool_schemas,
             thinking=config.thinking, effort=config.effort,
             verbose=config.thinking_verbose, on_retry=on_retry,
+            ctx_mgmt=config.ctx_mgmt,
         )
 
     try:
@@ -176,6 +186,11 @@ def _run_model_turn(client, config, messages, on_text, on_thinking, on_retry=Non
     else:
         if use_blocks:
             _BLOCK_SYSTEM_SUPPORTED = True
+    if config.on_usage is not None:
+        try:
+            config.on_usage(usage_mod.from_response(msg))
+        except Exception:
+            pass  # accounting must never break a turn
     if config.stream:
         return msg
     for b in msg.content:

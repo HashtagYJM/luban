@@ -26,7 +26,8 @@ def test_config_passes_platform_into_prompt(tmp_path, monkeypatch):
     seen = {}
 
     def fake_create(client, *, model, max_tokens, system, messages, tools,
-                    thinking=False, effort="medium", verbose=False, on_retry=None):
+                    thinking=False, effort="medium", verbose=False, on_retry=None,
+                    **kw):   # **kw so new request params don't break unrelated tests
         seen["system"] = system
         return FakeMessage([FakeBlock("text", text="ok")], "end_turn")
 

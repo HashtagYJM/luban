@@ -369,28 +369,38 @@ def test_the_ledger_reports_what_is_actually_sent(mem):
     assert journal_row <= memory._journal_allowance() + 300
 
 
-# ---------------- E30 residual: descriptions clip on a word boundary, loudly ----------
+# ---------------- descriptions are trigger text: never truncated ----------------
 
-def test_long_skill_description_clips_on_a_word_boundary_and_warns(tmp_path, capsys):
+def test_skill_descriptions_reach_the_prompt_intact(tmp_path):
+    """The description IS the trigger text the model matches a task against.
+
+    Two caps used to cut it — 240 for frontmatter, 80 for a plain .md — and a field
+    measurement found 943/886/785-char descriptions reduced to ~235, discarding three
+    quarters of the trigger text on the richest skills. v0.5.19 made one of them WARN
+    rather than removing it, which produced a warning per skill per command (18 lines on a
+    real install). Decorating a bad bound is not fixing it. The catalog is bounded by the
+    one shared always-on budget, like every other contributor.
+    """
     from luban import skills as skills_mod
-    d = tmp_path / "skills" / "verbose"
-    d.mkdir(parents=True)
-    words = " ".join(f"word{i:03d}" for i in range(60))          # ~480 chars
-    (d / "SKILL.md").write_text(f"---\nname: verbose\ndescription: {words}\n---\nbody",
+    long_desc = " ".join(f"word{i:03d}" for i in range(190))          # ~1,330 chars
+    d = tmp_path / "skills" / "rich"; d.mkdir(parents=True)
+    (d / "SKILL.md").write_text(f"---\nname: rich\ndescription: {long_desc}\n---\nbody",
                                 encoding="utf-8")
-    desc, _body = skills_mod._parse((d / "SKILL.md").read_text(encoding="utf-8"))
-    assert len(desc) <= skills_mod._FRONT_DESC_MAX
-    assert not desc.endswith("wor"), "must not cut mid-word"
-    assert desc.split()[-1].startswith("word"), f"trailing fragment: {desc[-20:]!r}"
-    assert "trimmed" in capsys.readouterr().err   # the author is TOLD
+    desc, _ = skills_mod._parse((d / "SKILL.md").read_text(encoding="utf-8"))
+    assert desc == long_desc, "frontmatter description must reach the prompt whole"
+
+    plain = "Use this whenever the user wants quarterly attribution reconciled against " \
+            "the custodian file and the monthly commentary pack produced end to end."
+    desc2, _ = skills_mod._parse(plain + "\n\nbody")
+    assert desc2 == plain, "plain .md description must reach the prompt whole"
 
 
-def test_a_short_description_is_untouched_and_silent(tmp_path, capsys):
+def test_no_hidden_description_cap_remains(tmp_path, capsys):
     from luban import skills as skills_mod
-    text = "---\nname: brief\ndescription: does one small thing\n---\nbody"
-    desc, _b = skills_mod._parse(text)
-    assert desc == "does one small thing"
-    assert capsys.readouterr().err == ""
+    assert not hasattr(skills_mod, "_FRONT_DESC_MAX")
+    assert not hasattr(skills_mod, "_DESC_MAX")
+    skills_mod._parse("---\nname: x\ndescription: " + "y" * 900 + "\n---\nb")
+    assert capsys.readouterr().err == "", "no per-skill warning noise"
 
 
 # ---------------- the over-budget message fires ONCE at startup ----------------

@@ -30,25 +30,16 @@ snapshot, so your actual bill may differ if requests are routed or charged back 
 basis; and for a model it has no price for, it says so and shows tokens only rather than
 guessing.
 
-### The conversation is now cached — measured 68% of spend was repeats
+### The conversation is now cached
 
-Four real sessions, 63 model calls, measured with `/usage`:
+luban marked exactly one spot for caching — the end of the stable system block — so
+everything after it was billed at full price on every call, including the entire
+conversation. Your conversation is byte-identical from one call to the next, and you were
+paying for it every time.
 
-| session | calls | cached/call | fresh/call | hit rate | spend |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| pick up where we left off | 7 | 12,957 | 15,229 | 43% | 139,064 |
-| update a markdown file | 16 | 11,406 | 25,004 | 31% | 454,949 |
-| pick up where we left off | 25 | 12,520 | 36,623 | 25% | 992,918 |
-| pick up where we left off | 15 | 11,355 | 21,366 | 34% | 367,771 |
-
-The cached amount per call is **essentially constant** — 11.4k to 13.0k — while the fresh
-amount **triples** as the conversation grows. That is the signature of a fixed cached prefix:
-luban marked exactly one spot for caching, the end of the stable system block, so everything
-after it was billed at full price on every call. Your conversation is byte-identical from one
-call to the next, and you were paying for it every time.
-
-Across those four sessions, **1,319,849 of 1,954,702 tokens spent were repeated
-conversation** — 68%.
+The effect compounds: the cached amount stays **flat** while the uncached amount **grows
+with the conversation**, so the cache hit rate falls the longer you work. It gets worse,
+never better — which is what "my token use keeps climbing" feels like from the inside.
 
 There is now a **second cache breakpoint** on the end of the conversation, so each call
 writes a cache entry covering everything so far and the next call reads it, paying only for
@@ -63,9 +54,9 @@ unless you have measured a reason to want it.
 ### Why your token use grew
 
 The Messages API is **stateless**: every call re-sends the entire conversation — system
-prompt, tool schemas, every prior message, every tool result. On a measured install that was
-**103,006 tokens per call**, of which **89.5% was conversation history**. An agentic turn
-makes many calls, so a turn with ten tool round-trips sent over a million input tokens.
+prompt, tool schemas, every prior message, every tool result. In a working session the
+conversation quickly becomes the overwhelming majority of that, and an agentic turn makes
+many calls, so one turn with several tool round-trips re-sends all of it many times over.
 
 And luban had **no lifecycle for that history**. It grew until you typed `/compact`, which
 reset the whole session. Every context feature up to now — budgets, caps, memory curation —
@@ -87,13 +78,12 @@ It differs from `/compact`, which stays for a deliberate fresh start: folding is
 repeatable, compaction is all-or-nothing.
 
 
-### Token consumption you can actually see (and a nudge that was 54,000 tokens late)
+### Token consumption you can actually see (and a nudge that fired far too late)
 
 luban was **throwing away the exact token counts the API returns on every response** and
 estimating instead, at 4 chars/token against a measured 2.94. That 36% undercount governed
 the `/compact` nudge, so the nudge fired when the *estimate* reached your threshold — about
-**203,900 real tokens** instead of 150,000. A session displayed as 67,861 tokens was really
-around 92,231. The estimate also counted only message text, ignoring the system prompt and
+substantially later than your configured threshold. The estimate also counted only message text, ignoring the system prompt and
 tool schemas entirely.
 
 Now every number is measured:
@@ -130,8 +120,8 @@ returns and cannot cost you anything.
 
 Two hidden caps cut them — 240 characters for frontmatter, 80 for a plain `.md`. The
 description **is** the trigger text the model matches your task against, so cutting it
-defeats the feature it belongs to: a measured install had 943-, 886- and 785-character
-descriptions reduced to about 235, discarding three quarters of the trigger text on exactly
+defeats the feature it belongs to: in field use, descriptions several
+times that length were reduced to the cap, discarding most of the trigger text on exactly
 the richest skills. v0.5.19 made one of them warn rather than removing it, which produced a
 warning *per skill per command* — 18 lines of noise on a real install. Both caps and the
 warning are gone; the skills catalog is governed by the one shared always-on budget instead.
@@ -144,10 +134,9 @@ v0.5.18 and **E29** now obsolete.
 
 ### The journal was 71% of everything sent every turn (E31)
 
-Measured in the field: the journal was
-29,446 chars of a 41,471-char always-on block against a 38,000 budget — 71% of everything
-sent every turn, and the only component with no size bound at all. One day file was 37,547
-chars on its own, more than the whole budget.
+In field use the journal grew to dominate the always-on block — the largest contributor by
+a wide margin, and the only component with no size bound at all. A single busy day's file
+could exceed the entire budget on its own.
 
 This was a regression in the previous release. Replacing five per-file caps with one shared
 budget was right for four of them and wrong for the journal, and the docstring was left still
@@ -219,7 +208,7 @@ The headline is a simplification: **luban's config gets smaller, not bigger.**
 
 luban used to hold five separate size limits — one each for `SOUL.md`, `USER.md`, the fact
 index, the journal, and the project memory file. Each cut its own file **silently** when
-it was exceeded. A real 6,810-character profile lost 2,810 characters that way, including
+it was exceeded. In field use a profile well over the cap silently lost its tail — including
 rules that had been deliberately promoted into always-on context on luban's own advice.
 
 There is now **one budget for the whole always-on block**, and **nothing is ever silently

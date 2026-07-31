@@ -281,3 +281,25 @@ def test_longest_prefix_wins_so_aliases_still_price():
     led.add(usage_mod.from_response(FakeMsg(FakeUsage(i=1_000_000))))
     assert usage_mod.cost(led, "claude-opus-4-8-some-suffix") == pytest.approx(5.00)
     assert usage_mod.cost(led, "claude-haiku-4-5-20251001") == pytest.approx(1.00)
+
+
+def test_a_backend_reporting_no_usage_says_so_loudly():
+    """A provider switch must not silently reinstate the estimator this module replaced."""
+    class OAUsage:
+        prompt_tokens, completion_tokens = 12_000, 800
+    class OAMsg:
+        usage = OAUsage()
+    led = usage_mod.Ledger()
+    for _ in range(3):
+        led.add(usage_mod.from_response(OAMsg()))
+    assert led.blind is True
+    text = usage_mod.report(led, 150_000, "gpt-5")
+    assert "no usage data" in text and "UNMEASURED" in text
+    assert "36%" in text
+
+
+def test_a_normal_session_is_not_flagged_blind():
+    led = usage_mod.Ledger()
+    led.add(usage_mod.from_response(FakeMsg(FakeUsage(i=100, o=10))))
+    assert led.blind is False
+    assert "UNMEASURED" not in usage_mod.report(led, 150_000, "claude-opus-4-8")

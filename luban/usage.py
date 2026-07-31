@@ -94,6 +94,20 @@ class Ledger:
     cleared_tokens: int = 0
     last: Usage = None  # type: ignore[assignment]
 
+    @property
+    def blind(self) -> bool:
+        """True when calls were made but every usage field came back zero.
+
+        That is what a non-Anthropic response shape looks like from here: OpenAI reports
+        `prompt_tokens` / `completion_tokens` / `prompt_tokens_details.cached_tokens`, so
+        every field this reads is absent and `from_response` returns zeros. Nothing
+        crashes — luban simply reports nothing, and the /compact nudge falls back to the
+        4-chars/token estimator that measured 36% wrong. A provider switch would silently
+        reinstate the exact defect this module exists to remove, so it has to announce
+        itself.
+        """
+        return self.calls > 0 and self.total_tokens == 0
+
     def add(self, u: Usage) -> None:
         self.input_tokens += u.input_tokens
         self.output_tokens += u.output_tokens
@@ -254,6 +268,14 @@ def report(led: Ledger, warn_tokens: int, model: str = "") -> str:
         out.append("\n  note: a low cache hit rate on a long session usually means the "
                    "cached\n  prefix keeps being invalidated — check /context for cache "
                    "eligibility.\n")
+    if led.blind:
+        return ("token usage: the backend returned no usage data on any of "
+                f"{led.calls} call(s).\n\n"
+                "  luban reads input_tokens / output_tokens / cache_* off each response —\n"
+                "  the Anthropic shape. A backend reporting usage differently (OpenAI uses\n"
+                "  prompt_tokens / completion_tokens) yields zeros here, and the /compact\n"
+                "  nudge silently falls back to a 4-chars/token estimate that measured 36%\n"
+                "  wrong. Treat context size as UNMEASURED until this is fixed.\n")
     if model and spend is None:
         # Say nothing rather than guess. A wrong number is worse than no number for
         # something a person budgets against.

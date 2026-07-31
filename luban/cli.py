@@ -1193,7 +1193,8 @@ def handle_command(line: str, session: Session, client=None, ctx=None, cfg=None)
         # stay under a quota: it counts the system prompt and tool schemas too, which the
         # old message-text estimator ignored entirely.
         ui.print_text(usage_mod.report(session.ledger,
-                                       cfg.warn_tokens if cfg else DEFAULT_WARN_TOKENS))
+                                       cfg.warn_tokens if cfg else DEFAULT_WARN_TOKENS,
+                                       session.model))
         return "handled"
 
     if cmd == "/context":
@@ -1495,7 +1496,8 @@ def main(argv: list[str] | None = None) -> None:
         else:
             save_session(session)
             # The live token line: what this turn cost and how full the window is.
-            ui.print_text(usage_mod.turn_line(session.ledger, cfg.warn_tokens) + "\n")
+            ui.print_text(usage_mod.turn_line(session.ledger, cfg.warn_tokens,
+                                              session.model) + "\n")
             # MEASURED, not estimated. The old path compared warn_tokens against a
             # 4-chars/token estimate of the message text — 36% low against the measured
             # 2.94, so the nudge arrived ~54k tokens late and ignored the system prompt

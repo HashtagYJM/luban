@@ -235,3 +235,49 @@ def test_usage_totals_come_from_the_response_not_count_tokens():
     src = inspect.getsource(usage_mod)
     assert "count_tokens" not in src, "usage accounting must read the response only"
     assert "usage" in inspect.getsource(usage_mod.from_response)
+
+
+# ---------------- cost estimation ----------------
+
+def test_cost_applies_the_cache_multipliers():
+    """A cache read is a tenth of the input rate and a write is 1.25x — that ratio is the
+    whole reason caching is the largest available lever."""
+    led = usage_mod.Ledger()
+    led.add(usage_mod.from_response(FakeMsg(FakeUsage(i=1_000_000))))
+    assert usage_mod.cost(led, "claude-opus-4-8") == pytest.approx(5.00)
+    led2 = usage_mod.Ledger()
+    led2.add(usage_mod.from_response(FakeMsg(FakeUsage(cr=1_000_000))))
+    assert usage_mod.cost(led2, "claude-opus-4-8") == pytest.approx(0.50)
+    led3 = usage_mod.Ledger()
+    led3.add(usage_mod.from_response(FakeMsg(FakeUsage(cw=1_000_000))))
+    assert usage_mod.cost(led3, "claude-opus-4-8") == pytest.approx(6.25)
+
+
+def test_output_is_priced_five_times_input():
+    led = usage_mod.Ledger()
+    led.add(usage_mod.from_response(FakeMsg(FakeUsage(o=1_000_000))))
+    assert usage_mod.cost(led, "claude-opus-4-8") == pytest.approx(25.00)
+
+
+def test_an_unknown_model_reports_no_price_rather_than_a_wrong_one():
+    """A wrong number is worse than no number for something a person budgets against."""
+    led = usage_mod.Ledger()
+    led.add(usage_mod.from_response(FakeMsg(FakeUsage(i=1000))))
+    assert usage_mod.cost(led, "some-internal-alias") is None
+    text = usage_mod.report(led, 150_000, "some-internal-alias")
+    assert "no price on file" in text and "$" not in text.split("no price")[0].split("tokens")[-1]
+
+
+def test_the_estimate_is_labelled_as_one():
+    led = usage_mod.Ledger()
+    led.add(usage_mod.from_response(FakeMsg(FakeUsage(i=1000, o=100))))
+    text = usage_mod.report(led, 150_000, "claude-opus-4-8")
+    assert "ESTIMATED" in text and "list prices" in text
+    assert "actual bill may differ" in text
+
+
+def test_longest_prefix_wins_so_aliases_still_price():
+    led = usage_mod.Ledger()
+    led.add(usage_mod.from_response(FakeMsg(FakeUsage(i=1_000_000))))
+    assert usage_mod.cost(led, "claude-opus-4-8-some-suffix") == pytest.approx(5.00)
+    assert usage_mod.cost(led, "claude-haiku-4-5-20251001") == pytest.approx(1.00)

@@ -6,6 +6,21 @@ Each entry tags the tracker IDs (E-/F-) it resolves.
 
 ## Unreleased
 
+### What it costs, in dollars
+
+`/usage` now estimates spend, not just tokens — the number you actually budget against.
+It breaks out fresh input, cache write, cache read and output separately, because they are
+priced very differently: a cache read costs a **tenth** of the same tokens sent fresh, while
+output costs **five times** input.
+
+That last point matters for expectations. Caching cuts *input* cost, and output is untouched,
+so a session whose token repeats drop by 68% sees a bill drop closer to 50%.
+
+Two caveats travel with every figure, and luban prints them: these are Anthropic **list**
+prices bundled with the release, so your actual bill may differ if requests are routed or
+charged back on another basis; and for a model luban has no price for, it says so and shows
+tokens only rather than guessing.
+
 ### The conversation is now cached — measured 68% of spend was repeats
 
 Four real sessions, 63 model calls, measured with `/usage`:

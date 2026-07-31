@@ -135,11 +135,64 @@ class Ledger:
         return read / total_in if total_in else 0.0
 
 
+# ---------------------------------------------------------------------- pricing ----
+# Per MILLION tokens, Anthropic list prices. There is no API that returns these, so a
+# hardcoded table is the only option — and a hardcoded table goes stale. Two honest
+# caveats travel with every figure this produces:
+#
+#   1. These are LIST prices. A request routed through a company wrapper may be billed
+#      differently, or charged back internally on another basis entirely.
+#   2. Prices change. Nothing here can detect that; the table is only as fresh as the
+#      release it shipped in.
+#
+# So the output says "estimated", names the model it priced, and says nothing at all for
+# a model it does not know — a wrong number is worse than no number for something a
+# person budgets against.
+#
+# Cache multipliers are ratios of the input rate, not separate prices: a 5-minute cache
+# write costs 1.25x input, a read 0.1x. That is the whole reason caching is the biggest
+# lever available — a read is a tenth of the price of the same tokens sent fresh.
+CACHE_WRITE_MULT = 1.25
+CACHE_READ_MULT = 0.10
+
+PRICES = {           # model prefix -> (input $/MTok, output $/MTok)
+    "claude-opus-5": (5.0, 25.0),
+    "claude-opus-4-8": (5.0, 25.0),
+    "claude-opus-4-7": (5.0, 25.0),
+    "claude-opus-4-6": (5.0, 25.0),
+    "claude-sonnet-5": (3.0, 15.0),
+    "claude-sonnet-4-6": (3.0, 15.0),
+    "claude-haiku-4-5": (1.0, 5.0),
+    "claude-fable-5": (10.0, 50.0),
+}
+
+
+def _rates(model: str):
+    """Longest-prefix match, so a suffixed or aliased id still prices. None = unknown."""
+    best = None
+    for prefix, rates in PRICES.items():
+        if model.startswith(prefix) and (best is None or len(prefix) > len(best[0])):
+            best = (prefix, rates)
+    return best[1] if best else None
+
+
+def cost(led: "Ledger", model: str) -> float | None:
+    """Estimated spend in dollars. None when the model is not in the table."""
+    rates = _rates(model)
+    if rates is None:
+        return None
+    inp, out = rates
+    return (led.input_tokens * inp
+            + led.cache_creation_input_tokens * inp * CACHE_WRITE_MULT
+            + led.cache_read_input_tokens * inp * CACHE_READ_MULT
+            + led.output_tokens * out) / 1_000_000
+
+
 def _k(n: float) -> str:
     return f"{n/1000:.1f}k" if n >= 1000 else f"{n:.0f}"
 
 
-def turn_line(led: Ledger, warn_tokens: int) -> str:
+def turn_line(led: Ledger, warn_tokens: int, model: str = "") -> str:
     """The per-turn status line — small enough to sit under every response.
 
     Shows context against the threshold because that is the number with a cliff, and
@@ -155,11 +208,13 @@ def turn_line(led: Ledger, warn_tokens: int) -> str:
         bits.append(f"{led.cache_hit_rate:.0%} cached")
     if led.cleared_tokens:
         bits.append(f"-{_k(led.cleared_tokens)} cleared")
-    bits.append(f"session {_k(led.effective_tokens)}")
+    spend = cost(led, model) if model else None
+    bits.append(f"session ${spend:.2f}" if spend is not None
+                else f"session {_k(led.effective_tokens)}")
     return "  [" + " · ".join(bits) + "]"
 
 
-def report(led: Ledger, warn_tokens: int) -> str:
+def report(led: Ledger, warn_tokens: int, model: str = "") -> str:
     """The /usage view: measured, never estimated."""
     if not led.calls:
         return "no model calls yet this session.\n"
@@ -181,6 +236,17 @@ def report(led: Ledger, warn_tokens: int) -> str:
     if led.cleared_tokens:
         rows.append(("cleared by luban", f"{led.cleared_tokens:,} tokens of stale tool "
                                          f"output never re-sent"))
+    spend = cost(led, model) if model else None
+    if spend is not None:
+        inp, outp = _rates(model)
+        rows += [
+            ("", ""),
+            ("estimated spend", f"${spend:,.2f}   at list prices for {model}"),
+            ("  fresh input", f"${led.input_tokens*inp/1e6:,.2f}"),
+            ("  cache write", f"${led.cache_creation_input_tokens*inp*CACHE_WRITE_MULT/1e6:,.2f}"),
+            ("  cache read", f"${led.cache_read_input_tokens*inp*CACHE_READ_MULT/1e6:,.2f}"),
+            ("  output", f"${led.output_tokens*outp/1e6:,.2f}"),
+        ]
     out = ["token usage (measured from API responses, not estimated):\n"]
     for label, value in rows:
         out.append("\n" if not label else f"  {label:<21}{value}\n")
@@ -188,4 +254,12 @@ def report(led: Ledger, warn_tokens: int) -> str:
         out.append("\n  note: a low cache hit rate on a long session usually means the "
                    "cached\n  prefix keeps being invalidated — check /context for cache "
                    "eligibility.\n")
+    if model and spend is None:
+        # Say nothing rather than guess. A wrong number is worse than no number for
+        # something a person budgets against.
+        out.append(f"\n  no price on file for {model} — tokens only.\n")
+    elif spend is not None:
+        out.append("\n  spend is ESTIMATED from Anthropic list prices bundled with this\n"
+                   "  release. Your actual bill may differ if requests are routed or\n"
+                   "  charged back on another basis.\n")
     return "".join(out)

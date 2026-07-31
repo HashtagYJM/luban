@@ -14,7 +14,9 @@ never break a turn.
 """
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
+from pathlib import Path
 
 
 # Cached input is billed at roughly a tenth of fresh input. "Effective" tokens weight it
@@ -150,56 +152,68 @@ class Ledger:
 
 
 # ---------------------------------------------------------------------- pricing ----
-# Per MILLION tokens, Anthropic list prices. There is no API that returns these, so a
-# hardcoded table is the only option — and a hardcoded table goes stale. Two honest
-# caveats travel with every figure this produces:
+# Rates come from luban/prices.json, a vendored subset of LiteLLM's
+# model_prices_and_context_window.json (MIT). Refresh with scripts/refresh_prices.py.
 #
-#   1. These are LIST prices. A request routed through a company wrapper may be billed
-#      differently, or charged back internally on another basis entirely.
-#   2. Prices change. Nothing here can detect that; the table is only as fresh as the
-#      release it shipped in.
+# WHY VENDORED DATA RATHER THAN A HAND-WRITTEN TABLE
+# The hand-written table was not wrong — its numbers matched LiteLLM's to the cent. It was
+# unmaintainable: keeping it current meant a person re-reading a pricing page and editing
+# constants, which rots silently and gives no signal when it has.
 #
-# So the output says "estimated", names the model it priced, and says nothing at all for
-# a model it does not know — a wrong number is worse than no number for something a
-# person budgets against.
+# WHY PER-MODEL CACHE RATES RATHER THAN GLOBAL MULTIPLIERS
+# The old code assumed a cache write costs 1.25x input and a read 0.1x. True for Anthropic;
+# not true generally. In this very file, `gpt-5` carries a cache READ cost and no cache
+# WRITE cost at all, because OpenAI does not charge for writes. A global multiplier cannot
+# express that, so it silently invents a charge that does not exist. Per-model rates are
+# what make a provider switch a data change rather than a code change.
 #
-# Cache multipliers are ratios of the input rate, not separate prices: a 5-minute cache
-# write costs 1.25x input, a read 0.1x. That is the whole reason caching is the biggest
-# lever available — a read is a tenth of the price of the same tokens sent fresh.
-CACHE_WRITE_MULT = 1.25
-CACHE_READ_MULT = 0.10
-
-PRICES = {           # model prefix -> (input $/MTok, output $/MTok)
-    "claude-opus-5": (5.0, 25.0),
-    "claude-opus-4-8": (5.0, 25.0),
-    "claude-opus-4-7": (5.0, 25.0),
-    "claude-opus-4-6": (5.0, 25.0),
-    "claude-sonnet-5": (3.0, 15.0),
-    "claude-sonnet-4-6": (3.0, 15.0),
-    "claude-haiku-4-5": (1.0, 5.0),
-    "claude-fable-5": (10.0, 50.0),
-}
+# WHY NOT `pip install litellm`
+# Zero dependencies is an invariant (see ARCHITECTURE.md), and the target machine blocks
+# arbitrary installs. The data is just data; the library is not needed to read it.
+#
+# WHAT THIS STILL CANNOT DO
+# It is a snapshot. Prices change and nothing here detects that, so every figure is
+# labelled an estimate. What changed is that refreshing is now a command, not an act of
+# authorship.
+_PRICES: dict | None = None
 
 
-def _rates(model: str):
-    """Longest-prefix match, so a suffixed or aliased id still prices. None = unknown."""
-    best = None
-    for prefix, rates in PRICES.items():
-        if model.startswith(prefix) and (best is None or len(prefix) > len(best[0])):
-            best = (prefix, rates)
-    return best[1] if best else None
+def _prices() -> dict:
+    global _PRICES
+    if _PRICES is None:
+        try:
+            path = Path(__file__).with_name("prices.json")
+            _PRICES = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            _PRICES = {}      # missing or corrupt table: show tokens, never a wrong price
+    return _PRICES
+
+
+def rates(model: str) -> dict | None:
+    """Per-token rates for a model, by longest-prefix match. None when unknown.
+
+    Longest-prefix so a dated or suffixed id (`claude-haiku-4-5-20251001`) still prices
+    off its base entry.
+    """
+    best_key = ""
+    for key in _prices():
+        if model.startswith(key) and len(key) > len(best_key):
+            best_key = key
+    return _prices()[best_key] if best_key else None
 
 
 def cost(led: "Ledger", model: str) -> float | None:
     """Estimated spend in dollars. None when the model is not in the table."""
-    rates = _rates(model)
-    if rates is None:
+    r = rates(model)
+    if r is None:
         return None
-    inp, out = rates
+    inp = r.get("input_cost_per_token", 0.0)
+    # A missing cache rate means the provider does not charge separately for it — bill
+    # those tokens at the plain input rate rather than inventing a premium.
     return (led.input_tokens * inp
-            + led.cache_creation_input_tokens * inp * CACHE_WRITE_MULT
-            + led.cache_read_input_tokens * inp * CACHE_READ_MULT
-            + led.output_tokens * out) / 1_000_000
+            + led.cache_creation_input_tokens * r.get("cache_creation_input_token_cost", inp)
+            + led.cache_read_input_tokens * r.get("cache_read_input_token_cost", inp)
+            + led.output_tokens * r.get("output_cost_per_token", 0.0))
 
 
 def _k(n: float) -> str:
@@ -252,14 +266,15 @@ def report(led: Ledger, warn_tokens: int, model: str = "") -> str:
                                          f"output never re-sent"))
     spend = cost(led, model) if model else None
     if spend is not None:
-        inp, outp = _rates(model)
+        r = rates(model)
+        inp = r.get("input_cost_per_token", 0.0)
         rows += [
             ("", ""),
             ("estimated spend", f"${spend:,.2f}   at list prices for {model}"),
-            ("  fresh input", f"${led.input_tokens*inp/1e6:,.2f}"),
-            ("  cache write", f"${led.cache_creation_input_tokens*inp*CACHE_WRITE_MULT/1e6:,.2f}"),
-            ("  cache read", f"${led.cache_read_input_tokens*inp*CACHE_READ_MULT/1e6:,.2f}"),
-            ("  output", f"${led.output_tokens*outp/1e6:,.2f}"),
+            ("  fresh input", f"${led.input_tokens*inp:,.2f}"),
+            ("  cache write", f"${led.cache_creation_input_tokens*r.get('cache_creation_input_token_cost', inp):,.2f}"),
+            ("  cache read", f"${led.cache_read_input_tokens*r.get('cache_read_input_token_cost', inp):,.2f}"),
+            ("  output", f"${led.output_tokens*r.get('output_cost_per_token', 0.0):,.2f}"),
         ]
     out = ["token usage (measured from API responses, not estimated):\n"]
     for label, value in rows:

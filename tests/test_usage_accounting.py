@@ -303,3 +303,55 @@ def test_a_normal_session_is_not_flagged_blind():
     led.add(usage_mod.from_response(FakeMsg(FakeUsage(i=100, o=10))))
     assert led.blind is False
     assert "UNMEASURED" not in usage_mod.report(led, 150_000, "claude-opus-4-8")
+
+
+# ---------------- vendored pricing (LiteLLM subset) ----------------
+
+def test_prices_ship_with_the_package():
+    """The table must be inside the wheel — the target machine is offline."""
+    import json
+    from pathlib import Path as P
+    import luban
+    data = json.loads((P(luban.__file__).with_name("prices.json")).read_text(encoding="utf-8"))
+    assert len(data) > 50
+    assert "claude-opus-4-8" in data
+
+
+def test_cache_rates_are_per_model_not_a_global_multiplier():
+    """The reason to vendor rather than hand-roll.
+
+    A global 'write = 1.25x input, read = 0.1x' is an Anthropic-shaped assumption. OpenAI
+    charges for cache READS and not for WRITES at all, so a multiplier would invent a
+    charge that does not exist.
+    """
+    anthropic = usage_mod.rates("claude-opus-4-8")
+    assert anthropic["cache_creation_input_token_cost"] == pytest.approx(6.25e-06)
+    assert anthropic["cache_read_input_token_cost"] == pytest.approx(5e-07)
+
+    openai = usage_mod.rates("gpt-5")
+    assert "cache_read_input_token_cost" in openai
+    assert "cache_creation_input_token_cost" not in openai, (
+        "if OpenAI ever charges for cache writes this test should be updated, not deleted")
+
+
+def test_a_missing_cache_rate_bills_at_the_plain_input_rate():
+    """Not at an invented premium."""
+    led = usage_mod.Ledger()
+    led.add(usage_mod.from_response(FakeMsg(FakeUsage(cw=1_000_000))))
+    inp = usage_mod.rates("gpt-5")["input_cost_per_token"]
+    assert usage_mod.cost(led, "gpt-5") == pytest.approx(1_000_000 * inp)
+
+
+def test_multi_provider_pricing_is_now_a_data_lookup():
+    led = usage_mod.Ledger()
+    led.add(usage_mod.from_response(FakeMsg(FakeUsage(i=1_000_000))))
+    assert usage_mod.cost(led, "claude-opus-4-8") == pytest.approx(5.00)
+    assert usage_mod.cost(led, "gpt-5") == pytest.approx(1.25)
+    assert usage_mod.cost(led, "claude-sonnet-5") == pytest.approx(2.00)
+
+
+def test_a_corrupt_or_missing_table_shows_tokens_not_a_wrong_price(monkeypatch):
+    monkeypatch.setattr(usage_mod, "_PRICES", {})
+    led = usage_mod.Ledger()
+    led.add(usage_mod.from_response(FakeMsg(FakeUsage(i=1000))))
+    assert usage_mod.cost(led, "claude-opus-4-8") is None

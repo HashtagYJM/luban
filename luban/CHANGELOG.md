@@ -16,10 +16,19 @@ output costs **five times** input.
 That last point matters for expectations. Caching cuts *input* cost, and output is untouched,
 so a session whose token repeats drop by 68% sees a bill drop closer to 50%.
 
-Two caveats travel with every figure, and luban prints them: these are Anthropic **list**
-prices bundled with the release, so your actual bill may differ if requests are routed or
-charged back on another basis; and for a model luban has no price for, it says so and shows
-tokens only rather than guessing.
+Rates come from a vendored subset of LiteLLM's model pricing database (MIT), refreshed with
+`scripts/refresh_prices.py` — 137 models across Anthropic, OpenAI, Google and DeepSeek. It
+ships inside the wheel, so it works offline like everything else.
+
+Using published per-model rates rather than hand-written ones matters beyond upkeep: cache
+economics differ by provider. Anthropic charges 1.25x input for a cache write and 0.1x for a
+read; OpenAI charges for reads and **not at all** for writes. A single global multiplier
+would invent a charge that doesn't exist.
+
+Two caveats travel with every figure, and luban prints them: these are **list** prices from a
+snapshot, so your actual bill may differ if requests are routed or charged back on another
+basis; and for a model it has no price for, it says so and shows tokens only rather than
+guessing.
 
 ### The conversation is now cached — measured 68% of spend was repeats
 

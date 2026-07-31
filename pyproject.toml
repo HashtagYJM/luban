@@ -17,4 +17,4 @@ luban = "luban.cli:main"
 packages = ["luban"]
 
 [tool.setuptools.package-data]
-luban = ["CHANGELOG.md"]
+luban = ["CHANGELOG.md", "prices.json"]

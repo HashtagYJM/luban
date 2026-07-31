@@ -198,3 +198,40 @@ def test_a_tool_result_tail_is_markable_too():
     out = agent_mod.with_cache_breakpoint(msgs)
     assert out[-1]["content"][-1]["cache_control"] == {"type": "ephemeral"}
     assert "cache_control" not in str(msgs)
+
+
+def test_count_tokens_includes_the_tool_schemas():
+    """The cacheable prefix is tools -> system, so measuring `system` alone under-reports it.
+
+    On a real install that omission was 6,286 chars of tool surface, which made the
+    /context figure not comparable with the cached figure /usage reads off the API — two
+    numbers describing the same thing and disagreeing.
+    """
+    seen = {}
+    class FakeMessages:
+        def count_tokens(self, **kw):
+            seen.update(kw)
+            return type("R", (), {"input_tokens": 1234})()
+    client = type("C", (), {"messages": FakeMessages()})()
+    got = cli.count_tokens(client, "m", "SYSTEM", [{"name": "read_file"}])
+    assert got == 1234
+    assert seen.get("tools") == [{"name": "read_file"}], "tool schemas must be counted"
+
+
+def test_count_tokens_still_works_without_tools():
+    class FakeMessages:
+        def count_tokens(self, **kw):
+            assert "tools" not in kw
+            return type("R", (), {"input_tokens": 7})()
+    client = type("C", (), {"messages": FakeMessages()})()
+    assert cli.count_tokens(client, "m", "SYSTEM") == 7
+
+
+def test_usage_totals_come_from_the_response_not_count_tokens():
+    """The headline numbers must never depend on a second API call or a conversion —
+    msg.usage IS the billing record."""
+    import inspect
+    from luban import usage as usage_mod
+    src = inspect.getsource(usage_mod)
+    assert "count_tokens" not in src, "usage accounting must read the response only"
+    assert "usage" in inspect.getsource(usage_mod.from_response)

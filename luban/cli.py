@@ -238,17 +238,23 @@ def truncation_notice(cap: int, n: int, total: int) -> None:
 CACHE_MIN_TOKENS = 4096  # Opus-class minimum cacheable prefix; below this, caching is a NO-OP
 
 
-def count_tokens(client, model: str, system: str) -> int | None:
-    """Ask the API for the REAL token count. Returns None if unavailable.
+def count_tokens(client, model: str, system: str, tool_schemas=None) -> int | None:
+    """Ask the API for the REAL token count of the cacheable prefix. None if unavailable.
 
-    luban's own estimator assumes ~4 chars/token; a live probe measured 2.9 — a ~28%
-    undercount. For a number people act on (cache eligibility, when to /compact),
-    measure rather than estimate.
+    Estimating was 36% wrong (4 chars/token assumed against a measured 2.94), so for any
+    number a person acts on — cache eligibility, when to /compact — measure.
+
+    `tool_schemas` MATTERS: the request is assembled tools -> system -> messages, so the
+    cacheable prefix INCLUDES the tool schemas. Omitting them under-reported the prefix by
+    the size of the tool surface (6,286 chars on a real install) and made the /context
+    figure not comparable with the cached figure /usage reads off the API.
     """
     try:
-        r = client.messages.count_tokens(
-            model=model, system=system,
-            messages=[{"role": "user", "content": "."}])
+        kw = {"model": model, "system": system,
+              "messages": [{"role": "user", "content": "."}]}
+        if tool_schemas:
+            kw["tools"] = tool_schemas
+        r = client.messages.count_tokens(**kw)
         return int(r.input_tokens)
     except Exception:
         return None
@@ -283,7 +289,9 @@ def context_report(session: Session, cfg: config_mod.Config, project_root: Path,
                    f"  {label:<28} {'—':>7}\n")
 
     schemas = json.dumps(tools.active_tools(on))
-    real = count_tokens(client, session.model, stable) if client is not None else None
+    tool_list = tools.active_tools(on)
+    real = (count_tokens(client, session.model, stable, tool_list)
+            if client is not None else None)
     est = len(stable) // 4
     out.append(f"\n  stable prefix (cacheable)    {len(stable):>7,} chars\n")
     out.append(f"  volatile tail                {len(volatile):>7,} chars\n")

@@ -141,15 +141,60 @@ def test_a_rejected_beta_param_does_not_burn_retries():
     assert client_mod.is_transient(Rejected()) is False
 
 
-def test_tool_results_sit_after_the_cached_prefix():
-    """Clearing tool results must not invalidate the system-prompt cache.
+def test_two_breakpoints_and_what_that_means_for_context_editing():
+    """There are now TWO cache breakpoints, and that CHANGES the context-editing analysis.
 
-    cache_control is set ONLY on the stable system block; tool results live in `messages`,
-    which follow it. So server-side clearing edits content after the cached prefix.
+    Before: one breakpoint on the stable system block. Tool results lived in `messages`,
+    after it, so server-side clearing could not invalidate the cached prefix.
+
+    Now: a second breakpoint marks the end of the conversation, because the cached amount
+    was a constant (~11-13k across four measured sessions) while the conversation was
+    re-billed in full every call — 1,319,849 of 1,954,702 tokens spent were repeats.
+
+    The consequence: cleared tool results sit INSIDE the second cached prefix, so every
+    clear now invalidates the conversation cache. The two features partially conflict, and
+    caching wins on the measured numbers — which is a further reason context_editing stays
+    off by default, and why clear_at_least matters if it is ever turned on.
     """
+    import ast, inspect
+    from luban import agent as agent_mod
     src = Path("luban/agent.py").read_text(encoding="utf-8")
-    # count real breakpoints, not prose mentioning the parameter
-    breakpoints = [ln for ln in src.splitlines()
-                   if "cache_control" in ln and not ln.lstrip().startswith("#")]
-    assert len(breakpoints) == 1, f"a second breakpoint changes this analysis: {breakpoints}"
-    assert '"cache_control": {"type": "ephemeral"}' in breakpoints[0]
+    tree = ast.parse(src)
+    # count FUNCTIONS that set a breakpoint, not lines — one mark can have two branches
+    # (string vs block content) and that is still a single breakpoint.
+    def sets_a_breakpoint(node):
+        body = ast.get_source_segment(src, node) or ""
+        code = "\n".join(ln for ln in body.splitlines()
+                         if not ln.lstrip().startswith("#"))
+        return '"cache_control"' in code        # a real dict key, not prose
+    setters = {n.name for n in ast.walk(tree)
+               if isinstance(n, ast.FunctionDef) and sets_a_breakpoint(n)}
+    assert setters == {"build_system_param", "with_cache_breakpoint"}, (
+        f"cache breakpoints moved or multiplied: {setters}")
+
+
+def test_the_breakpoint_never_mutates_the_saved_transcript():
+    """Request-shaping metadata must not leak into session.messages, which is what gets
+    written to disk and replayed on resume."""
+    from luban import agent as agent_mod
+    original = [{"role": "user", "content": "hello"}]
+    out = agent_mod.with_cache_breakpoint(original)
+    assert "cache_control" not in str(original), "the caller's list was mutated"
+    assert out[-1]["content"][-1]["cache_control"] == {"type": "ephemeral"}
+
+
+def test_a_string_content_message_becomes_markable():
+    from luban import agent as agent_mod
+    out = agent_mod.with_cache_breakpoint([{"role": "user", "content": "plain text"}])
+    block = out[-1]["content"][-1]
+    assert block["type"] == "text" and block["text"] == "plain text"
+
+
+def test_a_tool_result_tail_is_markable_too():
+    """An agentic turn often ends on a tool_result; it must still take the breakpoint."""
+    from luban import agent as agent_mod
+    msgs = [{"role": "user", "content": [
+        {"type": "tool_result", "tool_use_id": "t1", "content": "out"}]}]
+    out = agent_mod.with_cache_breakpoint(msgs)
+    assert out[-1]["content"][-1]["cache_control"] == {"type": "ephemeral"}
+    assert "cache_control" not in str(msgs)

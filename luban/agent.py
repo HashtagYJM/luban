@@ -131,6 +131,42 @@ def build_system_param(stable: str, volatile: str, cache: bool):
     return blocks
 
 
+
+def with_cache_breakpoint(messages: list[dict]) -> list[dict]:
+    """Mark the END of the conversation as cacheable — the second breakpoint.
+
+    Caching matches an unbroken prefix from the start of the prompt, and luban marked
+    exactly ONE spot: the end of the stable system block. So the cached amount was a
+    CONSTANT (~11-13k tokens across four measured sessions) while the conversation, which
+    is byte-identical on every call, was billed fresh every time. Measured: 1,319,849 of
+    1,954,702 tokens spent across 63 calls were repeats.
+
+    Marking the last message each call gives incremental caching: this call writes a cache
+    entry covering everything so far, the next call reads it and pays a write only for the
+    delta. Anthropic allow four breakpoints; this is the second.
+
+    Returns a NEW list — session.messages must never carry request-shaping metadata into
+    the saved transcript.
+    """
+    if not messages:
+        return messages
+    out = list(messages)
+    last = dict(out[-1])
+    content = last.get("content")
+    if isinstance(content, str):
+        last["content"] = [{"type": "text", "text": content,
+                            "cache_control": {"type": "ephemeral"}}]
+    elif isinstance(content, list) and content:
+        blocks = [dict(b) if isinstance(b, dict) else b for b in content]
+        if isinstance(blocks[-1], dict):
+            blocks[-1]["cache_control"] = {"type": "ephemeral"}
+        last["content"] = blocks
+    else:
+        return messages  # nothing markable; leave it alone
+    out[-1] = last
+    return out
+
+
 def _run_model_turn(client, config, messages, on_text, on_thinking, on_retry=None):
     global _BLOCK_SYSTEM_SUPPORTED
     # Re-render the volatile half EVERY model call. It was captured once per user turn,
@@ -145,6 +181,10 @@ def _run_model_turn(client, config, messages, on_text, on_thinking, on_retry=Non
         config.tool_guidance, volatile_now)
     use_blocks = config.cache_prompt and _BLOCK_SYSTEM_SUPPORTED is not False
     system = build_system_param(stable, volatile, use_blocks)
+    if use_blocks:
+        # Second breakpoint, on the conversation. Without it the cached block is a fixed
+        # prefix and every repeated turn is re-billed at full price.
+        messages = with_cache_breakpoint(messages)
     tool_schemas = config.tools if config.tools is not None else tools_mod.TOOLS
     if config.web_search:
         # Server-side tool: the API runs the search and returns results inline; luban

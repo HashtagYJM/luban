@@ -4,6 +4,36 @@ Release notes, newest first. Bundled inside the package so luban can show
 "what's new" and reconcile its enhancement tracker offline, with no network.
 Each entry tags the tracker IDs (E-/F-) it resolves.
 
+## Unreleased
+
+### The conversation is now cached — measured 68% of spend was repeats
+
+Four real sessions, 63 model calls, measured with `/usage`:
+
+| session | calls | cached/call | fresh/call | hit rate | spend |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| pick up where we left off | 7 | 12,957 | 15,229 | 43% | 139,064 |
+| update a markdown file | 16 | 11,406 | 25,004 | 31% | 454,949 |
+| pick up where we left off | 25 | 12,520 | 36,623 | 25% | 992,918 |
+| pick up where we left off | 15 | 11,355 | 21,366 | 34% | 367,771 |
+
+The cached amount per call is **essentially constant** — 11.4k to 13.0k — while the fresh
+amount **triples** as the conversation grows. That is the signature of a fixed cached prefix:
+luban marked exactly one spot for caching, the end of the stable system block, so everything
+after it was billed at full price on every call. Your conversation is byte-identical from one
+call to the next, and you were paying for it every time.
+
+Across those four sessions, **1,319,849 of 1,954,702 tokens spent were repeated
+conversation** — 68%.
+
+There is now a **second cache breakpoint** on the end of the conversation, so each call
+writes a cache entry covering everything so far and the next call reads it, paying only for
+what is new. Nothing about what the model sees changes; only what it has to re-read.
+
+Note this interacts with `context_editing`: cleared tool results sit inside the newly cached
+prefix, so each clear invalidates it. That is a further reason context editing stays off
+unless you have measured a reason to want it.
+
 ## v0.5.20 — the conversation gets a lifecycle
 
 ### Why your token use grew

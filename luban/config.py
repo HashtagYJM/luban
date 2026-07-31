@@ -47,6 +47,12 @@ class Config:
     # When to nudge "consider /compact". The old 60k default was set for a much
     # smaller context window and cried wolf constantly on a 1M-token model.
     warn_tokens: int = 150_000
+    # Server-side clearing of stale tool results. OFF by default NOT because the value is
+    # unknown — it is derived — but because this is the one change that alters the request
+    # shape, and it could not be tested against the corporate proxy from the dev machine.
+    # Measure first with /usage, then switch it on and measure again. A rollback switch for
+    # an untested path is a different thing from a knob that hands over a decision.
+    context_editing: bool = False
     allow_out_of_tree_file_edits: bool = False  # let file tools touch paths outside the project
     web_search: bool = False  # offer the model the API's server-side web search tool
     web_search_tool_type: str = "web_search_20250305"  # server-tool type version string
@@ -106,6 +112,8 @@ def _default_text(plat: str) -> str:
         "# Nudge you to /compact once the conversation passes this many tokens.\n"
         "# Raise it if you have a large context window and don't want the reminder:\n"
         "# warn_tokens = 150000\n"
+        "# context_editing = false   # clear stale tool results server-side "
+        "(saves tokens; verify with /usage)\n"
         "\n"
         "# Let the file tools read/write paths OUTSIDE this project (e.g. a sibling\n"
         "# repo), via the same diff-and-confirm as run_command. Default off for\n"
@@ -151,6 +159,7 @@ _MIGRATABLE = [
     ("cache_prompt", "# cache_prompt = true   # cache the stable system prompt\n"),
     ("auto_continue", "# auto_continue = false   # reopen the last session on plain start\n"),
     ("warn_tokens", "# warn_tokens = 150000   # when to nudge you to /compact\n"),
+    ("context_editing", "# context_editing = false   # clear stale tool results server-side (saves tokens)\n"),
     ("allow_out_of_tree_file_edits", "# allow_out_of_tree_file_edits = false\n"),
     ("web_search", "# web_search = false\n"),
     ("web_search_tool_type", '# web_search_tool_type = "web_search_20250305"\n'),
@@ -346,6 +355,9 @@ def load_config(path: Path = CONFIG_PATH) -> Config:
     auto_continue = data.get("auto_continue")
     if not isinstance(auto_continue, bool):
         auto_continue = False
+    context_editing = data.get("context_editing")
+    if not isinstance(context_editing, bool):
+        context_editing = False
     warn_tokens = data.get("warn_tokens")
     if not isinstance(warn_tokens, int) or isinstance(warn_tokens, bool) or warn_tokens <= 0:
         warn_tokens = 150_000
@@ -379,4 +391,5 @@ def load_config(path: Path = CONFIG_PATH) -> Config:
         web_search=web_search,
         web_search_tool_type=web_search_type,
         subagents=subagents,
+        context_editing=context_editing,
     )

@@ -114,3 +114,42 @@ def test_a_backend_without_a_beta_surface_falls_back_silently():
     assert got is None
     assert client_mod._CONTEXT_MGMT_SUPPORTED is False
     client_mod._CONTEXT_MGMT_SUPPORTED = None
+
+
+def test_context_editing_is_off_by_default():
+    """The only change that alters the request shape ships OFF.
+
+    Not because the values are unknown — they derive from warn_tokens — but because it
+    could not be exercised against the corporate proxy from the dev machine. Measure with
+    /usage first, then enable and measure again. A rollback switch for an untested path is
+    a different thing from a knob that hands a decision to the user.
+    """
+    from luban import config as config_mod
+    assert config_mod.Config(platform="mac").context_editing is False
+
+
+def test_context_editing_is_only_sent_when_enabled():
+    import inspect
+    src = inspect.getsource(cli.build_agent_config)
+    assert "cfg.context_editing" in src, "ctx_mgmt must be gated on the config switch"
+
+
+def test_a_rejected_beta_param_does_not_burn_retries():
+    """A 400 is not transient, so the fallback costs one call, not four."""
+    class Rejected(Exception):
+        status_code = 400
+    assert client_mod.is_transient(Rejected()) is False
+
+
+def test_tool_results_sit_after_the_cached_prefix():
+    """Clearing tool results must not invalidate the system-prompt cache.
+
+    cache_control is set ONLY on the stable system block; tool results live in `messages`,
+    which follow it. So server-side clearing edits content after the cached prefix.
+    """
+    src = Path("luban/agent.py").read_text(encoding="utf-8")
+    # count real breakpoints, not prose mentioning the parameter
+    breakpoints = [ln for ln in src.splitlines()
+                   if "cache_control" in ln and not ln.lstrip().startswith("#")]
+    assert len(breakpoints) == 1, f"a second breakpoint changes this analysis: {breakpoints}"
+    assert '"cache_control": {"type": "ephemeral"}' in breakpoints[0]

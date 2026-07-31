@@ -707,7 +707,8 @@ def build_agent_config(session: Session, cfg: config_mod.Config, project_root: P
         web_search=cfg.web_search,
         web_search_tool_type=cfg.web_search_tool_type,
         on_usage=session.ledger.add,
-        ctx_mgmt=client_mod.context_management(cfg.warn_tokens),
+        ctx_mgmt=(client_mod.context_management(cfg.warn_tokens)
+                  if cfg.context_editing else None),
         thinking=session.thinking,
         effort=session.effort,
         thinking_verbose=session.thinking_verbose,
@@ -989,6 +990,7 @@ def handle_command(line: str, session: Session, client=None, ctx=None, cfg=None)
                 ("memory_enabled", cfg.memory_enabled),
                 ("auto_continue", cfg.auto_continue),
                 ("warn_tokens", f"{cfg.warn_tokens:,}"),
+                ("context_editing", cfg.context_editing),
                 ("web_search", cfg.web_search),
                 ("web_search_tool_type", cfg.web_search_tool_type),
                 ("subagents", cfg.subagents),

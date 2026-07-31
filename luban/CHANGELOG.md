@@ -39,6 +39,12 @@ This is **not** automatic compaction: your conversation is never summarised or d
 stale tool *output*, and the full transcript stays on disk. On a backend without the feature,
 luban detects that once and carries on unchanged.
 
+**It ships OFF.** Set `context_editing = true` in `config.toml` to enable it. This is the one
+change that alters the shape of the API request, and it could not be exercised against your
+proxy from the development machine — so measure a normal session with `/usage` first, turn it
+on, and measure again. Everything else in this release only *reads* what the API already
+returns and cannot cost you anything.
+
 ### Skill descriptions are no longer truncated
 
 Two hidden caps cut them — 240 characters for frontmatter, 80 for a plain `.md`. The

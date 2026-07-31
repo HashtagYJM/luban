@@ -4,7 +4,7 @@ Release notes, newest first. Bundled inside the package so luban can show
 "what's new" and reconcile its enhancement tracker offline, with no network.
 Each entry tags the tracker IDs (E-/F-) it resolves.
 
-## Unreleased
+## v0.5.21 — see what you spend, and stop paying for it twice
 
 ### What it costs, in dollars
 

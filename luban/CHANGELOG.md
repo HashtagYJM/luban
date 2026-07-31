@@ -4,7 +4,34 @@ Release notes, newest first. Bundled inside the package so luban can show
 "what's new" and reconcile its enhancement tracker offline, with no network.
 Each entry tags the tracker IDs (E-/F-) it resolves.
 
-## Unreleased
+## v0.5.20 — the conversation gets a lifecycle
+
+### Why your token use grew
+
+The Messages API is **stateless**: every call re-sends the entire conversation — system
+prompt, tool schemas, every prior message, every tool result. On a measured install that was
+**103,006 tokens per call**, of which **89.5% was conversation history**. An agentic turn
+makes many calls, so a turn with ten tool round-trips sent over a million input tokens.
+
+And luban had **no lifecycle for that history**. It grew until you typed `/compact`, which
+reset the whole session. Every context feature up to now — budgets, caps, memory curation —
+governed the *other* 10.5%.
+
+### Folding
+
+When context crosses 70% of your threshold, luban now offers to **fold**: the oldest span is
+summarized, recent turns stay verbatim, and the session keeps its identity and thread. It
+alerts and asks — it never folds silently.
+
+This is the contract luban already uses for the journal, applied one level up: **bounded
+window, full record on disk, omission stated.** The full transcript is written to disk
+*before* anything folds, and the marker left in its place names how many messages were folded
+and the session file they still live in, readable with the `sessions` and `read_file` tools.
+Folding changes only what is *sent*, never what is stored.
+
+It differs from `/compact`, which stays for a deliberate fresh start: folding is partial and
+repeatable, compaction is all-or-nothing.
+
 
 ### Token consumption you can actually see (and a nudge that was 54,000 tokens late)
 

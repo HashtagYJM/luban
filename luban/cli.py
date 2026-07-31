@@ -813,6 +813,171 @@ def estimate_tokens(messages: list) -> int:
     return sum(len(_message_text(m)) for m in messages) // 4
 
 
+
+# ------------------------------------------------------------ conversation folding ----
+# The API is stateless: EVERY call re-sends the whole conversation. On a real install that
+# was 103,006 tokens per call, 89.5% of it history — and an agentic turn makes many calls.
+# luban had no lifecycle for that history at all: it grew until a human typed /compact,
+# which reset the entire session.
+#
+# Folding applies the contract already settled for the journal, one level up: BOUNDED
+# WINDOW, FULL RECORD ON DISK, OMISSION STATED. A conversation meets the same three tests —
+# it grows by design, it has no curation lever (a transcript is episodic; there is no
+# merge-or-delete for it), and trimming is lossless because save_session has already
+# written the whole thing to disk and the sessions tool can read it back.
+#
+# Unlike /compact this is PARTIAL and REPEATABLE: the oldest span folds into a summary, the
+# recent turns stay verbatim, and the session keeps its identity and thread.
+FOLD_TRIGGER = 0.70   # of warn_tokens — act before the cliff, not at it
+FOLD_TARGET = 0.40    # of warn_tokens — leaves a large verbatim working set
+FOLD_MIN_TOKENS = 20_000  # folding invalidates the cached prefix; many small folds are
+                          # strictly worse than a few large ones (same logic as
+                          # clear_at_least in context editing)
+
+FOLD_PROMPT = (
+    "Summarize the EARLY part of this conversation so the work can continue without it. "
+    "Keep: decisions and their reasoning, files created or changed and why, constraints "
+    "and instructions given, and anything still unresolved. Drop: pleasantries, superseded "
+    "attempts, and detail now visible in the recent turns. Reply with only the summary."
+)
+
+
+def _history_chars(messages: list) -> int:
+    return sum(len(_message_text(m)) for m in messages)
+
+
+def _starts_a_clean_exchange(msg: dict) -> bool:
+    """True if history may begin at this message.
+
+    The API requires every tool_use to be followed immediately by its tool_result, so a
+    fold must never cut between them. A span that STARTS with tool_result blocks has been
+    orphaned from its tool_use and will 400. Only a user message carrying ordinary text is
+    a safe boundary.
+    """
+    if msg.get("role") != "user":
+        return False
+    content = msg.get("content")
+    if isinstance(content, str):
+        return True
+    if not isinstance(content, list):
+        return False
+    return not any(isinstance(b, dict) and b.get("type") == "tool_result"
+                   for b in content)
+
+
+def fold_boundary(messages: list, keep_chars: int) -> int:
+    """Index of the first message to KEEP. 0 means nothing can safely be folded.
+
+    Walks backwards accumulating the working set, then advances forward to the next clean
+    exchange boundary so a tool_use/tool_result pair is never split.
+    """
+    kept = 0
+    start = len(messages)
+    for i in range(len(messages) - 1, -1, -1):
+        kept += len(_message_text(messages[i]))
+        start = i
+        if kept >= keep_chars:
+            break
+    while start < len(messages) and not _starts_a_clean_exchange(messages[start]):
+        start += 1
+    return 0 if start >= len(messages) else start
+
+
+def chars_per_token(session: Session, client, cfg: config_mod.Config,
+                    project_root: Path) -> float:
+    """MEASURED, never assumed.
+
+    The old estimator hardcoded 4 chars/token against a real 2.94 and was 36% wrong. This
+    derives the ratio from this session's own numbers: real context tokens from the API,
+    real system-prompt tokens from count_tokens, and the actual character counts.
+    """
+    fallback = 2.9
+    total_tokens = session.ledger.context_tokens
+    if not total_tokens:
+        return fallback
+    try:
+        stable, volatile = agent.system_blocks(
+            cfg.platform, skills_mod.list_skills(str(project_root)),
+            read_project_memory(project_root, cfg.memory_file),
+            memory_mod.bootstrap_stable() if cfg.memory_enabled else "",
+            tools.custom_guidance(),
+            memory_mod.bootstrap_volatile() if cfg.memory_enabled else "")
+        system = "\n\n".join(p for p in (stable, volatile) if p)
+        standing = count_tokens(client, session.model, system) or 0
+    except Exception:
+        standing = 0
+    history_tokens = total_tokens - standing
+    if history_tokens <= 0:
+        return fallback
+    return max(1.0, _history_chars(session.messages) / history_tokens)
+
+
+def fold_history(session: Session, client, cfg: config_mod.Config,
+                 project_root: Path) -> bool:
+    """Fold the oldest span into a summary. Returns True if anything changed."""
+    ratio = chars_per_token(session, client, cfg, project_root)
+    keep_chars = int(cfg.warn_tokens * FOLD_TARGET * ratio)
+    cut = fold_boundary(session.messages, keep_chars)
+    if cut <= 0:
+        ui.print_text("  nothing can be folded without splitting a tool call.\n")
+        return False
+    old, keep = session.messages[:cut], session.messages[cut:]
+    freed = int(_history_chars(old) / ratio)
+    if freed < FOLD_MIN_TOKENS:
+        return False  # not worth the cache invalidation a fold costs
+    save_session(session)  # the FULL transcript is on disk before anything is folded
+    try:
+        msg = client_mod.create_turn(
+            client, model=session.model, max_tokens=session.max_tokens,
+            system=agent.SYSTEM_PROMPT,
+            messages=old + [{"role": "user", "content": FOLD_PROMPT}], tools=[])
+        summary = "".join(b.text for b in msg.content if b.type == "text").strip()
+    except Exception as exc:
+        ui.print_text(f"  fold failed ({exc}) — conversation unchanged.\n")
+        return False
+    if not summary:
+        ui.print_text("  fold failed (empty summary) — conversation unchanged.\n")
+        return False
+    where = session.session_id or "this session's transcript"
+    session.messages = [
+        {"role": "user", "content":
+            f"[earlier conversation folded — {len(old)} messages summarized to save "
+            f"context. The full verbatim transcript is on disk at "
+            f"~/.luban/sessions/{where}.json and can be read with the sessions and "
+            f"read_file tools.]\n{summary}"},
+        {"role": "assistant", "content":
+            [{"type": "text", "text": "Understood — continuing from the summary."}]},
+    ] + keep
+    save_session(session)
+    ui.print_text(f"  ✓ folded {len(old)} messages (~{freed:,} tokens freed). "
+                  f"Full transcript kept on disk.\n")
+    return True
+
+
+def offer_fold(session: Session, client, cfg: config_mod.Config,
+               project_root: Path) -> None:
+    """Alert and ask — never silent. The user prefers approving compaction over having it
+    happen to them, and with a measured meter that alert is finally honest."""
+    if client is None or not session.ledger.context_tokens:
+        return
+    ctx_now = session.ledger.context_tokens
+    if ctx_now < cfg.warn_tokens * FOLD_TRIGGER:
+        return
+    ui.print_text(
+        f"\n⚠ context is {ctx_now:,} tokens of {cfg.warn_tokens:,} and every turn re-sends "
+        f"all of it.\n  Folding summarizes the OLDEST messages and keeps recent turns "
+        f"verbatim; the full\n  transcript stays on disk either way.\n")
+    try:
+        answer = input("  fold now? [y/N] ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        ui.print_text("\n")
+        return
+    if answer not in ("y", "yes"):
+        ui.print_text("  left as-is — /compact starts fresh when you want that instead.\n")
+        return
+    fold_history(session, client, cfg, project_root)
+
+
 def compact_session(session: Session, client, ctx=None, cfg=None) -> None:
     if not session.messages:
         ui.print_text("nothing to compact.\n")
@@ -1327,6 +1492,9 @@ def main(argv: list[str] | None = None) -> None:
             # 4-chars/token estimate of the message text — 36% low against the measured
             # 2.94, so the nudge arrived ~54k tokens late and ignored the system prompt
             # and tool schemas entirely. context_tokens is what the model actually read.
+            # Offer to fold before the nudge: folding keeps the session and its thread,
+            # /compact resets both. The user should be offered the reversible option first.
+            offer_fold(session, client, cfg, project_root)
             real = session.ledger.context_tokens or estimate_tokens(session.messages)
             if real > cfg.warn_tokens:
                 ui.print_text(

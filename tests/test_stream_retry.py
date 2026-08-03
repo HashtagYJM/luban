@@ -28,7 +28,6 @@ FIELD_ERROR = RemoteProtocolError(
 @pytest.fixture(autouse=True)
 def _no_sleep(monkeypatch):
     monkeypatch.setattr(client_mod.time, "sleep", lambda _s: None)
-    monkeypatch.setattr(client_mod, "_EXTRAS_SUPPORTED", None)
 
 
 # ---------------- classification ----------------
@@ -112,7 +111,7 @@ def test_retries_are_bounded_then_the_error_surfaces():
 
 def test_a_real_error_is_not_retried():
     c = FlakyClient(fails=99, exc=BadRequestError("bad schema"))
-    client_mod._EXTRAS_SUPPORTED = True  # past the probe, so errors are real
+    client_mod.probes("m")["extras"] = True  # past the probe, so errors are real
     with pytest.raises(BadRequestError):
         _stream(c)
     assert c.attempts == 1  # no pointless retry loop
@@ -139,12 +138,13 @@ def test_non_streaming_turns_retry_too():
 # ---------------- the probe landmine ----------------
 
 def test_a_dropped_connection_never_disables_thinking():
-    """_EXTRAS_SUPPORTED starts as None (unprobed). A blip on turn one used to be read
-    as 'this backend rejects thinking/effort' and silently disabled them PROCESS-WIDE."""
+    """The extras probe starts as None (unprobed). A blip on turn one used to be read
+    as 'this backend rejects thinking/effort' and silently disabled them for the whole
+    provider."""
     c = FlakyClient(fails=99)
     with pytest.raises(RemoteProtocolError):
         _stream(c, thinking=True, effort="xhigh")
-    assert client_mod._EXTRAS_SUPPORTED is None  # still unprobed — not condemned to False
+    assert client_mod.probes("m")["extras"] is None  # still unprobed — not condemned
 
 
 def test_a_genuine_rejection_still_disables_extras():
@@ -163,7 +163,7 @@ def test_a_genuine_rejection_still_disables_extras():
 
     c = Rejects()
     assert _stream(c, thinking=True, effort="high") == "plain"
-    assert client_mod._EXTRAS_SUPPORTED is False
+    assert client_mod.probes("m")["extras"] is False
     assert len(c.calls) == 2  # probed with extras, then retried without
 
 

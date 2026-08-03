@@ -23,13 +23,6 @@ def _ctx(tmp_path):
                              render_diff=lambda *a: None, render_command=lambda c: None)
 
 
-@pytest.fixture(autouse=True)
-def _reset_extras():
-    client_mod._EXTRAS_SUPPORTED = None
-    yield
-    client_mod._EXTRAS_SUPPORTED = None
-
-
 # ---- thinking/effort request shaping ----
 
 def test_thinking_and_effort_sent_when_on(tmp_path):
@@ -75,7 +68,7 @@ def test_backend_rejecting_extras_degrades_to_plain(tmp_path):
     cfg = agent.AgentConfig("m", 100, stream=False, platform="mac", tools=[], thinking=True)
     out = agent.run_turn(picky, cfg, [{"role": "user", "content": "hi"}], _ctx(tmp_path), lambda t: None)
     assert out  # did not raise; degraded
-    assert client_mod._EXTRAS_SUPPORTED is False
+    assert client_mod.probes("m")["extras"] is False
     # a second turn skips extras entirely (no wasted probe)
     n = len(picky.calls)
     agent.run_turn(picky, cfg, [{"role": "user", "content": "again"}], _ctx(tmp_path), lambda t: None)

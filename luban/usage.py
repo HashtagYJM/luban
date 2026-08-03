@@ -15,7 +15,7 @@ never break a turn.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 
@@ -36,6 +36,10 @@ class Usage:
     # reports this alongside usage when context editing fires, so the saving is measured
     # rather than claimed.
     original_input_tokens: int = 0
+    # Reasoning models report the thinking portion of output separately. It is ALREADY
+    # inside output_tokens — reported, never added — and at high effort it is the
+    # dominant cost, so output looks inexplicably large without a line that says why.
+    reasoning_tokens: int = 0
 
     @property
     def cleared_tokens(self) -> int:
@@ -76,7 +80,8 @@ def from_response(msg) -> Usage:
         except (TypeError, ValueError):
             orig = 0
     return Usage(n("input_tokens"), n("output_tokens"),
-                 n("cache_creation_input_tokens"), n("cache_read_input_tokens"), orig)
+                 n("cache_creation_input_tokens"), n("cache_read_input_tokens"), orig,
+                 n("reasoning_tokens"))
 
 
 @dataclass
@@ -94,7 +99,13 @@ class Ledger:
     cache_read_input_tokens: int = 0
     calls: int = 0
     cleared_tokens: int = 0
+    reasoning_tokens: int = 0
     last: Usage = None  # type: ignore[assignment]
+    # Sub-ledgers keyed by the model that bought the tokens. A mid-session /model switch
+    # means the cumulative total was bought at two different rates, and pricing all of it
+    # at whichever model happens to be current blends dollars that were never the same
+    # dollars. Sub-ledgers carry no by_model of their own.
+    by_model: dict = field(default_factory=dict)
 
     @property
     def blind(self) -> bool:
@@ -110,14 +121,20 @@ class Ledger:
         """
         return self.calls > 0 and self.total_tokens == 0
 
-    def add(self, u: Usage) -> None:
+    def add(self, u: Usage, model: str = "") -> None:
         self.input_tokens += u.input_tokens
         self.output_tokens += u.output_tokens
         self.cache_creation_input_tokens += u.cache_creation_input_tokens
         self.cache_read_input_tokens += u.cache_read_input_tokens
         self.cleared_tokens += u.cleared_tokens
+        self.reasoning_tokens += u.reasoning_tokens
         self.calls += 1
         self.last = u
+        if model:
+            sub = self.by_model.get(model)
+            if sub is None:
+                sub = self.by_model[model] = Ledger()
+            sub.add(u)  # no model => no recursion
 
     @property
     def context_tokens(self) -> int:
@@ -202,8 +219,7 @@ def rates(model: str) -> dict | None:
     return _prices()[best_key] if best_key else None
 
 
-def cost(led: "Ledger", model: str) -> float | None:
-    """Estimated spend in dollars. None when the model is not in the table."""
+def _cost_one(led: "Ledger", model: str) -> float | None:
     r = rates(model)
     if r is None:
         return None
@@ -214,6 +230,30 @@ def cost(led: "Ledger", model: str) -> float | None:
             + led.cache_creation_input_tokens * r.get("cache_creation_input_token_cost", inp)
             + led.cache_read_input_tokens * r.get("cache_read_input_token_cost", inp)
             + led.output_tokens * r.get("output_cost_per_token", 0.0))
+
+
+def unpriced(led: "Ledger", model: str = "") -> list[str]:
+    """Models in this ledger with no rates on file."""
+    names = list(led.by_model) or ([model] if model else [])
+    return [m for m in names if rates(m) is None]
+
+
+def cost(led: "Ledger", model: str = "") -> float | None:
+    """Estimated spend in dollars, attributed per model. None if anything is unpriced.
+
+    One unpriced model means the total would silently omit part of the bill, and a
+    figure that is quietly too low is worse than no figure for something a person is
+    trying to stay under.
+    """
+    if led.by_model:
+        total = 0.0
+        for m, sub in led.by_model.items():
+            one = _cost_one(sub, m)
+            if one is None:
+                return None
+            total += one
+        return total
+    return _cost_one(led, model)
 
 
 def _k(n: float) -> str:
@@ -256,6 +296,10 @@ def report(led: Ledger, warn_tokens: int, model: str = "") -> str:
         ("input (cache write)", f"{led.cache_creation_input_tokens:,}"),
         ("input (cache read)", f"{led.cache_read_input_tokens:,}  billed ~0.1x"),
         ("output", f"{led.output_tokens:,}"),
+    ]
+    if led.reasoning_tokens:
+        rows.append(("  of which reasoning", f"{led.reasoning_tokens:,}  billed as output"))
+    rows += [
         ("", ""),
         ("session total", f"{led.total_tokens:,} tokens"),
         ("cache-weighted", f"{led.effective_tokens:,.0f} tokens  <- what you are spending"),
@@ -265,12 +309,21 @@ def report(led: Ledger, warn_tokens: int, model: str = "") -> str:
         rows.append(("cleared by luban", f"{led.cleared_tokens:,} tokens of stale tool "
                                          f"output never re-sent"))
     spend = cost(led, model) if model else None
-    if spend is not None:
-        r = rates(model)
+    if spend is not None and len(led.by_model) > 1:
+        # More than one model bought these tokens. Show what each cost rather than one
+        # blended figure that belongs to neither.
+        rows.append(("", ""))
+        rows.append(("estimated spend", f"${spend:,.2f}   at list prices"))
+        for m, sub in led.by_model.items():
+            rows.append((f"  {m}", f"${_cost_one(sub, m):,.2f}   {sub.calls:,} calls, "
+                                   f"{sub.total_tokens:,} tokens"))
+    elif spend is not None:
+        priced = next(iter(led.by_model), model)
+        r = rates(priced)
         inp = r.get("input_cost_per_token", 0.0)
         rows += [
             ("", ""),
-            ("estimated spend", f"${spend:,.2f}   at list prices for {model}"),
+            ("estimated spend", f"${spend:,.2f}   at list prices for {priced}"),
             ("  fresh input", f"${led.input_tokens*inp:,.2f}"),
             ("  cache write", f"${led.cache_creation_input_tokens*r.get('cache_creation_input_token_cost', inp):,.2f}"),
             ("  cache read", f"${led.cache_read_input_tokens*r.get('cache_read_input_token_cost', inp):,.2f}"),
@@ -294,9 +347,10 @@ def report(led: Ledger, warn_tokens: int, model: str = "") -> str:
     if model and spend is None:
         # Say nothing rather than guess. A wrong number is worse than no number for
         # something a person budgets against.
-        out.append(f"\n  no price on file for {model} — tokens only.\n")
+        missing = ", ".join(unpriced(led, model)) or model
+        out.append(f"\n  no price on file for {missing} — tokens only.\n")
     elif spend is not None:
-        out.append("\n  spend is ESTIMATED from Anthropic list prices bundled with this\n"
-                   "  release. Your actual bill may differ if requests are routed or\n"
-                   "  charged back on another basis.\n")
+        out.append("\n  spend is ESTIMATED from the list prices bundled with this release.\n"
+                   "  Your actual bill may differ if requests are routed or charged back\n"
+                   "  on another basis.\n")
     return "".join(out)

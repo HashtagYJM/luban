@@ -14,7 +14,7 @@ dependencies = []  # standard library only — installs from a single offline wh
 luban = "luban.cli:main"
 
 [tool.setuptools]
-packages = ["luban"]
+packages = ["luban", "luban.providers"]
 
 [tool.setuptools.package-data]
 luban = ["CHANGELOG.md", "prices.json"]

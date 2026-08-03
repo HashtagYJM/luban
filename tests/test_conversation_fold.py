@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from luban import cli, config as config_mod
+from luban import cli, config as config_mod, usage as usage_mod
 
 
 def _u(text):        return {"role": "user", "content": text}
@@ -71,11 +71,7 @@ def test_a_small_fold_is_declined(monkeypatch, tmp_path):
     a few large ones — the same reasoning as clear_at_least in context editing."""
     s = cli.Session(model="m", max_tokens=100, auto=True, stream=False,
                     messages=[_u("a" * 200), _a("b" * 200)])
-    s.ledger.add(type("U", (), {"input_tokens": 500, "output_tokens": 0,
-                                "cache_creation_input_tokens": 0,
-                                "cache_read_input_tokens": 0,
-                                "cleared_tokens": 0,
-                                "context_tokens": 500})())
+    s.ledger.add(usage_mod.Usage(input_tokens=500))
     monkeypatch.setattr(cli, "chars_per_token", lambda *a: 2.9)
     called = []
     monkeypatch.setattr(cli.client_mod, "create_turn", lambda *a, **k: called.append(1))
@@ -145,10 +141,7 @@ def test_a_declined_fold_leaves_history_untouched(monkeypatch):
     monkeypatch.setattr(cli.ui, "print_text", lambda t: out.append(t))
     s = cli.Session(model="m", max_tokens=100, auto=True, stream=False,
                     messages=_tool_heavy(40))
-    s.ledger.add(type("U", (), {"input_tokens": 0, "output_tokens": 0,
-                                "cache_creation_input_tokens": 0,
-                                "cache_read_input_tokens": 0, "cleared_tokens": 0,
-                                "context_tokens": 140_000})())
+    s.ledger.add(usage_mod.Usage(input_tokens=140_000))
     before = list(s.messages)
     cli.offer_fold(s, object(), config_mod.Config(platform="mac"), Path("."))
     assert s.messages == before
@@ -158,8 +151,5 @@ def test_a_declined_fold_leaves_history_untouched(monkeypatch):
 def test_no_offer_below_the_trigger(monkeypatch):
     monkeypatch.setattr("builtins.input", lambda p: pytest.fail("must not ask"))
     s = cli.Session(model="m", max_tokens=100, auto=True, stream=False, messages=[])
-    s.ledger.add(type("U", (), {"input_tokens": 0, "output_tokens": 0,
-                                "cache_creation_input_tokens": 0,
-                                "cache_read_input_tokens": 0, "cleared_tokens": 0,
-                                "context_tokens": 40_000})())
+    s.ledger.add(usage_mod.Usage(input_tokens=40_000))
     cli.offer_fold(s, object(), config_mod.Config(platform="mac"), Path("."))

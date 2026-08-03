@@ -108,12 +108,12 @@ def test_context_management_config_is_derived_from_warn_tokens():
 
 def test_a_backend_without_a_beta_surface_falls_back_silently():
     """A corporate proxy lacking client.beta must keep working, not fail the turn."""
-    client_mod._CONTEXT_MGMT_SUPPORTED = None
+    client_mod._PROBES.clear()
     got = client_mod._try_context_managed(
         object(), "create", {}, {}, client_mod.context_management(150_000), None)
     assert got is None
-    assert client_mod._CONTEXT_MGMT_SUPPORTED is False
-    client_mod._CONTEXT_MGMT_SUPPORTED = None
+    assert client_mod.probes("")["ctx_mgmt"] is False
+    client_mod._PROBES.clear()
 
 
 def test_context_editing_is_off_by_default():

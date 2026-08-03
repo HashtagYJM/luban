@@ -124,8 +124,7 @@ def test_no_volatile_still_caches_the_stable_block():
 
 
 def test_a_backend_rejecting_block_form_degrades_once(monkeypatch):
-    """Mirrors _EXTRAS_SUPPORTED: probe once, fall back, never retry."""
-    monkeypatch.setattr(agent, "_BLOCK_SYSTEM_SUPPORTED", None)
+    """Mirrors the extras probe: probe once, fall back, never retry."""
     seen = []
 
     def fake(client, *, system, **kw):
@@ -139,12 +138,11 @@ def test_a_backend_rejecting_block_form_degrades_once(monkeypatch):
                             global_memory="x", tools=[])
     agent._run_model_turn(None, cfg, [], lambda t: None, None)
     assert isinstance(seen[0], list) and isinstance(seen[1], str)  # blocks, then flat
-    assert agent._BLOCK_SYSTEM_SUPPORTED is False
+    assert agent.client_mod.probes("m")["block_system"] is False
 
 
 def test_a_dropped_connection_is_not_read_as_rejection(monkeypatch):
     """A transient network error must not permanently disable caching."""
-    monkeypatch.setattr(agent, "_BLOCK_SYSTEM_SUPPORTED", None)
 
     class Dropped(Exception):
         pass
@@ -156,7 +154,7 @@ def test_a_dropped_connection_is_not_read_as_rejection(monkeypatch):
     cfg = agent.AgentConfig("m", 100, stream=False, cache_prompt=True, tools=[])
     with pytest.raises(Dropped):
         agent._run_model_turn(None, cfg, [], lambda t: None, None)
-    assert agent._BLOCK_SYSTEM_SUPPORTED is None  # still unprobed
+    assert agent.client_mod.probes("m")["block_system"] is None  # still unprobed
 
 
 # ---------------- P0: /context ----------------

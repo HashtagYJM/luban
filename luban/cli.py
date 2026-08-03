@@ -297,15 +297,23 @@ def context_report(session: Session, cfg: config_mod.Config, project_root: Path,
     out.append(f"  volatile tail                {len(volatile):>7,} chars\n")
     out.append(f"  tool schemas (separate)      {len(schemas):>7,} chars\n")
 
+    on_anthropic = client_mod.provider_for(session.model) == "anthropic"
     if real is None:
-        out.append(f"\n  stable prefix ~{est:,} tokens (ESTIMATE — luban's 4 chars/token "
-                   "assumption undercounts by roughly a quarter)\n")
+        why = ("this backend has no count_tokens" if not on_anthropic else
+               "luban's 4 chars/token assumption undercounts by roughly a quarter")
+        out.append(f"\n  stable prefix ~{est:,} tokens (ESTIMATE — {why})\n")
         verdict_tokens = est
     else:
         out.append(f"\n  stable prefix {real:,} tokens (measured via count_tokens)\n")
         verdict_tokens = real
 
-    if not cfg.cache_prompt:
+    if not on_anthropic:
+        # Caching is automatic and unplaceable here, so luban's breakpoints buy nothing
+        # and an eligibility verdict computed from them would be a claim about a
+        # mechanism that is not running.
+        out.append("  caching: automatic on this provider — luban's breakpoints do not "
+                   "apply, and there is no placement to get right or wrong\n")
+    elif not cfg.cache_prompt:
         out.append("  caching: OFF (cache_prompt = false)\n")
     elif verdict_tokens >= CACHE_MIN_TOKENS:
         out.append(f"  caching: ON and ELIGIBLE (>= {CACHE_MIN_TOKENS:,} tokens) — "
@@ -714,7 +722,9 @@ def build_agent_config(session: Session, cfg: config_mod.Config, project_root: P
         tool_guidance=tools.custom_guidance(),
         web_search=cfg.web_search,
         web_search_tool_type=cfg.web_search_tool_type,
-        on_usage=session.ledger.add,
+        # Attribute every call to the model that made it — /model can switch provider
+        # mid-session, and rates differ.
+        on_usage=lambda u: session.ledger.add(u, session.model),
         ctx_mgmt=(client_mod.context_management(cfg.warn_tokens)
                   if cfg.context_editing else None),
         thinking=session.thinking,
@@ -1250,23 +1260,26 @@ def handle_command(line: str, session: Session, client=None, ctx=None, cfg=None)
         return "handled"
     if cmd == "/model":
         available = client_mod.list_models(client) if client is not None else None
+        # Only name the provider when there is more than one — otherwise it is noise.
+        multi = isinstance(client, client_mod.Facade)
+        tag = (lambda m: f"  [{client_mod.provider_for(m)}]") if multi else (lambda m: "")
         if not arg:
             if available:
                 ui.print_text("available models:\n")
                 for m in available:
                     marker = "  (current)" if m == session.model else ""
-                    ui.print_text(f"  {m}{marker}\n")
+                    ui.print_text(f"  {m}{tag(m)}{marker}\n")
             else:
-                ui.print_text(f"current model: {session.model}\n")
+                ui.print_text(f"current model: {session.model}{tag(session.model)}\n")
             return "handled"
         wanted = arg.strip()
         if available and wanted not in available:
             ui.print_text(f"unknown model: {wanted}\navailable models:\n")
             for m in available:
-                ui.print_text(f"  {m}\n")
+                ui.print_text(f"  {m}{tag(m)}\n")
             return "handled"
         session.model = wanted
-        ui.print_text(f"✓ model → {wanted}\n")
+        ui.print_text(f"✓ model → {wanted}{tag(wanted)}\n")
         return "handled"
     if cmd == "/sessions":
         every = arg.strip() in ("all", "--all")

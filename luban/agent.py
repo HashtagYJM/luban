@@ -112,9 +112,6 @@ class AgentConfig:
     ctx_mgmt: dict | None = None
 
 
-_BLOCK_SYSTEM_SUPPORTED = None  # tri-state probe: does this backend accept block-form system?
-
-
 def build_system_param(stable: str, volatile: str, cache: bool):
     """Block-form (cacheable) or a plain concatenated string.
 
@@ -168,7 +165,9 @@ def with_cache_breakpoint(messages: list[dict]) -> list[dict]:
 
 
 def _run_model_turn(client, config, messages, on_text, on_thinking, on_retry=None):
-    global _BLOCK_SYSTEM_SUPPORTED
+    # Does THIS backend accept block-form system (and so cache_control)? Kept per
+    # provider, not per process — see client.probes.
+    probe = client_mod.probes(config.model)
     # Re-render the volatile half EVERY model call. It was captured once per user turn,
     # so within a multi-step turn the index went stale the moment the model called
     # remember/forget — it would then be told a fact it had just saved did not exist,
@@ -179,7 +178,7 @@ def _run_model_turn(client, config, messages, on_text, on_thinking, on_retry=Non
     stable, volatile = system_blocks(
         config.platform, config.skills, config.memory, config.global_memory,
         config.tool_guidance, volatile_now)
-    use_blocks = config.cache_prompt and _BLOCK_SYSTEM_SUPPORTED is not False
+    use_blocks = config.cache_prompt and probe["block_system"] is not False
     system = build_system_param(stable, volatile, use_blocks)
     if use_blocks:
         # Second breakpoint, on the conversation. Without it the cached block is a fixed
@@ -215,17 +214,17 @@ def _run_model_turn(client, config, messages, on_text, on_thinking, on_retry=Non
     try:
         msg = _call(system)
     except Exception as exc:
-        # Probe once per process: a backend that rejects block-form system (or
-        # cache_control) must keep working, exactly as _EXTRAS_SUPPORTED does for
+        # Probe once per provider: a backend that rejects block-form system (or
+        # cache_control) must keep working, exactly as the extras probe does for
         # thinking/effort. A dropped connection is NOT evidence of rejection.
-        if not (use_blocks and _BLOCK_SYSTEM_SUPPORTED is None
+        if not (use_blocks and probe["block_system"] is None
                 and not client_mod.is_transient(exc)):
             raise
-        _BLOCK_SYSTEM_SUPPORTED = False
+        probe["block_system"] = False
         msg = _call(build_system_param(stable, volatile, False))
     else:
         if use_blocks:
-            _BLOCK_SYSTEM_SUPPORTED = True
+            probe["block_system"] = True
     if config.on_usage is not None:
         try:
             config.on_usage(usage_mod.from_response(msg))

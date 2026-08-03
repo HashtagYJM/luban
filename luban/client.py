@@ -15,8 +15,10 @@ import random
 import time
 import types
 from pathlib import Path
+from types import SimpleNamespace
 
 from luban import paths
+from luban.providers import openai as openai_mod
 from typing import Any
 
 DEFAULT_MODEL = "claude-sonnet-5"
@@ -57,17 +59,103 @@ def _load_provider() -> types.ModuleType | None:
     return _in_package_local()
 
 
+# ------------------------------------------------------------------------ routing ----
+# Model ids are disjoint across providers, so a prefix IS the route. Anything
+# unrecognised goes to the primary client — which is where it went before this existed.
+_OPENAI_PREFIXES = ("gpt-", "chatgpt-", "o1", "o3", "o4")
+
+
+def provider_for(model: str) -> str:
+    return "openai" if (model or "").startswith(_OPENAI_PREFIXES) else "anthropic"
+
+
+class _MessagesRouter:
+    """`.messages` dispatched by the `model` kwarg. Nothing else about the call changes."""
+
+    def __init__(self, facade: "Facade", beta: bool = False):
+        self._facade, self._beta = facade, beta
+
+    def _target(self, kw):
+        client = self._facade.client_for(kw.get("model", ""))
+        if self._beta:
+            return client.beta.messages  # AttributeError => caller falls back, by design
+        return client.messages
+
+    def create(self, **kw):
+        return self._target(kw).create(**kw)
+
+    def stream(self, **kw):
+        return self._target(kw).stream(**kw)
+
+    def count_tokens(self, **kw):
+        return self._target(kw).count_tokens(**kw)
+
+
+class _ModelsRouter:
+    def __init__(self, facade: "Facade"):
+        self._facade = facade
+
+    def list(self):
+        """Every model id luban can route, from every backend. One provider being
+        unable to answer must not hide the other's catalogue."""
+        ids: list[str] = []
+        for client in self._facade.clients():
+            try:
+                result = client.models.list()
+                ids += [m.id for m in getattr(result, "data", result)]
+            except Exception:
+                continue
+        return [SimpleNamespace(id=i) for i in ids]
+
+
+class Facade:
+    """One client per provider behind one Anthropic-shaped surface.
+
+    The Anthropic side is the ORIGINAL client object, untouched — `client_for` returns it
+    by identity, so caching, thinking, betas and streaming behave exactly as they did
+    before this existed. A regression there fails this work regardless of how well the
+    other branch performs.
+    """
+
+    def __init__(self, anthropic, openai):
+        self._by_provider = {"anthropic": anthropic, "openai": openai}
+        self.messages = _MessagesRouter(self)
+        self.beta = SimpleNamespace(messages=_MessagesRouter(self, beta=True))
+        self.models = _ModelsRouter(self)
+
+    def client_for(self, model: str):
+        return self._by_provider[provider_for(model)]
+
+    def clients(self):
+        return list(self._by_provider.values())
+
+
 def get_client() -> Any:
     provider = _load_provider()
     if provider is None:
         raise RuntimeError(_SETUP_HINT)
-    return provider.build_client()
+    primary = provider.build_client()
+    build_openai = getattr(provider, "build_openai_client", None)
+    if build_openai is None:
+        return primary  # one provider: no facade, no behaviour change at all
+    return Facade(primary, openai_mod.OpenAIAdapter(build_openai()))
 
 
-# Tri-state: None = untried, True = backend accepts thinking/effort, False = rejected
-# (probed once per process so a backend that lacks them, e.g. some non-Anthropic
-# endpoints, degrades to a plain request instead of erroring every turn).
-_EXTRAS_SUPPORTED: bool | None = None
+# ------------------------------------------------------------------------- probes ----
+# Tri-states: None = untried, True = backend accepts it, False = rejected. Probed once so
+# a backend that lacks a capability degrades to a plain request instead of erroring every
+# turn.
+#
+# KEYED BY PROVIDER, not process-global. One process now means more than one backend: an
+# Anthropic turn that sets extras=True would otherwise leave the OpenAI branch inheriting
+# a flag it cannot honour, and vice versa. Provider is what the flag is actually a
+# property of.
+_PROBE_FIELDS = ("extras", "block_system", "ctx_mgmt")
+_PROBES: dict[str, dict] = {}
+
+
+def probes(model: str) -> dict:
+    return _PROBES.setdefault(provider_for(model), dict.fromkeys(_PROBE_FIELDS, None))
 
 
 def _thinking_extras(thinking: bool, effort: str, verbose: bool = False) -> dict:
@@ -101,7 +189,6 @@ def _thinking_extras(thinking: bool, effort: str, verbose: bool = False) -> dict
 #   exclude_tools  memory results are small and semantically load-bearing; clearing them
 #                  would make the model re-fetch what it already had.
 CONTEXT_MGMT_BETA = "context-management-2025-06-27"
-_CONTEXT_MGMT_SUPPORTED = None  # tri-state probe, same pattern as _EXTRAS_SUPPORTED
 _KEEP_TOOL_USES = 6
 _CLEAR_AT_LEAST = 8_000
 _MEMORY_TOOLS = ["remember", "recall", "forget", "journal", "sessions"]
@@ -134,15 +221,16 @@ def _try_context_managed(client, method, base, extras, ctx_mgmt, on_retry,
                          on_text=None, on_thinking=None):
     """Issue via the beta surface with context editing on. None => caller falls back.
 
-    Probed once per process like _EXTRAS_SUPPORTED: a backend without the beta surface,
-    or one that rejects the parameter, must keep working rather than fail the turn.
+    Probed once per provider: a backend without the beta surface, or one that rejects the
+    parameter, must keep working rather than fail the turn. The OpenAI branch has no beta
+    surface at all, which is exactly this path.
     """
-    global _CONTEXT_MGMT_SUPPORTED
-    if _CONTEXT_MGMT_SUPPORTED is False:
+    p = probes(base.get("model", ""))
+    if p["ctx_mgmt"] is False:
         return None
     fn = _beta_fn(client, method)
     if fn is None:
-        _CONTEXT_MGMT_SUPPORTED = False
+        p["ctx_mgmt"] = False
         return None
     kw = dict(**base, **extras, betas=[CONTEXT_MGMT_BETA], context_management=ctx_mgmt)
     try:
@@ -152,11 +240,11 @@ def _try_context_managed(client, method, base, extras, ctx_mgmt, on_retry,
         else:
             msg = _with_retry(lambda: fn(**kw), on_retry)
     except Exception as exc:
-        if _CONTEXT_MGMT_SUPPORTED is True or is_transient(exc):
+        if p["ctx_mgmt"] is True or is_transient(exc):
             raise  # it worked before, or the network died — not a rejection
-        _CONTEXT_MGMT_SUPPORTED = False
+        p["ctx_mgmt"] = False
         return None
-    _CONTEXT_MGMT_SUPPORTED = True
+    p["ctx_mgmt"] = True
     return msg
 
 
@@ -177,10 +265,10 @@ def _stream_with(fn, kw, on_text, on_thinking):
 def create_turn(client, *, model, max_tokens, system, messages, tools,
                 thinking=False, effort="medium", verbose=False, on_retry=None,
                 ctx_mgmt=None):
-    global _EXTRAS_SUPPORTED
+    p = probes(model)
     base = dict(model=model, max_tokens=max_tokens, system=system,
                 messages=messages, tools=tools)
-    extras = _thinking_extras(thinking, effort, verbose) if _EXTRAS_SUPPORTED is not False else {}
+    extras = _thinking_extras(thinking, effort, verbose) if p["extras"] is not False else {}
     if ctx_mgmt:
         msg = _try_context_managed(client, "create", base, extras, ctx_mgmt, on_retry)
         if msg is not None:
@@ -189,15 +277,15 @@ def create_turn(client, *, model, max_tokens, system, messages, tools,
         return _with_retry(lambda: client.messages.create(**base), on_retry)
     try:
         msg = _with_retry(lambda: client.messages.create(**base, **extras), on_retry)
-        _EXTRAS_SUPPORTED = True
+        p["extras"] = True
         return msg
     except Exception as exc:
-        if _EXTRAS_SUPPORTED is True:
+        if p["extras"] is True:
             raise  # extras worked before — this is a real error, don't mask it
         if is_transient(exc):
             raise  # a dropped connection is not "this backend rejects extras"
         msg = _with_retry(lambda: client.messages.create(**base), on_retry)  # probe
-        _EXTRAS_SUPPORTED = False
+        p["extras"] = False
         return msg
 
 
@@ -328,10 +416,10 @@ def _with_retry(call, on_retry=None):
 def stream_turn(client, *, model, max_tokens, system, messages, tools, on_text,
                 on_thinking=None, thinking=False, effort="medium", verbose=False,
                 on_retry=None, ctx_mgmt=None):
-    global _EXTRAS_SUPPORTED
+    p = probes(model)
     base = dict(model=model, max_tokens=max_tokens, system=system,
                 messages=messages, tools=tools)
-    extras = _thinking_extras(thinking, effort, verbose) if _EXTRAS_SUPPORTED is not False else {}
+    extras = _thinking_extras(thinking, effort, verbose) if p["extras"] is not False else {}
     if ctx_mgmt:
         msg = _try_context_managed(client, "stream", base, extras, ctx_mgmt, on_retry,
                                    on_text=on_text, on_thinking=on_thinking)
@@ -343,19 +431,19 @@ def stream_turn(client, *, model, max_tokens, system, messages, tools, on_text,
     try:
         msg = _with_retry(
             lambda: _stream_once(client, base, extras, on_text, on_thinking), on_retry)
-        _EXTRAS_SUPPORTED = True
+        p["extras"] = True
         return msg
     except Exception as exc:
-        if _EXTRAS_SUPPORTED is True:
+        if p["extras"] is True:
             raise  # extras worked before — this is a real error, don't mask it
         # The first-run probe must not read a DROPPED CONNECTION as "this backend
         # rejects thinking/effort" — that would silently disable them for the whole
-        # process because a proxy hiccuped on turn one.
+        # provider because a proxy hiccuped on turn one.
         if is_transient(exc):
             raise
         msg = _with_retry(
             lambda: _stream_once(client, base, {}, on_text, on_thinking), on_retry)
-        _EXTRAS_SUPPORTED = False
+        p["extras"] = False
         return msg
 
 
@@ -373,7 +461,14 @@ def message_to_blocks(message) -> list[dict]:
             # don't echo it back, as an unsigned block would fail validation.
             signature = getattr(b, "signature", None)
             if signature:
-                blocks.append({"type": "thinking", "thinking": b.thinking, "signature": signature})
+                block = {"type": "thinking", "thinking": b.thinking, "signature": signature}
+                item_id = getattr(b, "id", None)
+                if item_id:
+                    # An OpenAI reasoning item must be replayed with its own id alongside
+                    # its encrypted state. Anthropic thinking blocks have no id, so this
+                    # key is simply absent there.
+                    block["id"] = item_id
+                blocks.append(block)
         elif b.type == "redacted_thinking":
             blocks.append({"type": "redacted_thinking", "data": b.data})
         elif b.type in ("server_tool_use", "web_search_tool_result"):

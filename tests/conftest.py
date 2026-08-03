@@ -1,6 +1,19 @@
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 
+import pytest
+
+from luban import client as client_mod
+
+
+@pytest.fixture(autouse=True)
+def _fresh_probes():
+    """Capability probes are cached per provider for the life of the process, so without
+    this a test that provokes a rejection would condemn every later test in the run."""
+    client_mod._PROBES.clear()
+    yield
+    client_mod._PROBES.clear()
+
 
 @dataclass
 class FakeBlock:

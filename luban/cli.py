@@ -95,6 +95,9 @@ class Session:
     thinking_verbose: bool = False
     # Measured token accounting, from what the API reports on every response.
     ledger: object = field(default_factory=lambda: usage_mod.Ledger())
+    # A fold that failed cost a model call. Context is still over the threshold, so an
+    # automatic fold would try again next turn, and every turn after — latch it instead.
+    fold_failed: bool = False
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -957,9 +960,11 @@ def fold_history(session: Session, client, cfg: config_mod.Config,
         summary = "".join(b.text for b in msg.content if b.type == "text").strip()
     except Exception as exc:
         ui.print_text(f"  fold failed ({exc}) — conversation unchanged.\n")
+        session.fold_failed = True   # cost a call; do not retry every turn
         return False
     if not summary:
         ui.print_text("  fold failed (empty summary) — conversation unchanged.\n")
+        session.fold_failed = True
         return False
     where = session.session_id or "this session's transcript"
     session.messages = [
@@ -977,27 +982,44 @@ def fold_history(session: Session, client, cfg: config_mod.Config,
     return True
 
 
-def offer_fold(session: Session, client, cfg: config_mod.Config,
-               project_root: Path) -> None:
-    """Alert and ask — never silent. The user prefers approving compaction over having it
-    happen to them, and with a measured meter that alert is finally honest."""
+def maintain_context(session: Session, client, cfg: config_mod.Config,
+                     project_root: Path) -> None:
+    """Keep context under the threshold — automatically by default, never silently.
+
+    A fold you have to APPROVE is always late. The prompt appears at 70% of warn_tokens,
+    but every call between the prompt and the answer pays for the full window, and the
+    saving only ever accrues to calls made AFTER the fold — so folding once the window is
+    nearly full saves nothing at all on the session that just happened.
+
+    Automatic, but LOUD: it says what it is doing before, and what it folded and where the
+    verbatim transcript still is after. Silent context trimming is the one thing this must
+    never become. `auto_fold = false` restores the prompt.
+
+    A fold that FAILS is not retried this session. Failure costs a model call, so retrying
+    every turn against a context that is still over the threshold would burn one each time.
+    """
     if client is None or not session.ledger.context_tokens:
         return
     ctx_now = session.ledger.context_tokens
-    if ctx_now < cfg.warn_tokens * FOLD_TRIGGER:
+    if ctx_now < cfg.warn_tokens * FOLD_TRIGGER or session.fold_failed:
         return
     ui.print_text(
         f"\n⚠ context is {ctx_now:,} tokens of {cfg.warn_tokens:,} and every turn re-sends "
         f"all of it.\n  Folding summarizes the OLDEST messages and keeps recent turns "
         f"verbatim; the full\n  transcript stays on disk either way.\n")
-    try:
-        answer = input("  fold now? [y/N] ").strip().lower()
-    except (EOFError, KeyboardInterrupt):
-        ui.print_text("\n")
-        return
-    if answer not in ("y", "yes"):
-        ui.print_text("  left as-is — /compact starts fresh when you want that instead.\n")
-        return
+    if not cfg.auto_fold:
+        try:
+            answer = input("  fold now? [y/N] ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            ui.print_text("\n")
+            return
+        if answer not in ("y", "yes"):
+            ui.print_text("  left as-is — /compact starts fresh when you want that "
+                          "instead.\n")
+            return
+    else:
+        ui.print_text("  folding now (auto_fold = true — set it false in config.toml to "
+                      "be asked instead)…\n")
     fold_history(session, client, cfg, project_root)
 
 
@@ -1178,6 +1200,7 @@ def handle_command(line: str, session: Session, client=None, ctx=None, cfg=None)
             rows += [
                 ("memory_enabled", cfg.memory_enabled),
                 ("auto_continue", cfg.auto_continue),
+                ("auto_fold", cfg.auto_fold),
                 ("warn_tokens", f"{cfg.warn_tokens:,}"),
                 ("context_editing", cfg.context_editing),
                 ("web_search", cfg.web_search),
@@ -1523,7 +1546,7 @@ def main(argv: list[str] | None = None) -> None:
             # and tool schemas entirely. context_tokens is what the model actually read.
             # Offer to fold before the nudge: folding keeps the session and its thread,
             # /compact resets both. The user should be offered the reversible option first.
-            offer_fold(session, client, cfg, project_root)
+            maintain_context(session, client, cfg, project_root)
             real = session.ledger.context_tokens or estimate_tokens(session.messages)
             if real > cfg.warn_tokens:
                 ui.print_text(

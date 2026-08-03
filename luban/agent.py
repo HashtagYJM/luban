@@ -92,7 +92,7 @@ class AgentConfig:
     skills: list | None = None
     memory: str = ""
     global_memory: str = ""
-    global_volatile: str = ""  # index + journal: kept LAST so writes can't bust the cache
+    global_volatile: str = ""  # index + journal: placed behind BOTH cache breakpoints
     # Callable re-rendering the volatile half per model call, so a mid-turn
     # remember/forget is visible immediately (E28). Falls back to the static string.
     volatile_fn: object = None
@@ -140,8 +140,8 @@ def cache_control(model: str) -> dict:
 
     luban only ever wrote 5-MINUTE entries, so any pause longer than that — reading a
     long answer, a meeting — killed the prefix and the next call re-wrote the whole thing.
-    Measured in the field: 1,343,308 write tokens against a final context of ~150,000,
-    roughly nine times what a session should ever write.
+    A session should write about one context's worth of tokens in total, since each one
+    enters the cache once; field measurement showed close to an order of magnitude more.
 
     A 1h write costs 2x input against 1.25x, so it pays for itself the first time it
     prevents one expiry — and an expiry re-writes the ENTIRE prefix, not a delta. Probed

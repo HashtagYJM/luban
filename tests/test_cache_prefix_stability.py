@@ -8,10 +8,10 @@ between calls.
 The fact index and journal broke that rule. They were placed last in the SYSTEM prompt,
 which was genuinely last while there was ONE breakpoint. The second breakpoint moved the
 finish line: volatile then sat in the middle of the cached conversation prefix, so every
-remember/journal write re-wrote the whole conversation — measured at 1,343,308 write
-tokens against a final context of ~150,000, about nine times what a session should write.
-And _HYGIENE asks the model to journal at the close of every working block, so luban was
-causing this to itself.
+remember/journal write re-wrote the whole conversation. A session should write about one
+context's worth of tokens in total, since each one enters the cache once; field
+measurement showed close to an order of magnitude more. And _HYGIENE asks the model to
+journal at the close of every working block, so luban was causing this to itself.
 """
 from types import SimpleNamespace
 

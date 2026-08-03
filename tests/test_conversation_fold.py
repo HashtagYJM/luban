@@ -130,12 +130,13 @@ def test_the_marker_points_at_where_the_record_still_lives(monkeypatch, tmp_path
 
 def test_folding_is_driven_by_measured_context_not_an_estimate():
     src = Path("luban/cli.py").read_text(encoding="utf-8")
-    body = src[src.index("def offer_fold"):src.index("def compact_session")]
+    body = src[src.index("def maintain_context"):src.index("def compact_session")]
     assert "ledger.context_tokens" in body
     assert "estimate_tokens" not in body
 
 
 def test_a_declined_fold_leaves_history_untouched(monkeypatch):
+    """auto_fold = false restores the prompt, and declining must change nothing."""
     monkeypatch.setattr("builtins.input", lambda p: "n")
     out = []
     monkeypatch.setattr(cli.ui, "print_text", lambda t: out.append(t))
@@ -143,7 +144,8 @@ def test_a_declined_fold_leaves_history_untouched(monkeypatch):
                     messages=_tool_heavy(40))
     s.ledger.add(usage_mod.Usage(input_tokens=140_000))
     before = list(s.messages)
-    cli.offer_fold(s, object(), config_mod.Config(platform="mac"), Path("."))
+    cli.maintain_context(s, object(),
+                         config_mod.Config(platform="mac", auto_fold=False), Path("."))
     assert s.messages == before
     assert "left as-is" in "".join(out)
 
@@ -152,4 +154,95 @@ def test_no_offer_below_the_trigger(monkeypatch):
     monkeypatch.setattr("builtins.input", lambda p: pytest.fail("must not ask"))
     s = cli.Session(model="m", max_tokens=100, auto=True, stream=False, messages=[])
     s.ledger.add(usage_mod.Usage(input_tokens=40_000))
-    cli.offer_fold(s, object(), config_mod.Config(platform="mac"), Path("."))
+    cli.maintain_context(s, object(), config_mod.Config(platform="mac"), Path("."))
+
+
+# ---------------- automatic, but never silent ----------------
+
+def _over_threshold(messages=None):
+    s = cli.Session(model="m", max_tokens=100, auto=True, stream=False,
+                    messages=messages if messages is not None else _tool_heavy(40))
+    s.ledger.add(usage_mod.Usage(input_tokens=140_000))
+    return s
+
+
+def _auto(**kw):
+    """warn_tokens scaled to the fixture so a fold is actually reachable, as elsewhere
+    in this file — generating a real 150k-token conversation would cost megabytes."""
+    return config_mod.Config(platform="mac", warn_tokens=10_000, **kw)
+
+
+def test_it_folds_without_asking(monkeypatch, tmp_path):
+    """A fold you have to approve is always late: every call between the prompt and the
+    answer pays for the full window, and the saving only accrues to calls made AFTER."""
+    monkeypatch.setattr("builtins.input", lambda p: pytest.fail("must not ask"))
+    monkeypatch.setattr(cli, "save_session", lambda s: None)
+    monkeypatch.setattr(cli, "chars_per_token", lambda *a: 2.9)
+    monkeypatch.setattr(cli, "FOLD_MIN_TOKENS", 100)
+    class FB:
+        type, text = "text", "SUMMARY"
+    monkeypatch.setattr(cli.client_mod, "create_turn",
+                        lambda *a, **k: type("M", (), {"content": [FB()]})())
+    out = []
+    monkeypatch.setattr(cli.ui, "print_text", lambda t: out.append(t))
+    s = _over_threshold()
+    before = len(s.messages)
+    cli.maintain_context(s, object(), _auto(), tmp_path)
+    assert len(s.messages) < before
+
+
+def test_an_automatic_fold_announces_itself_before_and_after(monkeypatch, tmp_path):
+    """Silent context trimming is the one thing this must never become."""
+    monkeypatch.setattr(cli, "save_session", lambda s: None)
+    monkeypatch.setattr(cli, "chars_per_token", lambda *a: 2.9)
+    monkeypatch.setattr(cli, "FOLD_MIN_TOKENS", 100)
+    class FB:
+        type, text = "text", "SUMMARY"
+    monkeypatch.setattr(cli.client_mod, "create_turn",
+                        lambda *a, **k: type("M", (), {"content": [FB()]})())
+    out = []
+    monkeypatch.setattr(cli.ui, "print_text", lambda t: out.append(t))
+    cli.maintain_context(_over_threshold(), object(), _auto(), tmp_path)
+    said = "".join(out)
+    assert "folding now" in said                     # before
+    assert "auto_fold" in said                       # and how to stop it
+    assert "folded" in said and "transcript" in said  # after: what, and where it still is
+
+
+def test_a_failed_fold_is_not_retried_every_turn(monkeypatch, tmp_path):
+    """Failure costs a model call, and context is still over the threshold — without a
+    latch an automatic fold would burn one call per turn for the rest of the session."""
+    monkeypatch.setattr(cli, "save_session", lambda s: None)
+    monkeypatch.setattr(cli, "chars_per_token", lambda *a: 2.9)
+    monkeypatch.setattr(cli, "FOLD_MIN_TOKENS", 100)
+    monkeypatch.setattr(cli.ui, "print_text", lambda t: None)
+    calls = []
+
+    def boom(*a, **k):
+        calls.append(1)
+        raise RuntimeError("gateway said no")
+
+    monkeypatch.setattr(cli.client_mod, "create_turn", boom)
+    s = _over_threshold()
+    cfg = _auto()
+    for _ in range(5):
+        cli.maintain_context(s, object(), cfg, tmp_path)
+    assert len(calls) == 1
+    assert s.fold_failed is True
+
+
+def test_a_fold_too_small_to_matter_does_not_latch(monkeypatch, tmp_path):
+    """Declining costs nothing — no model call is made — so it must stay retryable as the
+    conversation grows into being worth folding."""
+    monkeypatch.setattr(cli, "chars_per_token", lambda *a: 2.9)
+    monkeypatch.setattr(cli.ui, "print_text", lambda t: None)
+    monkeypatch.setattr(cli.client_mod, "create_turn",
+                        lambda *a, **k: pytest.fail("no call for a declined fold"))
+    s = _over_threshold(messages=[_u("a" * 200), _a("b" * 200)])
+    cli.maintain_context(s, object(), _auto(), tmp_path)
+    assert s.fold_failed is False
+
+
+def test_auto_fold_is_on_by_default_and_switchable():
+    assert config_mod.Config(platform="mac").auto_fold is True
+    assert config_mod.Config(platform="mac", auto_fold=False).auto_fold is False

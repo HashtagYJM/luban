@@ -44,6 +44,12 @@ class Config:
     cache_prompt: bool = True
     thinking_verbose: bool = False  # stream the reasoning text; default silent
     auto_continue: bool = False  # reopen the folder's last session on a plain start
+    # Fold the oldest turns automatically once context passes FOLD_TRIGGER, rather than
+    # asking. A fold you have to approve is always LATE: by the time the prompt appears
+    # you have been paying for the full window for a while, and the saving only ever
+    # accrues to the calls made AFTER it. Loud, never silent — it says what it folded and
+    # where the verbatim transcript still is. Off, it goes back to asking.
+    auto_fold: bool = True
     # When to nudge "consider /compact". The old 60k default was set for a much
     # smaller context window and cried wolf constantly on a 1M-token model.
     warn_tokens: int = 150_000
@@ -105,6 +111,11 @@ def _default_text(plat: str) -> str:
         "# backend does not support it. Default on:\n"
         "# cache_prompt = true\n"
         "\n"
+        "# Fold the oldest turns automatically once context passes 70% of warn_tokens,\n"
+        "# instead of asking each time. Recent turns are kept verbatim and the full\n"
+        "# transcript stays on disk either way. Default on:\n"
+        "# auto_fold = true\n"
+        "\n"
         "# Reopen this folder's last session automatically on a plain `luban` start\n"
         "# (instead of just reminding you it exists). Default off:\n"
         "# auto_continue = false\n"
@@ -158,6 +169,7 @@ _MIGRATABLE = [
     ("max_tokens", "# max_tokens = 32000   # ceiling on ONE turn: thinking + text + tool call\n"),
     ("cache_prompt", "# cache_prompt = true   # cache the stable system prompt\n"),
     ("auto_continue", "# auto_continue = false   # reopen the last session on plain start\n"),
+    ("auto_fold", "# auto_fold = true   # fold the oldest turns automatically instead of asking\n"),
     ("warn_tokens", "# warn_tokens = 150000   # when to nudge you to /compact\n"),
     ("context_editing", "# context_editing = false   # clear stale tool results server-side (saves tokens)\n"),
     ("allow_out_of_tree_file_edits", "# allow_out_of_tree_file_edits = false\n"),
@@ -355,6 +367,9 @@ def load_config(path: Path = CONFIG_PATH) -> Config:
     auto_continue = data.get("auto_continue")
     if not isinstance(auto_continue, bool):
         auto_continue = False
+    auto_fold = data.get("auto_fold")
+    if not isinstance(auto_fold, bool):
+        auto_fold = True
     context_editing = data.get("context_editing")
     if not isinstance(context_editing, bool):
         context_editing = False
@@ -386,6 +401,7 @@ def load_config(path: Path = CONFIG_PATH) -> Config:
         cache_prompt=cache_prompt,
         thinking_verbose=thinking_verbose,
         auto_continue=auto_continue,
+        auto_fold=auto_fold,
         warn_tokens=warn_tokens,
         allow_out_of_tree_file_edits=allow_out_of_tree,
         web_search=web_search,

@@ -121,7 +121,11 @@ class Ledger:
         """
         return self.calls > 0 and self.total_tokens == 0
 
-    def add(self, u: Usage, model: str = "") -> None:
+    def add(self, u: Usage, model: str = "", *, context: bool = True) -> None:
+        """Record one model call. `context=False` for a SIDE CALL — fold, compact, memory
+        flush, reflect. They cost real money and must be counted, but they send their own
+        payload rather than the conversation, so letting one set `last` would report the
+        session's context size as whatever that side call happened to send."""
         self.input_tokens += u.input_tokens
         self.output_tokens += u.output_tokens
         self.cache_creation_input_tokens += u.cache_creation_input_tokens
@@ -129,12 +133,13 @@ class Ledger:
         self.cleared_tokens += u.cleared_tokens
         self.reasoning_tokens += u.reasoning_tokens
         self.calls += 1
-        self.last = u
+        if context:
+            self.last = u
         if model:
             sub = self.by_model.get(model)
             if sub is None:
                 sub = self.by_model[model] = Ledger()
-            sub.add(u)  # no model => no recursion
+            sub.add(u, context=context)  # no model => no recursion
 
     @property
     def context_tokens(self) -> int:

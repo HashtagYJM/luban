@@ -150,7 +150,7 @@ def get_client() -> Any:
 # Anthropic turn that sets extras=True would otherwise leave the OpenAI branch inheriting
 # a flag it cannot honour, and vice versa. Provider is what the flag is actually a
 # property of.
-_PROBE_FIELDS = ("extras", "block_system", "ctx_mgmt")
+_PROBE_FIELDS = ("extras", "block_system", "ctx_mgmt", "cache_ttl")
 _PROBES: dict[str, dict] = {}
 
 

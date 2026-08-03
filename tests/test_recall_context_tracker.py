@@ -110,7 +110,7 @@ def test_volatile_lands_after_stable_in_the_prompt():
 def test_cache_control_sits_on_the_stable_block_only():
     blocks = agent.build_system_param("stable text", "volatile text", cache=True)
     assert isinstance(blocks, list) and len(blocks) == 2
-    assert blocks[0]["cache_control"] == {"type": "ephemeral"}
+    assert blocks[0]["cache_control"]["type"] == "ephemeral"
     assert "cache_control" not in blocks[1]
 
 
@@ -123,8 +123,13 @@ def test_no_volatile_still_caches_the_stable_block():
     assert len(blocks) == 1 and blocks[0]["cache_control"]
 
 
-def test_a_backend_rejecting_block_form_degrades_once(monkeypatch):
-    """Mirrors the extras probe: probe once, fall back, never retry."""
+def test_a_backend_rejecting_block_form_degrades_to_a_flat_prompt(monkeypatch):
+    """Probe, fall back, never retry — and degrade NARROWEST FIRST.
+
+    A backend that rejects block-form system might only be rejecting the 1h `ttl`, so
+    that is dropped before caching is abandoned altogether: giving up the cached prefix
+    over an unknown TTL field would cost far more than the TTL ever saves.
+    """
     seen = []
 
     def fake(client, *, system, **kw):
@@ -137,8 +142,29 @@ def test_a_backend_rejecting_block_form_degrades_once(monkeypatch):
     cfg = agent.AgentConfig("m", 100, stream=False, cache_prompt=True,
                             global_memory="x", tools=[])
     agent._run_model_turn(None, cfg, [], lambda t: None, None)
-    assert isinstance(seen[0], list) and isinstance(seen[1], str)  # blocks, then flat
+    assert [type(s) for s in seen] == [list, list, str]  # ttl dropped, then blocks
+    assert "ttl" in str(seen[0]) and "ttl" not in str(seen[1])
+    assert agent.client_mod.probes("m")["cache_ttl"] is False
     assert agent.client_mod.probes("m")["block_system"] is False
+
+
+def test_a_backend_rejecting_only_the_ttl_keeps_its_cache(monkeypatch):
+    """The whole point of degrading narrowest-first."""
+    seen = []
+
+    def fake(client, *, system, **kw):
+        seen.append(system)
+        if "ttl" in str(system):
+            raise TypeError("unexpected value for cache_control.ttl")
+        return type("M", (), {"stop_reason": "end_turn", "content": []})()
+
+    monkeypatch.setattr(agent.client_mod, "create_turn", fake)
+    cfg = agent.AgentConfig("m", 100, stream=False, cache_prompt=True,
+                            global_memory="x", tools=[])
+    agent._run_model_turn(None, cfg, [], lambda t: None, None)
+    assert isinstance(seen[-1], list), "block-form caching must survive a TTL rejection"
+    assert agent.client_mod.probes("m")["cache_ttl"] is False
+    assert agent.client_mod.probes("m")["block_system"] is True
 
 
 def test_a_dropped_connection_is_not_read_as_rejection(monkeypatch):

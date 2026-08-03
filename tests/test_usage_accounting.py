@@ -178,14 +178,15 @@ def test_the_breakpoint_never_mutates_the_saved_transcript():
     written to disk and replayed on resume."""
     from luban import agent as agent_mod
     original = [{"role": "user", "content": "hello"}]
-    out = agent_mod.with_cache_breakpoint(original)
+    out, _placed = agent_mod.with_cache_breakpoint(original)
     assert "cache_control" not in str(original), "the caller's list was mutated"
-    assert out[-1]["content"][-1]["cache_control"] == {"type": "ephemeral"}
+    assert out[-1]["content"][-1]["cache_control"]["type"] == "ephemeral"
 
 
 def test_a_string_content_message_becomes_markable():
     from luban import agent as agent_mod
-    out = agent_mod.with_cache_breakpoint([{"role": "user", "content": "plain text"}])
+    out, _placed = agent_mod.with_cache_breakpoint(
+        [{"role": "user", "content": "plain text"}])
     block = out[-1]["content"][-1]
     assert block["type"] == "text" and block["text"] == "plain text"
 
@@ -195,8 +196,8 @@ def test_a_tool_result_tail_is_markable_too():
     from luban import agent as agent_mod
     msgs = [{"role": "user", "content": [
         {"type": "tool_result", "tool_use_id": "t1", "content": "out"}]}]
-    out = agent_mod.with_cache_breakpoint(msgs)
-    assert out[-1]["content"][-1]["cache_control"] == {"type": "ephemeral"}
+    out, _placed = agent_mod.with_cache_breakpoint(msgs)
+    assert out[-1]["content"][-1]["cache_control"]["type"] == "ephemeral"
     assert "cache_control" not in str(msgs)
 
 

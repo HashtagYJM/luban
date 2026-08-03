@@ -44,9 +44,10 @@ def system_blocks(platform: str, skills: list[dict] | None = None, memory: str =
     """The system prompt split into (stable, volatile), in prompt order.
 
     Prompt caching is a PREFIX match, so anything that changes invalidates every byte
-    after it. Everything luban does NOT rewrite mid-session goes in `stable` (and gets
-    the cache breakpoint); the fact index and journal — which luban rewrites whenever it
-    calls remember/journal — go last, where they can't invalidate the rest (P2).
+    after it. Everything luban does NOT rewrite mid-session goes in `stable` and gets the
+    first cache breakpoint. The volatile half — the fact index and journal, rewritten
+    whenever the model calls remember/journal — is returned separately because it must
+    end up behind the SECOND breakpoint, in the message tail; see with_cache_breakpoint.
     """
     return (system_prompt_for(platform, skills, memory, global_memory, tool_guidance),
             global_volatile)
@@ -112,25 +113,49 @@ class AgentConfig:
     ctx_mgmt: dict | None = None
 
 
-def build_system_param(stable: str, volatile: str, cache: bool):
+def build_system_param(stable: str, volatile: str, cache: bool, model: str = ""):
     """Block-form (cacheable) or a plain concatenated string.
 
     The cache breakpoint sits on the STABLE block only. Note a short prefix caches
     nothing at all — Opus 4.8 needs ~4,096 tokens — and that failure is SILENT, which
     is why /context reports cache eligibility rather than leaving it to faith.
+
+    `volatile` is normally empty here now: it rides the message tail, behind the second
+    breakpoint. It falls back to this position only when the tail cannot take it.
     """
     if not cache:
         return "\n\n".join(p for p in (stable, volatile) if p)
-    blocks = [{"type": "text", "text": stable,
-               "cache_control": {"type": "ephemeral"}}]
+    blocks = [{"type": "text", "text": stable, "cache_control": cache_control(model)}]
     if volatile:
         blocks.append({"type": "text", "text": volatile})
     return blocks
 
 
 
-def with_cache_breakpoint(messages: list[dict]) -> list[dict]:
-    """Mark the END of the conversation as cacheable — the second breakpoint.
+CACHE_TTL = "1h"
+
+
+def cache_control(model: str) -> dict:
+    """A cache entry that survives thinking time.
+
+    luban only ever wrote 5-MINUTE entries, so any pause longer than that — reading a
+    long answer, a meeting — killed the prefix and the next call re-wrote the whole thing.
+    Measured in the field: 1,343,308 write tokens against a final context of ~150,000,
+    roughly nine times what a session should ever write.
+
+    A 1h write costs 2x input against 1.25x, so it pays for itself the first time it
+    prevents one expiry — and an expiry re-writes the ENTIRE prefix, not a delta. Probed
+    per provider: a backend that rejects `ttl` degrades to the 5-minute form rather than
+    failing the turn.
+    """
+    if client_mod.probes(model)["cache_ttl"] is False:
+        return {"type": "ephemeral"}
+    return {"type": "ephemeral", "ttl": CACHE_TTL}
+
+
+def with_cache_breakpoint(messages: list[dict], model: str = "",
+                          volatile: str = "") -> tuple[list[dict], bool]:
+    """Mark the END of the conversation as cacheable, and hang volatile context behind it.
 
     Caching matches an unbroken prefix from the start of the prompt, and luban marked
     exactly ONE spot: the end of the stable system block. So the cached amount was a
@@ -142,26 +167,42 @@ def with_cache_breakpoint(messages: list[dict]) -> list[dict]:
     entry covering everything so far, the next call reads it and pays a write only for the
     delta. Anthropic allow four breakpoints; this is the second.
 
-    Returns a NEW list — session.messages must never carry request-shaping metadata into
-    the saved transcript.
+    WHY VOLATILE RIDES ALONG HERE. The fact index and journal used to sit last in the
+    SYSTEM prompt, which was genuinely last while there was one breakpoint. The second
+    breakpoint moved the finish line: volatile then sat in the MIDDLE of the cached
+    conversation prefix, so every remember/journal write invalidated the entire
+    conversation and re-wrote ~110,000 tokens — and _HYGIENE asks the model to journal at
+    the close of every working block, so luban was doing this to itself. Placed after the
+    breakpoint it can change as often as it likes and cost nothing but its own size.
+
+    Returns a NEW list plus whether volatile was actually placed — the caller keeps it in
+    the system prompt when it was not, so it can never be silently dropped. The list is new
+    because session.messages must never carry request-shaping metadata into the saved
+    transcript.
     """
     if not messages:
-        return messages
+        return messages, False
     out = list(messages)
     last = dict(out[-1])
     content = last.get("content")
     if isinstance(content, str):
-        last["content"] = [{"type": "text", "text": content,
-                            "cache_control": {"type": "ephemeral"}}]
+        blocks = [{"type": "text", "text": content}]
     elif isinstance(content, list) and content:
         blocks = [dict(b) if isinstance(b, dict) else b for b in content]
-        if isinstance(blocks[-1], dict):
-            blocks[-1]["cache_control"] = {"type": "ephemeral"}
-        last["content"] = blocks
     else:
-        return messages  # nothing markable; leave it alone
+        return messages, False  # nothing markable; leave it alone
+    if not isinstance(blocks[-1], dict):
+        return messages, False
+    blocks[-1]["cache_control"] = cache_control(model)
+    # Only a USER message may carry it: appending to an assistant turn would read as the
+    # model having said it. The one case that reaches here with an assistant last message
+    # is a pause_turn re-send, where volatile stays in the system prompt for that call.
+    placed = bool(volatile) and last.get("role") == "user"
+    if placed:
+        blocks.append({"type": "text", "text": volatile})
+    last["content"] = blocks
     out[-1] = last
-    return out
+    return out, placed
 
 
 def _run_model_turn(client, config, messages, on_text, on_thinking, on_retry=None):
@@ -171,19 +212,30 @@ def _run_model_turn(client, config, messages, on_text, on_thinking, on_retry=Non
     # Re-render the volatile half EVERY model call. It was captured once per user turn,
     # so within a multi-step turn the index went stale the moment the model called
     # remember/forget — it would then be told a fact it had just saved did not exist,
-    # which is exactly the belief that makes it save a duplicate (E28). This is cheap
-    # precisely because volatile sits AFTER the cache breakpoint: re-rendering it cannot
-    # invalidate the cached stable prefix.
+    # which is exactly the belief that makes it save a duplicate (E28). Cheap only because
+    # it now sits after BOTH breakpoints; see with_cache_breakpoint.
     volatile_now = config.volatile_fn() if config.volatile_fn else config.global_volatile
     stable, volatile = system_blocks(
         config.platform, config.skills, config.memory, config.global_memory,
         config.tool_guidance, volatile_now)
     use_blocks = config.cache_prompt and probe["block_system"] is not False
-    system = build_system_param(stable, volatile, use_blocks)
-    if use_blocks:
-        # Second breakpoint, on the conversation. Without it the cached block is a fixed
-        # prefix and every repeated turn is re-billed at full price.
-        messages = with_cache_breakpoint(messages)
+
+    def _shape(cache: bool):
+        """(system, messages) for one attempt. Rebuilt per attempt because a degrade
+        changes both — the breakpoints live in the messages as well as the system."""
+        placed = False
+        msgs = messages
+        if cache:
+            # Second breakpoint, on the conversation, with volatile hung behind it.
+            # Without it the cached block is a fixed prefix and every repeated turn is
+            # re-billed at full price.
+            msgs, placed = with_cache_breakpoint(messages, config.model, volatile)
+        # Volatile stays in the system prompt whenever the tail could not take it —
+        # caching off, or a pause_turn re-send whose last message is the assistant's.
+        # Never dropped.
+        return (build_system_param(stable, "" if placed else volatile, cache, config.model),
+                msgs)
+
     tool_schemas = config.tools if config.tools is not None else tools_mod.TOOLS
     if config.web_search:
         # Server-side tool: the API runs the search and returns results inline; luban
@@ -193,11 +245,12 @@ def _run_model_turn(client, config, messages, on_text, on_thinking, on_retry=Non
             *tool_schemas,
             {"type": config.web_search_tool_type, "name": "web_search"},
         ]
-    def _call(system_param):
+    def _call(shape):
+        system_param, msgs = shape
         if config.stream:
             return client_mod.stream_turn(
                 client, model=config.model, max_tokens=config.max_tokens,
-                system=system_param, messages=messages, tools=tool_schemas,
+                system=system_param, messages=msgs, tools=tool_schemas,
                 on_text=on_text, on_thinking=on_thinking,
                 thinking=config.thinking, effort=config.effort,
                 verbose=config.thinking_verbose, on_retry=on_retry,
@@ -205,26 +258,44 @@ def _run_model_turn(client, config, messages, on_text, on_thinking, on_retry=Non
             )
         return client_mod.create_turn(
             client, model=config.model, max_tokens=config.max_tokens,
-            system=system_param, messages=messages, tools=tool_schemas,
+            system=system_param, messages=msgs, tools=tool_schemas,
             thinking=config.thinking, effort=config.effort,
             verbose=config.thinking_verbose, on_retry=on_retry,
             ctx_mgmt=config.ctx_mgmt,
         )
 
+    # Degrade narrowest-first: a backend that rejects the 1h `ttl` may still accept
+    # block-form system, and giving up caching entirely over an unknown TTL field would
+    # cost far more than the TTL saves. A dropped connection is NOT evidence of rejection.
+    def _rejected(exc) -> bool:
+        return use_blocks and not client_mod.is_transient(exc)
+
     try:
-        msg = _call(system)
+        msg = _call(_shape(use_blocks))
     except Exception as exc:
-        # Probe once per provider: a backend that rejects block-form system (or
-        # cache_control) must keep working, exactly as the extras probe does for
-        # thinking/effort. A dropped connection is NOT evidence of rejection.
-        if not (use_blocks and probe["block_system"] is None
-                and not client_mod.is_transient(exc)):
+        if not _rejected(exc):
             raise
-        probe["block_system"] = False
-        msg = _call(build_system_param(stable, volatile, False))
+        if probe["cache_ttl"] is None:
+            probe["cache_ttl"] = False
+            try:
+                msg = _call(_shape(use_blocks))
+            except Exception as exc2:
+                if not _rejected(exc2) or probe["block_system"] is not None:
+                    raise
+                probe["block_system"] = False
+                msg = _call(_shape(False))
+            else:
+                probe["block_system"] = True
+        elif probe["block_system"] is None:
+            probe["block_system"] = False
+            msg = _call(_shape(False))
+        else:
+            raise
     else:
         if use_blocks:
             probe["block_system"] = True
+            if probe["cache_ttl"] is None:
+                probe["cache_ttl"] = True
     if config.on_usage is not None:
         try:
             config.on_usage(usage_mod.from_response(msg))

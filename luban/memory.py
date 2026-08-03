@@ -436,8 +436,11 @@ def _over_budget_notice() -> str:
 
 def bootstrap_volatile() -> str:
     """Global memory luban itself rewrites during a session: the fact index and the
-    journal. Kept LAST in the prompt so a `remember`/`journal` write can't invalidate
-    the cached prefix above it."""
+    journal.
+
+    It is placed behind the CONVERSATION cache breakpoint, in the message tail — not last
+    in the system prompt, which stopped being last the moment a second breakpoint existed.
+    See agent.with_cache_breakpoint."""
     parts = []
     index = read_index()
     if index and any(line.lstrip().startswith("- [") for line in index.splitlines()):

@@ -749,6 +749,7 @@ def flush_memory(session: Session, client, ctx, cfg: config_mod.Config) -> None:
     config = agent.AgentConfig(
         session.model, session.max_tokens, stream=False, platform=cfg.platform,
         global_memory=memory_mod.bootstrap_block(), tools=journal_only,
+        on_usage=lambda u: session.ledger.add(u, session.model, context=False),
     )
     before = memory_mod._journal_writes
     try:
@@ -769,6 +770,7 @@ def reflect_session(session: Session, client, ctx, cfg: config_mod.Config,
     config = agent.AgentConfig(
         session.model, session.max_tokens, session.stream, platform=cfg.platform,
         global_memory=memory_mod.bootstrap_block(), tools=tools.active_tools(True),
+        on_usage=lambda u: session.ledger.add(u, session.model, context=False),
     )
     ui.print_text("\nluban> ")
     try:
@@ -949,6 +951,9 @@ def fold_history(session: Session, client, cfg: config_mod.Config,
             client, model=session.model, max_tokens=session.max_tokens,
             system=agent.SYSTEM_PROMPT,
             messages=old + [{"role": "user", "content": FOLD_PROMPT}], tools=[])
+        # A fold sends the whole early span uncached — the single most expensive call in
+        # a session, and it was missing from /usage entirely.
+        session.ledger.add(usage_mod.from_response(msg), session.model, context=False)
         summary = "".join(b.text for b in msg.content if b.type == "text").strip()
     except Exception as exc:
         ui.print_text(f"  fold failed ({exc}) — conversation unchanged.\n")
@@ -1011,6 +1016,7 @@ def compact_session(session: Session, client, ctx=None, cfg=None) -> None:
             client, model=session.model, max_tokens=session.max_tokens,
             system=agent.SYSTEM_PROMPT, messages=msgs, tools=[],
         )
+        session.ledger.add(usage_mod.from_response(msg), session.model, context=False)
         summary = "".join(b.text for b in msg.content if b.type == "text").strip()
     except Exception as exc:
         ui.print_text(f"compact failed ({exc}) — session unchanged.\n")

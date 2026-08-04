@@ -1,9 +1,9 @@
 """Token accounting measured from API responses, never estimated.
 
-The defect this replaces: estimate_tokens assumed 4 chars/token against a measured 2.94,
-a 36% undercount, and it governed the /compact nudge — which therefore fired at ~203,900
-real tokens instead of 150,000. It also ignored the system prompt and tool schemas
-entirely, counting only message text.
+The defect this replaces: estimate_tokens assumed 4 chars/token against a materially
+denser reality — short by roughly a third — and it governed the /compact nudge, which
+therefore fired well past the threshold it was supposed to enforce. It also ignored the
+system prompt and tool schemas entirely, counting only message text.
 """
 import re
 from pathlib import Path
@@ -86,7 +86,8 @@ def test_the_nudge_is_driven_by_measured_tokens_not_the_estimator():
 
 
 def test_no_module_asserts_four_chars_per_token():
-    """The constant that caused a 54,000-token overshoot must not govern anything."""
+    """The constant that let the window overshoot its threshold must not govern
+    anything."""
     offenders = []
     for f in Path("luban").glob("*.py"):
         for i, line in enumerate(f.read_text(encoding="utf-8").splitlines(), 1):
@@ -148,8 +149,8 @@ def test_two_breakpoints_and_what_that_means_for_context_editing():
     after it, so server-side clearing could not invalidate the cached prefix.
 
     Now: a second breakpoint marks the end of the conversation, because the cached amount
-    was a constant (~11-13k across four measured sessions) while the conversation was
-    re-billed in full every call — 1,319,849 of 1,954,702 tokens spent were repeats.
+    was a constant — the size of that block — while the conversation was re-billed in
+    full every call, which in the field made repeats the majority of everything spent.
 
     The consequence: cleared tool results sit INSIDE the second cached prefix, so every
     clear now invalidates the conversation cache. The two features partially conflict, and
@@ -204,7 +205,7 @@ def test_a_tool_result_tail_is_markable_too():
 def test_count_tokens_includes_the_tool_schemas():
     """The cacheable prefix is tools -> system, so measuring `system` alone under-reports it.
 
-    On a real install that omission was 6,286 chars of tool surface, which made the
+    That omission is the whole tool surface, which made the
     /context figure not comparable with the cached figure /usage reads off the API — two
     numbers describing the same thing and disagreeing.
     """

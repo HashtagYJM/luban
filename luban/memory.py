@@ -27,8 +27,8 @@ MEMORY_DIR = paths.luban_home() / "memory"
 # numbers also could not express the only property that actually matters — how much of
 # the model's attention the always-on block consumes IN TOTAL.
 #
-# Derivation, not taste: hold always-on near 10% of a 150k working budget. At a measured
-# 2.9 chars/token that is ~43,500 chars; the base prompt and tool schemas take ~5,400.
+# Derivation, not taste: hold always-on near 10% of a 150k working budget. At roughly
+# 2.9 chars/token that is ~43,500 chars, less what the base prompt and tool schemas take.
 ALWAYS_ON_BUDGET = 38_000
 
 # Nothing is silently cut. A single file is only ever trimmed if it ALONE exceeds the
@@ -169,7 +169,7 @@ def _read_whole(path: Path, label: str) -> str:
 
     Truncation happens only when ONE file exceeds the ENTIRE always-on budget, which
     means something went wrong (a paste, a runaway write) rather than a profile that
-    grew. The old per-file caps cut a real 6,810-char profile down to 4,000 and told
+    grew. The old per-file caps cut a real profile down to 4,000 chars and told
     nobody who could act on it.
     """
     try:
@@ -222,8 +222,8 @@ def index_slugs_dropped() -> int:
 JOURNAL_DAYS = 2
 
 # The journal is the ONE always-on component that gets a size bound, and it needs one for
-# reasons that do not apply to any other (E31, measured live: it was 29,446 of a 41,471-char
-# always-on block against a 38,000 budget — 71% of everything sent every turn):
+# reasons that do not apply to any other (E31: in the field it had grown to the clear
+# majority of an always-on block that was itself over budget):
 #
 #   - It grows BY DESIGN. _HYGIENE asks for an entry at the close of every working block, in
 #     every project. Following the system prompt is what causes the breach.
@@ -254,7 +254,7 @@ def _day_tail(text: str, budget: int) -> str:
     """The NEWEST whole entries of one day that fit in budget.
 
     Journal lines are "[HH:MM] ...", so an entry boundary exists and the cut never lands
-    mid-line. Needed for real data: one measured day file was 37,547 chars on its own,
+    mid-line. Needed for real data: a single day file can exceed the whole allowance,
     more than the whole always-on budget.
     """
     kept: list[str] = []
@@ -422,7 +422,7 @@ def _over_budget_notice() -> str:
         return ""
     # Deliberately states NO figure. This function can only see memory's own four
     # components; the project memory file is resolved by cli, so any total computed here
-    # under-reports what is actually sent (measured: 39,372 claimed vs 41,471 sent).
+    # under-reports what is actually sent, by the scaffold comments it strips.
     # Plumbing cli's row through bootstrap_volatile would need a closure, which reintroduces
     # the E28 stale-snapshot hazard to fix a 5% error in a message whose only job is to
     # suggest consolidation. So drop the claim instead: the model needs to know it is over

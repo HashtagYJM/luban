@@ -207,13 +207,13 @@ def test_context_report_uses_real_tokens_when_a_client_answers(mem, tmp_path):
         class messages:
             @staticmethod
             def count_tokens(**kw):
-                return type("R", (), {"input_tokens": 9001})()
+                return type("R", (), {"input_tokens": 9000})()
 
     out = cli.context_report(
         cli.Session(model="m", max_tokens=100, auto=True, stream=True, messages=[]),
         config_mod.Config(platform="mac"), tmp_path, client=C())
-    assert "9,001 tokens (measured" in out
-    assert "ELIGIBLE" in out  # 9001 clears the 4096 floor
+    assert "9,000 tokens (measured" in out
+    assert "ELIGIBLE" in out  # 9000 clears the 4096 floor
 
 
 def test_context_report_says_when_caching_is_off(mem, tmp_path):

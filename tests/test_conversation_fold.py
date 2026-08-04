@@ -1,8 +1,8 @@
 """A lifecycle for the conversation: bounded window, full record on disk, omission stated.
 
 The same contract already settled for the journal, applied one level up. The API is
-stateless, so every call re-sends the whole conversation — 89.5% of a real install's
-context — and nothing ever bounded it.
+stateless, so every call re-sends the whole conversation — the great majority of context
+on any mature session — and nothing ever bounded it.
 """
 from pathlib import Path
 

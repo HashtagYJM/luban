@@ -159,9 +159,10 @@ def with_cache_breakpoint(messages: list[dict], model: str = "",
 
     Caching matches an unbroken prefix from the start of the prompt, and luban marked
     exactly ONE spot: the end of the stable system block. So the cached amount was a
-    CONSTANT (~11-13k tokens across four measured sessions) while the conversation, which
-    is byte-identical on every call, was billed fresh every time. Measured: 1,319,849 of
-    1,954,702 tokens spent across 63 calls were repeats.
+    CONSTANT — the size of that block, no matter how long the session ran — while the
+    conversation, which is byte-identical on every call, was billed fresh every time. In
+    the field the majority of all tokens a session spent fell into that one category:
+    repeats.
 
     Marking the last message each call gives incremental caching: this call writes a cache
     entry covering everything so far, the next call reads it and pays a write only for the

@@ -65,7 +65,7 @@ def test_no_cap_config_keys_remain():
 
 
 def test_a_real_profile_is_never_truncated(mem):
-    """The field case: a 6,810-char profile lost 2,810 chars to a hard-coded 4,000."""
+    """The field case: a profile larger than the old hard-coded 4,000 lost the excess."""
     memory.USER_PATH.write_text("## About me\n" + "x" * 6_798, encoding="utf-8")
     out = memory.read_user()
     assert len(out) == 6_810 and "EXCEEDS" not in out
@@ -382,7 +382,7 @@ def test_skill_descriptions_reach_the_prompt_intact(tmp_path):
     one shared always-on budget, like every other contributor.
     """
     from luban import skills as skills_mod
-    long_desc = " ".join(f"word{i:03d}" for i in range(190))          # ~1,330 chars
+    long_desc = " ".join(f"word{i:03d}" for i in range(190))          # comfortably long
     d = tmp_path / "skills" / "rich"; d.mkdir(parents=True)
     (d / "SKILL.md").write_text(f"---\nname: rich\ndescription: {long_desc}\n---\nbody",
                                 encoding="utf-8")

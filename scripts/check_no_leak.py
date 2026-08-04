@@ -53,34 +53,59 @@ def _tracked_files_text() -> dict[str, str]:
 # real corporate install.
 #
 # The tell is roundness. luban's own design constants are round (150,000 warn_tokens;
-# 38,000 budget; 20,000 MAX_OUTPUT). A measurement is not: 12,957 cached tokens, a
-# 29,446-char journal, a 6,810-char profile. So: a thousands-separated number in a public
-# release note that does NOT end in at least two zeros is presumed to be field data and
-# blocks the push.
+# 38,000 budget; 20,000 MAX_OUTPUT). A measurement is not — a cached-token count, a journal
+# size, a profile size all land wherever they land. So: a thousands-separated number that
+# does NOT end in at least two zeros is presumed to be field data and blocks the push.
 #
 # Write the mechanism instead of the measurement. "The cached amount stays flat while the
 # uncached amount grows" says everything the numbers did, and discloses nothing.
-_PUBLIC_PROSE = ("luban/CHANGELOG.md", "README.md", "docs/memory-architecture.md")
+#
+# EVERY TRACKED FILE, not a list of prose files. The first version of this check policed
+# three markdown files, on the assumption that "published" meant "release notes". It does
+# not: this repo is public, so a code comment and a test docstring are exactly as published
+# as the CHANGELOG — and that is where most of the leaked figures actually were. Any list
+# of "the public files" will be wrong again the next time a file is added. The tracked set
+# IS the published set.
 _GROUPED_NUM = re.compile(r"\b\d{1,3}(?:,\d{3})+\b")
+# Numbers that are genuinely luban's or the API's, and happen not to be round.
+_NOT_MEASUREMENTS = {"4,096"}          # Anthropic's minimum cacheable prefix
+# A whole-percent figure is usually a design choice (70% of warn_tokens, ~10% of budget).
+# A percentage carried to a DECIMAL is somebody reading it off a real install.
+_DECIMAL_PCT = re.compile(r"\b\d+\.\d+\s*%")
+# Prose that announces the number beside it came from a real install. The number itself may
+# be perfectly round and still be usage data — a call count, a line count, a day count.
+_FROM_A_REAL_INSTALL = re.compile(
+    r"(on a real install|measured live|in the field (?:it |we |the )?(?:was|found|showed)"
+    r"|field measurement (?:found|showed)|measured across|measured:)", re.I)
+_SKIP = ("luban/prices.json", "uv.lock")
 
 
 def find_field_measurements(files: dict) -> list:
     hits = []
     for path, text in files.items():
-        if path not in _PUBLIC_PROSE:
+        if path in _SKIP:
             continue
         for i, line in enumerate(text.splitlines(), 1):
+            def hit(what):
+                hits.append(f"{path}:{i}: {what}  in: {line.strip()[:70]}")
             for m in _GROUPED_NUM.finditer(line):
-                if not m.group().replace(",", "").endswith("00"):
-                    hits.append(f"{path}:{i}: {m.group()}  in: {line.strip()[:70]}")
+                if (m.group() not in _NOT_MEASUREMENTS
+                        and not m.group().replace(",", "").endswith("00")):
+                    hit(m.group())
+            for m in _DECIMAL_PCT.finditer(line):
+                hit(m.group())
+            m = _FROM_A_REAL_INSTALL.search(line)
+            if m and re.search(r"\d", line):
+                hit(f'"{m.group()}" beside a figure')
     return hits
 
 
 def main() -> int:
     measurements = find_field_measurements(_tracked_files_text())
     if measurements:
-        print("LEAK: unrounded figures in public prose — these look like field")
-        print("measurements from a real install, which is company usage data:")
+        print("LEAK: these look like field measurements from a real install, which is")
+        print("company usage data. Every tracked file is published — a code comment and")
+        print("a test docstring are as public as the CHANGELOG:")
         for h in measurements:
             print(f"  - {h}")
         print("Describe the MECHANISM, not the measurement.")

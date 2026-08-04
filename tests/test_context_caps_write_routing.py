@@ -15,7 +15,7 @@ def mem(tmp_path, monkeypatch):
     return tmp_path
 
 
-# ---- C2: the field bug — a real 3,158-char USER.md was silently truncated ----
+# ---- C2: the field bug — a real USER.md was silently truncated ----
 
 def test_user_max_is_at_least_soul_max():
     # A profile is bigger than character text, so USER.md gets the larger budget.
@@ -23,13 +23,13 @@ def test_user_max_is_at_least_soul_max():
     assert memory.ALWAYS_ON_BUDGET >= memory.ALWAYS_ON_BUDGET > 0
 
 
-def test_field_bug_3158_char_user_md_now_passes_through_whole(mem):
-    profile = "## About me\n" + ("x" * 3_146)  # 3,158 chars total
-    assert len(profile) == 3158
+def test_field_bug_an_ordinary_profile_now_passes_through_whole(mem):
+    profile = "## About me\n" + ("x" * 3_000)
+    assert len(profile) > 3_000
     (mem / "USER.md").write_text(profile, encoding="utf-8")
     out = memory.read_user()
     assert "truncated" not in out
-    assert len(out) == 3158  # the tail (hard rules / Environment) is no longer dropped
+    assert len(out) == len(profile)  # the tail (hard rules / Environment) is kept
 
 
 def test_over_cap_still_truncates_and_marks(mem):

@@ -60,7 +60,7 @@ many calls, so one turn with several tool round-trips re-sends all of it many ti
 
 And luban had **no lifecycle for that history**. It grew until you typed `/compact`, which
 reset the whole session. Every context feature up to now — budgets, caps, memory curation —
-governed the *other* 10.5%.
+governed the small remainder.
 
 ### Folding
 
@@ -123,8 +123,9 @@ description **is** the trigger text the model matches your task against, so cutt
 defeats the feature it belongs to: in field use, descriptions several
 times that length were reduced to the cap, discarding most of the trigger text on exactly
 the richest skills. v0.5.19 made one of them warn rather than removing it, which produced a
-warning *per skill per command* — 18 lines of noise on a real install. Both caps and the
-warning are gone; the skills catalog is governed by the one shared always-on budget instead.
+warning *per skill per command* — a screenful of noise on any real catalog. Both caps and
+the warning are gone; the skills catalog is governed by the one shared always-on budget
+instead.
 
 ## v0.5.19 — the journal stops eating your context
 

@@ -26,13 +26,13 @@ _DESC_PREFIX = "description:"
 # NO length cap on skill descriptions. There were two — 240 for frontmatter, 80 for a
 # plain .md — and both were wrong for the same reason: the description IS the trigger
 # text. It is the only thing the model matches a task against when deciding whether to
-# load a skill, so truncating it defeats the feature it belongs to. A field measurement
-# found descriptions of 943, 886 and 785 chars cut to ~235: three quarters of the trigger
-# text discarded, on precisely the richest skills. That is the same outcome as E30 (skills
-# that never trigger), reached by a different route.
+# load a skill, so truncating it defeats the feature it belongs to. In the field the cut
+# was discarding most of the trigger text on precisely the richest skills — the same
+# outcome as E30 (skills that never trigger), reached by a different route.
 #
 # v0.5.19 made the 240 cut warn instead of removing it, which produced one warning PER
-# SKILL PER COMMAND — 18 lines on a real install. Decorating a bad bound is not fixing it.
+# SKILL PER COMMAND — a screenful on a real catalog. Decorating a bad bound is not fixing
+# it.
 #
 # The catalog is not unbounded: it is one contributor to the single always-on budget, and
 # is counted there like every other. Long descriptions are a budget question, answered by

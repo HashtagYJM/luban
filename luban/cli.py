@@ -244,13 +244,14 @@ CACHE_MIN_TOKENS = 4096  # Opus-class minimum cacheable prefix; below this, cach
 def count_tokens(client, model: str, system: str, tool_schemas=None) -> int | None:
     """Ask the API for the REAL token count of the cacheable prefix. None if unavailable.
 
-    Estimating was 36% wrong (4 chars/token assumed against a measured 2.94), so for any
-    number a person acts on — cache eligibility, when to /compact — measure.
+    Estimating undercounted by roughly a third — 4 chars/token assumed against a
+    materially denser reality — so for any number a person acts on (cache eligibility,
+    when to /compact) measure.
 
     `tool_schemas` MATTERS: the request is assembled tools -> system -> messages, so the
     cacheable prefix INCLUDES the tool schemas. Omitting them under-reported the prefix by
-    the size of the tool surface (6,286 chars on a real install) and made the /context
-    figure not comparable with the cached figure /usage reads off the API.
+    the whole size of the tool surface, and made the /context figure not comparable with
+    the cached figure /usage reads off the API.
     """
     try:
         kw = {"model": model, "system": system,
@@ -838,10 +839,11 @@ def estimate_tokens(messages: list) -> int:
 
 
 # ------------------------------------------------------------ conversation folding ----
-# The API is stateless: EVERY call re-sends the whole conversation. On a real install that
-# was 103,006 tokens per call, 89.5% of it history — and an agentic turn makes many calls.
-# luban had no lifecycle for that history at all: it grew until a human typed /compact,
-# which reset the entire session.
+# The API is stateless: EVERY call re-sends the whole conversation. History is the great
+# majority of what goes over the wire on a mature session — the system prompt and tool
+# schemas are a rounding error beside it — and an agentic turn makes many calls. luban had
+# no lifecycle for that history at all: it grew until a human typed /compact, which reset
+# the entire session.
 #
 # Folding applies the contract already settled for the journal, one level up: BOUNDED
 # WINDOW, FULL RECORD ON DISK, OMISSION STATED. A conversation meets the same three tests —
@@ -910,9 +912,10 @@ def chars_per_token(session: Session, client, cfg: config_mod.Config,
                     project_root: Path) -> float:
     """MEASURED, never assumed.
 
-    The old estimator hardcoded 4 chars/token against a real 2.94 and was 36% wrong. This
-    derives the ratio from this session's own numbers: real context tokens from the API,
-    real system-prompt tokens from count_tokens, and the actual character counts.
+    The old estimator hardcoded 4 chars/token against a materially denser reality and
+    undercounted by roughly a third. This derives the ratio from this session's own
+    numbers: real context tokens from the API, real system-prompt tokens from
+    count_tokens, and the actual character counts.
     """
     fallback = 2.9
     total_tokens = session.ledger.context_tokens
@@ -1542,8 +1545,9 @@ def main(argv: list[str] | None = None) -> None:
                                               session.model) + "\n")
             # MEASURED, not estimated. The old path compared warn_tokens against a
             # 4-chars/token estimate of the message text — 36% low against the measured
-            # 2.94, so the nudge arrived ~54k tokens late and ignored the system prompt
-            # and tool schemas entirely. context_tokens is what the model actually read.
+            # ratio, so the nudge arrived tens of thousands of tokens late and ignored
+            # the system prompt and tool schemas entirely. context_tokens is what the
+            # model actually read.
             # Offer to fold before the nudge: folding keeps the session and its thread,
             # /compact resets both. The user should be offered the reversible option first.
             maintain_context(session, client, cfg, project_root)

@@ -2,9 +2,10 @@
 
 Every API response carries exact token counts — input, output, and the two cache
 figures. luban discarded all of them and estimated instead, at 4 chars/token against a
-measured 2.94. That is a 36% undercount on the one number the user acts on, and it made
-the /compact nudge fire roughly 54,000 tokens LATE: the threshold was compared against an
-estimate, so a session reported as 67,861 tokens was really about 92,231.
+materially denser reality. That is roughly a third short on the one number the user acts
+on, and it made the /compact nudge fire tens of thousands of tokens LATE: the threshold
+was compared against an estimate, so a session was always further through its window than
+it claimed.
 
 So: never estimate what the server already told you. These numbers cost nothing extra —
 they arrive with the response either way.
@@ -115,9 +116,9 @@ class Ledger:
         `prompt_tokens` / `completion_tokens` / `prompt_tokens_details.cached_tokens`, so
         every field this reads is absent and `from_response` returns zeros. Nothing
         crashes — luban simply reports nothing, and the /compact nudge falls back to the
-        4-chars/token estimator that measured 36% wrong. A provider switch would silently
-        reinstate the exact defect this module exists to remove, so it has to announce
-        itself.
+        4-chars/token estimator that undercounted by roughly a third. A provider switch
+        would silently reinstate the exact defect this module exists to remove, so it has
+        to announce itself.
         """
         return self.calls > 0 and self.total_tokens == 0
 

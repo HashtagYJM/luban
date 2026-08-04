@@ -156,7 +156,7 @@ your `USER.md`, the facts behind the index. Cutting those loses instructions you
 never knew were missing. The journal is different in kind, and it is worth being
 explicit about why, because the distinction is easy to get wrong (luban got it
 wrong: a refactor removed the journal's bound along with four caps that genuinely
-deserved to go, and the journal promptly grew to 71% of everything sent each turn).
+deserved to go, and the journal promptly grew to dominate everything sent each turn).
 
 Three properties set a timeline apart:
 

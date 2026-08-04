@@ -4,6 +4,30 @@ Release notes, newest first. Bundled inside the package so luban can show
 "what's new" and reconcile its enhancement tracker offline, with no network.
 Each entry tags the tracker IDs (E-/F-) it resolves.
 
+## v0.5.22 — automatic folding, durable cache reuse, and OpenAI
+
+### Fold before context fills
+
+Folding now runs automatically when context crosses 70% of the configured threshold. It still announces the fold before and after, keeps recent turns verbatim, and preserves the full transcript on disk. Set `auto_fold = false` to restore the prompt.
+
+A failed fold is attempted only once per session. This prevents an unavailable backend from charging another failed model call after every turn. A fold declined because the removable span is still too small remains eligible later as the conversation grows.
+
+### Keep the conversation cache reusable
+
+The fact index and journal now ride behind the conversation cache breakpoint. A memory write therefore changes only the volatile tail instead of invalidating the cached conversation before it. Cache entries request a one-hour lifetime and fall back to the existing five-minute form if a backend rejects the `ttl` field; the fallback keeps caching active.
+
+`/usage` now includes folding, compaction, memory flushes, and reflection. These side calls send their own payloads, so they count toward spend without replacing the displayed size of the live conversation.
+
+### Switch providers with `/model` (E32)
+
+`/model` can now switch between the existing Anthropic-compatible client and an OpenAI Responses client in the same session. Add an optional `build_openai_client()` to `~/.luban/client_local.py`; `gpt-*`, `o1`, `o3`, and `o4` model IDs route there, while every other model continues through the original client unchanged.
+
+The adapter lives in luban's tested core and adds no dependency on the OpenAI SDK. It translates tools, tool results, reasoning effort, encrypted reasoning state, stop reasons, and usage into luban's existing surface. Cached input is subtracted before mapping usage because OpenAI includes cached tokens in its input total and Anthropic does not.
+
+### The publication guard covers the publication
+
+The leak guard now scans every tracked file, including source comments and test prose, for field measurements as well as internal identifiers. Public explanations retain the mechanism and omit data from real installations.
+
 ## v0.5.21 — see what you spend, and stop paying for it twice
 
 ### What it costs, in dollars

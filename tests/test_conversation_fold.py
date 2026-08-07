@@ -15,8 +15,9 @@ def _u(text):        return {"role": "user", "content": text}
 def _a(text):        return {"role": "assistant", "content": [{"type": "text", "text": text}]}
 def _call(tid):      return {"role": "assistant", "content": [
                          {"type": "tool_use", "id": tid, "name": "read_file", "input": {}}]}
-def _result(tid):    return {"role": "user", "content": [
-                         {"type": "tool_result", "tool_use_id": tid, "content": "x" * 400}]}
+def _result(tid, n=400):
+    return {"role": "user", "content": [
+        {"type": "tool_result", "tool_use_id": tid, "content": "x" * n}]}
 
 
 def _tool_heavy(n=12):
@@ -27,15 +28,43 @@ def _tool_heavy(n=12):
     return msgs
 
 
+def _agentic_turn(idx, rounds, chars=2_000):
+    """One human prompt, then `rounds` tool round-trips with no user text between them.
+
+    This is the shape of a real agentic turn and the shape `_tool_heavy` never has: there
+    the human speaks every fourth message, so a legal boundary is always within reach. A
+    turn's worth of tool traffic is bounded by nothing, and a boundary exists only where
+    the human typed.
+    """
+    msgs = [_u(f"prompt {idx}")]
+    for r in range(rounds):
+        msgs += [_call(f"{idx}_{r}"), _result(f"{idx}_{r}", chars)]
+    return msgs + [_a(f"answer {idx}")]
+
+
 # ---------------- constraint 1: never split a tool_use / tool_result pair ----------------
+
+def _a_boundary_that_meets_the_target(msgs, keep):
+    """A cut that is both legal and leaves at least the target verbatim. If one exists,
+    refusing to fold is a bug; if none does, refusing is correct."""
+    return any(cli._starts_a_clean_exchange(msgs[i]) and cli._history_chars(msgs[i:]) >= keep
+               for i in range(1, len(msgs)))
+
 
 def test_a_fold_never_orphans_a_tool_result():
     """The API requires every tool_use to be followed by its tool_result. A span starting
-    with an orphaned tool_result 400s — the likeliest way this feature breaks a session."""
+    with an orphaned tool_result 400s — the likeliest way this feature breaks a session.
+
+    A cut of 0 is a RESULT, not a case to skip: it claims no legal boundary exists, and
+    that claim has to hold too. Skipping it is how a boundary search that gives up on
+    perfectly foldable histories passed for a working one.
+    """
     msgs = _tool_heavy()
     for keep in range(100, 12_000, 137):          # every plausible boundary
         cut = cli.fold_boundary(msgs, keep)
         if cut == 0:
+            assert not _a_boundary_that_meets_the_target(msgs, keep), (
+                f"refused to fold at keep={keep} though a legal boundary exists")
             continue
         first = msgs[cut]
         assert cli._starts_a_clean_exchange(first), (
@@ -43,6 +72,35 @@ def test_a_fold_never_orphans_a_tool_result():
         blocks = first.get("content")
         if isinstance(blocks, list):
             assert not any(b.get("type") == "tool_result" for b in blocks)
+
+
+def test_a_turn_bigger_than_the_keep_window_still_folds():
+    """A boundary exists only where the human typed, and one turn's tool traffic is
+    bounded by nothing. Searching forward from the target finds nothing here and gives
+    up on a history that is almost entirely foldable."""
+    msgs = _tool_heavy(20) + _agentic_turn(99, 60)
+    keep = cli._history_chars(_agentic_turn(99, 60)) // 2   # target lands mid-run
+    cut = cli.fold_boundary(msgs, keep)
+    assert cut > 0, "gave up rather than cutting at the last boundary before the target"
+    assert cli._starts_a_clean_exchange(msgs[cut])
+
+
+def test_the_kept_span_is_never_smaller_than_the_target():
+    """The working set is the point of folding. A boundary search that overshoots the
+    target can summarise away the run still being worked on and report success."""
+    msgs = _tool_heavy(20) + _agentic_turn(98, 40) + _agentic_turn(99, 1, 50)
+    for keep in range(2_000, cli._history_chars(msgs), 4_001):
+        cut = cli.fold_boundary(msgs, keep)
+        if cut == 0:
+            continue
+        assert cli._history_chars(msgs[cut:]) >= keep, (
+            f"kept {cli._history_chars(msgs[cut:])} chars against a target of {keep}")
+
+
+def test_zero_means_no_boundary_exists_at_all():
+    """The one history that genuinely cannot be folded: a single unbroken run. Here the
+    refusal is true, and it is the only shape for which it is."""
+    assert cli.fold_boundary(_agentic_turn(1, 60), 10_000) == 0
 
 
 def test_the_boundary_is_a_user_turn_not_an_assistant_reply():
@@ -133,6 +191,24 @@ def test_folding_is_driven_by_measured_context_not_an_estimate():
     body = src[src.index("def maintain_context"):src.index("def compact_session")]
     assert "ledger.context_tokens" in body
     assert "estimate_tokens" not in body
+
+
+def test_the_measured_ratio_is_unmoved_by_server_side_clearing(monkeypatch):
+    """Clearing shrinks what the model READS but not the local message list. Measuring
+    chars-per-token against the cleared count inflates the ratio, and every threshold
+    derived from it inflates too — folds get rarer and quieter exactly when tool output
+    is heaviest, which is when folding is needed."""
+    monkeypatch.setattr(cli, "count_tokens", lambda *a: 0)
+    msgs = _tool_heavy(20)
+
+    def ratio_for(original):
+        s = cli.Session(model="m", max_tokens=100, auto=True, stream=False, messages=msgs)
+        s.ledger.add(usage_mod.Usage(input_tokens=10_000, original_input_tokens=original))
+        return cli.chars_per_token(s, object(), config_mod.Config(platform="mac"),
+                                   Path("."))
+
+    assert ratio_for(40_000) < ratio_for(0), (
+        "a cleared call must not report four times the characters per token")
 
 
 def test_a_declined_fold_leaves_history_untouched(monkeypatch):

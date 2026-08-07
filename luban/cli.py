@@ -891,10 +891,20 @@ def _starts_a_clean_exchange(msg: dict) -> bool:
 
 
 def fold_boundary(messages: list, keep_chars: int) -> int:
-    """Index of the first message to KEEP. 0 means nothing can safely be folded.
+    """Index of the first message to KEEP. 0 means there is nothing to fold.
 
-    Walks backwards accumulating the working set, then advances forward to the next clean
-    exchange boundary so a tool_use/tool_result pair is never split.
+    Walks backwards accumulating the working set, then keeps walking BACK to the nearest
+    clean exchange boundary so a tool_use/tool_result pair is never split.
+
+    The direction is the whole design. A boundary exists only where the human typed —
+    every intermediate message in an agentic turn is a tool_result — and nothing bounds
+    how far apart those are. Searching FORWARD from the target therefore has two failure
+    modes on the same history: a turn larger than the keep window has no boundary ahead of
+    the target at all, so folding gives up on a history that is almost entirely foldable;
+    and one short turn after a long run puts the only boundary ahead of the target at the
+    very end, so the fold succeeds and summarises away the run still being worked on.
+    Backwards can only ever keep MORE than the target, which is the safe direction for a
+    mechanism whose purpose is preserving the working set.
     """
     kept = 0
     start = len(messages)
@@ -903,9 +913,9 @@ def fold_boundary(messages: list, keep_chars: int) -> int:
         start = i
         if kept >= keep_chars:
             break
-    while start < len(messages) and not _starts_a_clean_exchange(messages[start]):
-        start += 1
-    return 0 if start >= len(messages) else start
+    while start > 0 and not _starts_a_clean_exchange(messages[start]):
+        start -= 1
+    return start  # 0 == no earlier boundary to cut at, so nothing folds
 
 
 def chars_per_token(session: Session, client, cfg: config_mod.Config,
@@ -918,7 +928,14 @@ def chars_per_token(session: Session, client, cfg: config_mod.Config,
     count_tokens, and the actual character counts.
     """
     fallback = 2.9
-    total_tokens = session.ledger.context_tokens
+    # Against the PRE-clearing count when context editing fired. `context_tokens` is what
+    # the model read after the server dropped stale tool results, but the local message
+    # list still holds them in full — dividing full chars by cleared tokens inflates the
+    # ratio, and every threshold derived from it goes with it. `original_input_tokens` is
+    # 0 when no clearing happened, so max() is the whole adjustment.
+    last = session.ledger.last
+    total_tokens = max(session.ledger.context_tokens,
+                       last.original_input_tokens if last else 0)
     if not total_tokens:
         return fallback
     try:
@@ -945,7 +962,7 @@ def fold_history(session: Session, client, cfg: config_mod.Config,
     keep_chars = int(cfg.warn_tokens * FOLD_TARGET * ratio)
     cut = fold_boundary(session.messages, keep_chars)
     if cut <= 0:
-        ui.print_text("  nothing can be folded without splitting a tool call.\n")
+        ui.print_text("  nothing to fold — no earlier turn boundary to cut at.\n")
         return False
     old, keep = session.messages[:cut], session.messages[cut:]
     freed = int(_history_chars(old) / ratio)

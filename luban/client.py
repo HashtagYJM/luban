@@ -225,6 +225,23 @@ def _beta_fn(client, method: str):
 
 
 
+def _is_strand_rejection(exc: BaseException) -> bool:
+    """The 400 that server-side clearing produces by stranding a web search (E33).
+
+    Clearing a web_search_tool_result leaves the server_tool_use that asked for it with
+    nothing following, and the API rejects that — on its own edited copy of the history,
+    which is why no local repair reaches it. Treated as the backend refusing the
+    parameter rather than as a failed turn, so the session drops to the unmanaged path
+    instead of 400ing on every send until the user starts over.
+
+    Kept narrow on purpose: only a 400 naming the block type. A predicate that swallowed
+    every 400 would silently disable the largest token lever on a typo in a model name.
+    """
+    if getattr(exc, "status_code", None) not in (400, None):
+        return False
+    return "web_search_tool_result" in str(exc)
+
+
 def _try_context_managed(client, method, base, extras, ctx_mgmt, on_retry,
                          on_text=None, on_thinking=None):
     """Issue via the beta surface with context editing on. None => caller falls back.
@@ -248,8 +265,10 @@ def _try_context_managed(client, method, base, extras, ctx_mgmt, on_retry,
         else:
             msg = _with_retry(lambda: fn(**kw), on_retry)
     except Exception as exc:
-        if p["ctx_mgmt"] is True or is_transient(exc):
-            raise  # it worked before, or the network died — not a rejection
+        if is_transient(exc):
+            raise  # the network died — not a rejection
+        if p["ctx_mgmt"] is True and not _is_strand_rejection(exc):
+            raise  # it worked before, so this is a real failure of this turn
         p["ctx_mgmt"] = False
         return None
     p["ctx_mgmt"] = True

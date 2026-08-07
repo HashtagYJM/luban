@@ -77,3 +77,72 @@ def test_the_tail_guarantee_still_holds():
              "content": [{"type": "tool_use", "id": "t1", "name": "write_file",
                           "input": {}}]}]
     assert agent.sanitize_history(msgs) == [msgs[0]]
+
+
+# ---------------- L3: the bricked session heals itself ----------------
+
+class _Status400(Exception):
+    status_code = 400
+
+
+class _FakeBeta:
+    """A backend whose beta surface raises the orphan-pair 400 the clear produces."""
+    def __init__(self, exc):
+        self.messages = type("M", (), {"create": self._raise})()
+        self._exc = exc
+
+    def _raise(self, **kw):
+        raise self._exc
+
+
+class _FakeClient:
+    def __init__(self, exc):
+        self.beta = _FakeBeta(exc)
+
+
+_STRAND_400 = _Status400(
+    "messages.12: `web_search_tool_use` ids were found without `web_search_tool_result` "
+    "blocks immediately after: srv_1. Each `web_search_tool_use` block must have a "
+    "corresponding `web_search_tool_result` block in the next message."
+)
+
+
+def _attempt(exc, prior_success):
+    client_mod._PROBES.clear()
+    if prior_success:
+        client_mod.probes("m")["ctx_mgmt"] = True
+    return client_mod._try_context_managed(
+        _FakeClient(exc), "create", {"model": "m"}, {},
+        client_mod.context_management(150_000), None)
+
+
+def test_the_strand_400_turns_clearing_off_even_after_it_worked():
+    """The branch that makes E33 fatal: once a context-managed call succeeds the probe
+    reads True and every later exception re-raises. The early turns ALWAYS succeed —
+    the 400 only starts once the trigger is crossed — so without this the thread dies."""
+    assert _attempt(_STRAND_400, prior_success=True) is None
+    assert client_mod.probes("m")["ctx_mgmt"] is False
+    client_mod._PROBES.clear()
+
+
+def test_an_unrelated_400_still_raises():
+    """Over-reach guard: a predicate that swallows every 400 passes the test above too."""
+    import pytest
+    with pytest.raises(_Status400):
+        _attempt(_Status400("model: unknown model 'm'"), prior_success=True)
+    client_mod._PROBES.clear()
+
+
+def test_a_transient_failure_still_raises(monkeypatch):
+    """A 500 is the network, not a rejection — it must not disable clearing for good.
+
+    sleep is stubbed because _with_retry backs off for real between attempts."""
+    import pytest
+
+    class _Status500(Exception):
+        status_code = 500
+
+    monkeypatch.setattr(client_mod.time, "sleep", lambda _s: None)
+    with pytest.raises(_Status500):
+        _attempt(_Status500("web_search_tool_result upstream error"), prior_success=True)
+    client_mod._PROBES.clear()

@@ -105,6 +105,9 @@ def test_context_management_config_is_derived_from_warn_tokens():
     assert cm["clear_at_least"]["value"] >= 1          # worth the cache invalidation
     for tool in ("remember", "recall", "forget", "journal"):
         assert tool in cm["exclude_tools"], "memory results must never be cleared"
+    assert "web_search" in cm["exclude_tools"], (
+        "a web search result is not independently clearable — it strands its server_tool_use"
+    )
 
 
 def test_a_backend_without_a_beta_surface_falls_back_silently():

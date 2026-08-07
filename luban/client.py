@@ -186,12 +186,20 @@ def _thinking_extras(thinking: bool, effort: str, verbose: bool = False) -> dict
 #   clear_at_least clearing invalidates the cached prefix at that point, so many small
 #                  clears are strictly worse than a few large ones. This floor makes each
 #                  clear worth the cache write it costs.
-#   exclude_tools  memory results are small and semantically load-bearing; clearing them
-#                  would make the model re-fetch what it already had.
+#   exclude_tools  two different reasons, kept apart deliberately. Memory results are
+#                  small and semantically load-bearing; clearing them would make the model
+#                  re-fetch what it already had — wasteful. A web search result CANNOT be
+#                  cleared at all: it arrives paired with the server_tool_use that asked
+#                  for it, and the API rejects a server_tool_use no result follows. Clear
+#                  one and every later send 400s against a history the client never sees.
 CONTEXT_MGMT_BETA = "context-management-2025-06-27"
 _KEEP_TOOL_USES = 6
 _CLEAR_AT_LEAST = 8_000
 _MEMORY_TOOLS = ["remember", "recall", "forget", "journal", "sessions"]
+# Server tools are named, not versioned, in the block that carries them: server_tool_use
+# has name "web_search" under every web_search_tool_type. Match the name.
+_UNCLEARABLE_TOOLS = ["web_search"]
+_NEVER_CLEAR = _MEMORY_TOOLS + _UNCLEARABLE_TOOLS
 
 
 def context_management(warn_tokens: int) -> dict:
@@ -200,7 +208,7 @@ def context_management(warn_tokens: int) -> dict:
         "trigger": {"type": "input_tokens", "value": max(20_000, int(warn_tokens * 0.6))},
         "keep": {"type": "tool_uses", "value": _KEEP_TOOL_USES},
         "clear_at_least": {"type": "input_tokens", "value": _CLEAR_AT_LEAST},
-        "exclude_tools": _MEMORY_TOOLS,
+        "exclude_tools": _NEVER_CLEAR,
     }]}
 
 

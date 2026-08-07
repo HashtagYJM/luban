@@ -312,9 +312,47 @@ def _run_model_turn(client, config, messages, on_text, on_thinking, on_retry=Non
     return msg
 
 
+def _strip_stranded_server_tools(messages: list[dict]) -> list[dict]:
+    """Drop any server_tool_use with no web_search_tool_result answering it.
+
+    A web search arrives as a pair in one assistant turn, and the API rejects a
+    server_tool_use that no result follows. A bare one reaches us two ways: a paused
+    server tool that exhausted MAX_PAUSE_RESUMES, and a session file written before this
+    guarantee existed. Whole-history, because the strand can sit anywhere — unlike the
+    tail rule below.
+
+    This does NOT repair server-side clearing (E33): that damage exists only on the
+    server's edited copy of the history, which the client never sees.
+    """
+    answered = {b.get("tool_use_id") for m in messages
+                for b in m.get("content", []) if isinstance(b, dict)
+                and b.get("type") == "web_search_tool_result"}
+    out = []
+    changed = False
+    for m in messages:
+        content = m.get("content")
+        if not isinstance(content, list):
+            out.append(m)
+            continue
+        kept = [b for b in content if not (
+            isinstance(b, dict) and b.get("type") == "server_tool_use"
+            and b.get("id") not in answered)]
+        if len(kept) == len(content):
+            out.append(m)
+        elif kept:
+            out.append({**m, "content": kept})
+            changed = True
+        else:
+            changed = True  # nothing left — drop the message entirely
+    return out if changed else messages
+
+
 def sanitize_history(messages: list[dict]) -> list[dict]:
-    """Guarantee an API-valid tail: history must never END in an assistant message
-    that contains unanswered tool_use blocks.
+    """Guarantee an API-valid history. Two rules:
+
+    1. No server_tool_use may stand without the web_search_tool_result answering it,
+       anywhere in the history (E33) — see _strip_stranded_server_tools.
+    2. History must never END in an assistant message with unanswered tool_use blocks.
 
     The Anthropic API requires every tool_use to be immediately followed by its
     tool_result. A response truncated at max_tokens mid-tool-call (or any path that
@@ -325,7 +363,7 @@ def sanitize_history(messages: list[dict]) -> list[dict]:
     and on restore (which repairs already-corrupted session files)."""
     if not messages:
         return messages
-    out = list(messages)
+    out = list(_strip_stranded_server_tools(messages))
     while out:
         last = out[-1]
         if last.get("role") != "assistant":

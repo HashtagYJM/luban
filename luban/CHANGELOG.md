@@ -4,7 +4,19 @@ Release notes, newest first. Bundled inside the package so luban can show
 "what's new" and reconcile its enhancement tracker offline, with no network.
 Each entry tags the tracker IDs (E-/F-) it resolves.
 
-## v0.5.22 — automatic folding, durable cache reuse, and OpenAI
+## v0.5.23 — folding keeps the work you are in the middle of
+
+### Fold at the boundary before the target, not after it
+
+A fold may only cut where the kept conversation starts on one of your own messages, because a span that opens on an orphaned tool result is rejected by the API. Every intermediate message in an agentic turn is a tool result, so cut points exist only where you typed, and nothing limits how far apart those are.
+
+Folding searched forward from its size target for the next cut point, which failed two ways on the same conversation. A turn larger than the window folding wants to keep has no cut point after the target at all, so folding reported that nothing could be folded without splitting a tool call and left the conversation whole. Then a short turn after a long one put the only cut point after the target at the very end, so the fold succeeded, summarised away the run still being worked on, and reported it as a success.
+
+Folding now searches backward instead, which can only ever keep more of the conversation than the target rather than less. Folding still declines when no earlier cut point exists — a single unbroken run from the first message — and now says so accurately.
+
+### Measure context density against the uncleared prompt
+
+With server-side clearing of stale tool results enabled, the model reads less than the local conversation holds. Characters per token were measured against the cleared count, which inflated the ratio and every folding threshold derived from it, so folds became rarer and smaller exactly when tool output was heaviest. The measurement now uses the prompt size before clearing, which the API already reports.
 
 ### Fold before context fills
 

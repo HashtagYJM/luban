@@ -29,6 +29,10 @@ LUBAN.md
 # filenames there carry internal identifiers — publishing it would leak them.
 ARCHITECTURE.md
 
+# Agent configuration: skills, hooks, settings. Same reasoning as CLAUDE.md above —
+# these are working instructions for this machine, not part of what luban publishes.
+.claude/
+
 # Local scratch (screenshots, corporate error logs) — never publish
 _local/
 

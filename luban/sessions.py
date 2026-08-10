@@ -1,12 +1,11 @@
 """Session persistence — one JSON file per session under ~/.luban/sessions/.
 
-Standard library only. Writes are atomic (tmp file + os.replace) so a crash
-never leaves a half-written session; the previous complete save survives.
+Standard library only. Writes go through paths.atomic_write_text, so a crash never
+leaves a half-written session; the previous complete save survives.
 """
 from __future__ import annotations
 
 import json
-import os
 import secrets
 import sys
 from datetime import datetime
@@ -15,6 +14,9 @@ from pathlib import Path
 from luban import paths
 
 SESSIONS_DIR = paths.luban_home() / "sessions"
+
+# One implementation for the whole codebase — see paths.atomic_write_text.
+_atomic_write_text = paths.atomic_write_text
 
 
 class SessionNotFound(Exception):
@@ -44,9 +46,7 @@ def save(data: dict, sessions_dir: Path | None = None) -> Path:
     data = dict(data)
     data["updated"] = datetime.now().isoformat(timespec="seconds")
     path = d / f"{data['id']}.json"
-    tmp = d / f"{data['id']}.tmp"
-    tmp.write_text(json.dumps(data, indent=1, ensure_ascii=False), encoding="utf-8")
-    os.replace(tmp, path)
+    _atomic_write_text(path, json.dumps(data, indent=1, ensure_ascii=False))
     return path
 
 

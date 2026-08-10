@@ -144,22 +144,26 @@ _HYGIENE = (
 
 
 def ensure_scaffold() -> None:
-    """First-run setup: SOUL.md template, empty index, journal dir. Idempotent."""
+    """First-run setup: SOUL.md template, journal dir, tracker. Idempotent.
+
+    The index is REBUILT here every launch, not merely created when absent. It is derived
+    from the fact files, but it was regenerated only as a side effect of remember/forget —
+    so a damaged one outlived every restart, because `if not exists()` skips a file that is
+    present and truncated. That is what turned a one-second write window into permanent,
+    silent memory loss. Unconditional and idempotent: cheaper in code than deciding what
+    "damaged" means, and it overwrites no user work, since the index is already rewritten
+    wholesale on every fact write.
+    """
     try:
         (MEMORY_DIR / "journal").mkdir(parents=True, exist_ok=True)
         if not SOUL_PATH.exists():
-            SOUL_PATH.parent.mkdir(parents=True, exist_ok=True)
-            SOUL_PATH.write_text(_SOUL_TEMPLATE, encoding="utf-8")
+            paths.atomic_write_text(SOUL_PATH, _SOUL_TEMPLATE)
         if not USER_PATH.exists():
-            USER_PATH.parent.mkdir(parents=True, exist_ok=True)
-            USER_PATH.write_text(_USER_TEMPLATE, encoding="utf-8")
-        index = MEMORY_DIR / "MEMORY.md"
-        if not index.exists():
-            index.write_text("# Long-term memory index\n", encoding="utf-8")
+            paths.atomic_write_text(USER_PATH, _USER_TEMPLATE)
         tracker = MEMORY_DIR / "enhancements.md"
         if not tracker.exists():
-            tracker.write_text(_ENHANCEMENTS_TEMPLATE, encoding="utf-8")
-            _rebuild_index()  # index the new component immediately
+            paths.atomic_write_text(tracker, _ENHANCEMENTS_TEMPLATE)
+        _rebuild_index()
     except Exception:
         pass  # memory must never break startup
 
@@ -570,7 +574,7 @@ def _rebuild_index() -> None:
         for p in facts:
             text = p.read_text(encoding="utf-8", errors="replace")
             lines.append(f"- [{p.stem}] {_fact_description(text)}")
-        (MEMORY_DIR / "MEMORY.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+        paths.atomic_write_text(MEMORY_DIR / "MEMORY.md", "\n".join(lines) + "\n")
     except OSError:
         pass  # index rebuild is best-effort; facts on disk stay authoritative
 
@@ -589,8 +593,8 @@ def remember(name: str, description: str, body: str) -> str:
         return f"Invalid memory name: {name!r} (kebab-case: a-z, 0-9, dashes, max 64)."
     try:
         MEMORY_DIR.mkdir(parents=True, exist_ok=True)
-        _fact_path(name).write_text(
-            f"description: {description.strip()}\n\n{body.strip()}\n", encoding="utf-8"
+        paths.atomic_write_text(
+            _fact_path(name), f"description: {description.strip()}\n\n{body.strip()}\n"
         )
         _rebuild_index()
     except OSError as exc:

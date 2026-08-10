@@ -213,18 +213,9 @@ def _grep(inp: dict, ctx: ToolContext) -> ToolResult:
     return ToolResult(_truncate("\n".join(hits) or "(no matches)"))
 
 
-def _atomic_write_text(target: Path, text: str) -> None:
-    """Write UTF-8 to a temp file then os.replace over the target.
-
-    Always UTF-8 (never the platform default codec — cp1252 on Windows can't
-    encode arrows/em-dashes/emoji and would raise UnicodeEncodeError). Because we
-    write a temp and rename, a failed encode can never leave the real file
-    truncated to 0 bytes. Raises on failure; callers turn that into an is_error.
-    """
-    target.parent.mkdir(parents=True, exist_ok=True)
-    tmp = target.with_name(target.name + ".tmp")
-    tmp.write_text(text, encoding="utf-8")
-    os.replace(tmp, target)
+# One implementation for the whole codebase — see paths.atomic_write_text for why the
+# order matters. Aliased rather than re-exported so existing call sites read unchanged.
+_atomic_write_text = paths.atomic_write_text
 
 
 def _write_file(inp: dict, ctx: ToolContext) -> ToolResult:

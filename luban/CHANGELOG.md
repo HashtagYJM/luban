@@ -4,6 +4,26 @@ Release notes, newest first. Bundled inside the package so luban can show
 "what's new" and reconcile its enhancement tracker offline, with no network.
 Each entry tags the tracker IDs (E-/F-) it resolves.
 
+## v0.5.24 — a web search no longer ends the conversation, and memory survives a failed write
+
+### Clearing a web search result no longer bricks the session (E33)
+
+With `context_editing = true`, a long session that had used web search would start returning an error on every send, and the only way out was to start a new conversation.
+
+A web search arrives as a pair: the block that asks, and the block that answers. The pair cannot be split — the API rejects a request where the asking block has no answer after it. Server-side clearing removes stale tool output to save context, and it was allowed to clear an aged-out search answer while leaving the question standing, which made every subsequent request invalid. Because luban sends the full conversation each turn, the clear was re-applied to a fresh copy every time, so the failure repeated instead of passing.
+
+Three changes. Web search is now excluded from clearing, alongside the memory tools. Any question left without its answer is stripped from the conversation before it is sent, wherever it sits — not only at the end. And if this rejection is seen anyway, luban turns context editing off for the rest of the session and continues on the ordinary path, so the conversation survives at the cost of higher context use rather than ending.
+
+The exclusion matches the tool by name, so it holds for both the basic and the newer web search tool versions.
+
+### Memory survives a failed write
+
+Writing a file with Python's `write_text` empties it before the replacement is written, so a write interrupted partway — a full disk, a quota, a process killed at the wrong moment — destroyed content that was never in question. The file tools and session files already avoided this; the memory store did not.
+
+Two further choices made a narrow window into a lasting one. `MEMORY.md` is rebuilt from the fact files, but it was only regenerated when a fact was written, and startup recreated it only when it was missing entirely — so a truncated index, which is not missing, survived every restart. And the error handling assumed a failed write left the previous content alone, so nothing reported the loss. The result was a store that quietly listed fewer facts than it held, with every fact intact on disk.
+
+Every whole-file write in the memory store now replaces the file rather than emptying it, and the index is rebuilt at startup instead of only when absent. The journal is deliberately unchanged: it appends, and appending never truncates. There is one shared implementation of this write for the whole codebase.
+
 ## v0.5.23 — folding keeps the work you are in the middle of
 
 ### Fold at the boundary before the target, not after it

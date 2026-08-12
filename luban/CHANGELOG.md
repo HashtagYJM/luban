@@ -76,6 +76,8 @@ Folding now searches backward instead, which can only ever keep more of the conv
 
 With server-side clearing of stale tool results enabled, the model reads less than the local conversation holds. Characters per token were measured against the cleared count, which inflated the ratio and every folding threshold derived from it, so folds became rarer and smaller exactly when tool output was heaviest. The measurement now uses the prompt size before clearing, which the API already reports.
 
+## v0.5.22 — automatic folding, durable cache reuse, and OpenAI
+
 ### Fold before context fills
 
 Folding now runs automatically when context crosses 70% of the configured threshold. It still announces the fold before and after, keeps recent turns verbatim, and preserves the full transcript on disk. Set `auto_fold = false` to restore the prompt.

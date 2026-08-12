@@ -254,6 +254,25 @@ def _journal_allowance() -> int:
     return int(ALWAYS_ON_BUDGET * JOURNAL_SHARE)
 
 
+# A timeline needs a RUN of entries to be a timeline at all. The window keeps the newest
+# whole entries, so its usefulness is entry COUNT, not characters — and one entry that
+# takes a large share of the window evicts whole earlier days on its own. This is the size
+# at which one entry starts doing that.
+JOURNAL_ENTRIES_PER_WINDOW = 16
+
+
+def journal_entry_limit() -> int:
+    """The per-entry size guide, derived from the window it has to share.
+
+    The budget cap bounds the journal's TOTAL. It cannot bound entry QUALITY: one
+    multi-paragraph entry stays inside the cap and still costs every older day. A soft
+    rule in a tool description and the system prompt did not bind — a blanket instruction
+    with no per-entry signal gets rationalized past — so the signal is emitted at the
+    write, against the entry actually written.
+    """
+    return max(200, _journal_allowance() // JOURNAL_ENTRIES_PER_WINDOW)
+
+
 def _day_tail(text: str, budget: int) -> str:
     """The NEWEST whole entries of one day that fit in budget.
 

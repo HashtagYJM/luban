@@ -386,7 +386,19 @@ def _journal(inp: dict, ctx: ToolContext) -> ToolResult:
     if not ctx.confirm("Append to journal?"):
         return ToolResult("User declined the journal entry.")
     memory_mod.journal_append(text)
-    return ToolResult("Journal updated.")
+    limit = memory_mod.journal_entry_limit()
+    if len(text) <= limit:
+        return ToolResult("Journal updated.")
+    # Written, never refused — the content is already worth more than the rule. What was
+    # missing was a per-entry signal: the cap bounds the journal's total, so a bloated
+    # entry stays legal and quietly costs every older day.
+    return ToolResult(
+        f"Journal updated — but this entry is {len(text):,} characters against a "
+        f"~{limit:,} guide. The journal is a TIMELINE, sent whole on every turn and "
+        f"holding roughly {memory_mod.JOURNAL_ENTRIES_PER_WINDOW} entries in total, so an "
+        f"entry this size evicts earlier days outright. Keep it to what happened and why. "
+        f"Edit plans, code and tracebacks belong in a file under docs/ — and the full "
+        f"detail is already in the session transcript, which is searchable.")
 
 
 def _spawn_subagent(inp: dict, ctx: ToolContext) -> ToolResult:
@@ -584,7 +596,10 @@ TOOLS = [
     {
         "name": "journal",
         "description": "Append a short note to today's journal: what happened, "
-        "decisions made, progress. Keep entries to a few lines.",
+        f"decisions made, progress. Hard guide: keep it under "
+        f"{memory_mod.journal_entry_limit():,} characters — the journal is a timeline "
+        "sent whole on every turn, and one long entry evicts earlier days. Edit plans, "
+        "code, and tracebacks belong in a file, not here.",
         "input_schema": {
             "type": "object",
             "properties": {"text": {"type": "string"}},

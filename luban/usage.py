@@ -102,6 +102,12 @@ class Ledger:
     cleared_tokens: int = 0
     reasoning_tokens: int = 0
     last: Usage = None  # type: ignore[assignment]
+    # What the NEXT call will send, when the local history changed without a call being
+    # made. A fold and a shrink both rewrite history between measurements, and `last`
+    # describes a request that no longer exists — so every figure derived from it, and
+    # every decision taken on it, still describes the folded-away span. Cleared by the
+    # next real measurement, which always wins.
+    projected: int = 0
     # Sub-ledgers keyed by the model that bought the tokens. A mid-session /model switch
     # means the cumulative total was bought at two different rates, and pricing all of it
     # at whichever model happens to be current blends dollars that were never the same
@@ -136,11 +142,16 @@ class Ledger:
         self.calls += 1
         if context:
             self.last = u
+            self.projected = 0  # a measurement supersedes a projection, always
         if model:
             sub = self.by_model.get(model)
             if sub is None:
                 sub = self.by_model[model] = Ledger()
             sub.add(u, context=context)  # no model => no recursion
+
+    def project_context(self, tokens: int) -> None:
+        """Record what the next call will send after history was rewritten locally."""
+        self.projected = max(0, tokens)
 
     @property
     def context_tokens(self) -> int:
@@ -149,7 +160,12 @@ class Ledger:
         Summing across calls answers "what did I spend"; the last call answers "how full
         is the window". Conflating them is how a spend figure gets compared against a
         window threshold.
+
+        A projection outranks `last` only in the gap between a local rewrite and the next
+        call, because there `last` measures a request that will never be sent again.
         """
+        if self.projected:
+            return self.projected
         return self.last.context_tokens if self.last else 0
 
     @property

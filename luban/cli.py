@@ -95,9 +95,13 @@ class Session:
     thinking_verbose: bool = False
     # Measured token accounting, from what the API reports on every response.
     ledger: object = field(default_factory=lambda: usage_mod.Ledger())
-    # A fold that failed cost a model call. Context is still over the threshold, so an
-    # automatic fold would try again next turn, and every turn after — latch it instead.
-    fold_failed: bool = False
+    # A fold that failed cost a model call, and one that could not get under the trigger
+    # will not do better next turn. Context is still over the threshold either way, so an
+    # automatic fold would try again every turn for the rest of the session — latch it.
+    fold_blocked: bool = False
+    # Context at the last warning. Being over the line is a STATE, not an event: without
+    # this the same four lines print every turn until the reader stops reading them.
+    fold_warned_at: int = 0
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -854,10 +858,17 @@ def estimate_tokens(messages: list) -> int:
 # Unlike /compact this is PARTIAL and REPEATABLE: the oldest span folds into a summary, the
 # recent turns stay verbatim, and the session keeps its identity and thread.
 FOLD_TRIGGER = 0.70   # of warn_tokens — act before the cliff, not at it
-FOLD_TARGET = 0.40    # of warn_tokens — leaves a large verbatim working set
+FOLD_TARGET = 0.40    # of the WHOLE prompt, standing prefix included — see fold_keep_chars
+FOLD_FLOOR = 0.15     # of warn_tokens — the least history a fold may leave, however large
+                      # the always-on block grows
 FOLD_MIN_TOKENS = 20_000  # folding invalidates the cached prefix; many small folds are
                           # strictly worse than a few large ones (same logic as
                           # clear_at_least in context editing)
+FOLD_RENOTIFY = 0.10  # of warn_tokens — how much more context has to arrive before being
+                      # over the line is news again rather than the same standing fact
+FOLD_BIG_RESULT = 0.10  # of warn_tokens — one tool result this large is not conversation,
+                        # it is a document that landed in the window and crowds out the
+                        # turns it was meant to serve
 
 FOLD_PROMPT = (
     "Summarize the EARLY part of this conversation so the work can continue without it. "
@@ -918,6 +929,27 @@ def fold_boundary(messages: list, keep_chars: int) -> int:
     return start  # 0 == no earlier boundary to cut at, so nothing folds
 
 
+def standing_tokens(session: Session, client, cfg: config_mod.Config,
+                    project_root: Path) -> int:
+    """The always-on prefix: system prompt, memory blocks, skills catalog, guidance.
+
+    It rides on EVERY call alongside the history, so it is part of what the trigger
+    measures — and therefore part of what the fold target has to leave room for. Sizing a
+    fold against history alone lands the total back above the line that fired it.
+    """
+    try:
+        stable, volatile = agent.system_blocks(
+            cfg.platform, skills_mod.list_skills(str(project_root)),
+            read_project_memory(project_root, cfg.memory_file),
+            memory_mod.bootstrap_stable() if cfg.memory_enabled else "",
+            tools.custom_guidance(),
+            memory_mod.bootstrap_volatile() if cfg.memory_enabled else "")
+        system = "\n\n".join(p for p in (stable, volatile) if p)
+        return count_tokens(client, session.model, system) or 0
+    except Exception:
+        return 0
+
+
 def chars_per_token(session: Session, client, cfg: config_mod.Config,
                     project_root: Path) -> float:
     """MEASURED, never assumed.
@@ -933,41 +965,159 @@ def chars_per_token(session: Session, client, cfg: config_mod.Config,
     # list still holds them in full — dividing full chars by cleared tokens inflates the
     # ratio, and every threshold derived from it goes with it. `original_input_tokens` is
     # 0 when no clearing happened, so max() is the whole adjustment.
+    # The MEASURED call, never a projection: a projection is itself derived from this
+    # ratio, so feeding it back in would let the estimate calibrate itself.
     last = session.ledger.last
-    total_tokens = max(session.ledger.context_tokens,
+    total_tokens = max(last.context_tokens if last else 0,
                        last.original_input_tokens if last else 0)
     if not total_tokens:
         return fallback
-    try:
-        stable, volatile = agent.system_blocks(
-            cfg.platform, skills_mod.list_skills(str(project_root)),
-            read_project_memory(project_root, cfg.memory_file),
-            memory_mod.bootstrap_stable() if cfg.memory_enabled else "",
-            tools.custom_guidance(),
-            memory_mod.bootstrap_volatile() if cfg.memory_enabled else "")
-        system = "\n\n".join(p for p in (stable, volatile) if p)
-        standing = count_tokens(client, session.model, system) or 0
-    except Exception:
-        standing = 0
-    history_tokens = total_tokens - standing
+    history_tokens = total_tokens - standing_tokens(session, client, cfg, project_root)
     if history_tokens <= 0:
         return fallback
     return max(1.0, _history_chars(session.messages) / history_tokens)
 
 
+def fold_keep_chars(session: Session, client, cfg: config_mod.Config,
+                    project_root: Path, ratio: float) -> int:
+    """How much history a fold may keep, in characters.
+
+    The target is a share of the WHOLE prompt, so the standing prefix comes out of it
+    first — otherwise a fold sized at 40% of the window lands at 40% plus a system prompt,
+    which on a mature install is above the 70% trigger that fired it, and the next turn
+    folds again, and every turn after that. The floor stops a very large always-on block
+    from squeezing the working set to nothing; there the fold does what it can and the
+    always-on budget is the thing that needs fixing.
+    """
+    room = cfg.warn_tokens * FOLD_TARGET - standing_tokens(session, client, cfg, project_root)
+    return int(max(room, cfg.warn_tokens * FOLD_FLOOR) * ratio)
+
+
+def shrink_oversized_results(messages: list, limit_chars: int, session_id: str,
+                             keep_recent: int = 2) -> int:
+    """Replace the BODY of any single oversized tool result. Returns characters freed.
+
+    This is the one shape folding cannot reach. A PDF read or a large file lands ONE
+    enormous `tool_result` in the recent span the fold exists to protect, so folding the
+    older span frees nothing and context stays over the line with no lever at all.
+
+    The `tool_use`/`tool_result` pair is indivisible *structurally*; nothing requires the
+    result to keep its content. Leaving both messages in place and stubbing the body keeps
+    the history valid with no cut point needed — which is why this reaches a shape no
+    boundary search can.
+
+    Two things it must not touch. The live exchange, because summarising away the result
+    the model is working on right now is the exact failure folding already learned once.
+    And a `web_search_tool_result`, because that pair is not independently editable — the
+    API rejects a search whose result does not follow it, and the strand is unrecoverable.
+    Web search output therefore stays unbounded here by design; `/compact` is its lever.
+    """
+    where = session_id or "this session's transcript"
+    freed = 0
+    for msg in messages[:max(0, len(messages) - keep_recent)]:
+        content = msg.get("content")
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if not isinstance(block, dict) or block.get("type") != "tool_result":
+                continue
+            body = block.get("content")
+            if not isinstance(body, str) or len(body) <= limit_chars:
+                continue
+            block["content"] = (
+                f"[{len(body):,} characters of tool output dropped from the context window "
+                f"— one result this size crowds out the conversation it was meant to serve. "
+                f"The full result is verbatim in this session's transcript at "
+                f"~/.luban/sessions/{where}.json and can be read with the sessions and "
+                f"read_file tools.]")
+            freed += len(body) - len(block["content"])
+    return freed
+
+
+def oversized_result_pending(messages: list, limit_chars: int, keep_recent: int = 2) -> bool:
+    """True when the LIVE exchange holds an oversized result.
+
+    Being over the line for this reason is temporary: the result is protected only while
+    it is the thing being worked on, and becomes reachable the moment the conversation
+    moves past it. So it must not latch folding off for the session — the difference
+    between "cannot help yet" and "cannot help at all".
+    """
+    for msg in messages[max(0, len(messages) - keep_recent):]:
+        content = msg.get("content")
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if (isinstance(block, dict) and block.get("type") == "tool_result"
+                    and isinstance(block.get("content"), str)
+                    and len(block["content"]) > limit_chars):
+                return True
+    return False
+
+
 def fold_history(session: Session, client, cfg: config_mod.Config,
                  project_root: Path) -> bool:
-    """Fold the oldest span into a summary. Returns True if anything changed."""
+    """Bound the conversation. Returns True if anything changed.
+
+    Two levers, cheapest first. Stubbing an oversized tool result costs no model call and
+    reaches the one shape a boundary search cannot; summarising the oldest span costs the
+    most expensive call in a session and is what preserves meaning. Both end by projecting
+    the new size, because no call is made with the rewritten history and every later
+    decision would otherwise be taken against a request that no longer exists.
+    """
     ratio = chars_per_token(session, client, cfg, project_root)
-    keep_chars = int(cfg.warn_tokens * FOLD_TARGET * ratio)
+    keep_chars = fold_keep_chars(session, client, cfg, project_root, ratio)
+    standing = standing_tokens(session, client, cfg, project_root)
+    big = int(cfg.warn_tokens * FOLD_BIG_RESULT * ratio)
+    changed = False
+
+    def settle(why: str = "") -> bool:
+        """Record the new size, and decide whether trying again could ever do better.
+
+        Every exit runs through here. Over the threshold is a STATE: if nothing about the
+        conversation can change the answer, offering the same expensive attempt every turn
+        for the rest of the session is worse than saying so once and naming the lever that
+        does work.
+        """
+        if why:
+            ui.print_text(f"  {why}\n")
+        projected = standing + int(_history_chars(session.messages) / ratio)
+        session.ledger.project_context(projected)
+        if projected < cfg.warn_tokens * FOLD_TRIGGER:
+            return changed
+        if oversized_result_pending(session.messages, big):
+            ui.print_text("  the newest tool result is itself oversized — it leaves the "
+                          "window as soon as the conversation moves past it.\n")
+            return changed
+        session.fold_blocked = True
+        ui.print_text(
+            f"  folding cannot bring this down further — ~{projected:,} tokens remain and "
+            f"the turns a fold has to keep are the bulk of it. /compact starts a fresh "
+            f"session from a summary, and nothing on disk is lost. Not offering again "
+            f"this session.\n")
+        return changed
+
+    # 1. Free, and the only lever that reaches an oversized result inside the working set.
+    freed_chars = shrink_oversized_results(session.messages, big, session.session_id)
+    if freed_chars:
+        save_session(session)  # the FULL transcript is on disk before anything is dropped
+        changed = True
+        ui.print_text(f"  ✓ dropped ~{int(freed_chars / ratio):,} tokens of oversized tool "
+                      f"output from the window. Full results kept on disk.\n")
+        if standing + int(_history_chars(session.messages) / ratio) < (
+                cfg.warn_tokens * FOLD_TRIGGER):
+            return settle()  # under the line already — no model call needed as well
+
     cut = fold_boundary(session.messages, keep_chars)
     if cut <= 0:
-        ui.print_text("  nothing to fold — no earlier turn boundary to cut at.\n")
-        return False
+        return settle("nothing more to fold — this is one unbroken run, with no earlier "
+                      "turn boundary to cut at.")
     old, keep = session.messages[:cut], session.messages[cut:]
     freed = int(_history_chars(old) / ratio)
     if freed < FOLD_MIN_TOKENS:
-        return False  # not worth the cache invalidation a fold costs
+        # Not worth the cache invalidation a fold costs — and saying so matters, because
+        # the bulk sitting in the recent span is the diagnosis, not a non-event.
+        return settle(f"nothing more to fold — the older span is only ~{freed:,} tokens; "
+                      f"the bulk is in the recent turns a fold has to keep.")
     save_session(session)  # the FULL transcript is on disk before anything is folded
     try:
         msg = client_mod.create_turn(
@@ -980,12 +1130,12 @@ def fold_history(session: Session, client, cfg: config_mod.Config,
         summary = "".join(b.text for b in msg.content if b.type == "text").strip()
     except Exception as exc:
         ui.print_text(f"  fold failed ({exc}) — conversation unchanged.\n")
-        session.fold_failed = True   # cost a call; do not retry every turn
-        return False
+        session.fold_blocked = True   # cost a call; do not retry every turn
+        return changed
     if not summary:
         ui.print_text("  fold failed (empty summary) — conversation unchanged.\n")
-        session.fold_failed = True
-        return False
+        session.fold_blocked = True
+        return changed
     where = session.session_id or "this session's transcript"
     session.messages = [
         {"role": "user", "content":
@@ -999,6 +1149,8 @@ def fold_history(session: Session, client, cfg: config_mod.Config,
     save_session(session)
     ui.print_text(f"  ✓ folded {len(old)} messages (~{freed:,} tokens freed). "
                   f"Full transcript kept on disk.\n")
+    changed = True
+    settle()
     return True
 
 
@@ -1017,16 +1169,34 @@ def maintain_context(session: Session, client, cfg: config_mod.Config,
 
     A fold that FAILS is not retried this session. Failure costs a model call, so retrying
     every turn against a context that is still over the threshold would burn one each time.
+
+    Neither is a fold that ran and could not help. Over the threshold is a STATE, not an
+    event: left alone it is true again on the very next turn, so acting on the level alone
+    repeats an unchanged four-line warning every turn and re-buys the most expensive call
+    in the session each time. What earns another attempt is the situation CHANGING —
+    materially more context than the last attempt saw. Below the trigger the memory of the
+    last warning is dropped, so a later crossing speaks in full.
     """
     if client is None or not session.ledger.context_tokens:
         return
     ctx_now = session.ledger.context_tokens
-    if ctx_now < cfg.warn_tokens * FOLD_TRIGGER or session.fold_failed:
+    if ctx_now < cfg.warn_tokens * FOLD_TRIGGER:
+        session.fold_warned_at = 0   # back under; the next crossing is news again
         return
+    if session.fold_blocked:
+        return
+    if session.fold_warned_at and (
+            ctx_now < session.fold_warned_at + cfg.warn_tokens * FOLD_RENOTIFY):
+        return  # already said this, and nothing has changed enough to say it again
+    first_time = not session.fold_warned_at
+    session.fold_warned_at = ctx_now
     ui.print_text(
         f"\n⚠ context is {ctx_now:,} tokens of {cfg.warn_tokens:,} and every turn re-sends "
         f"all of it.\n  Folding summarizes the OLDEST messages and keeps recent turns "
         f"verbatim; the full\n  transcript stays on disk either way.\n")
+    if not first_time:
+        ui.print_text("  (still over after the last attempt — the recent turns a fold has "
+                      "to keep are themselves large.)\n")
     if not cfg.auto_fold:
         try:
             answer = input("  fold now? [y/N] ").strip().lower()

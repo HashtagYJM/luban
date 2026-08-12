@@ -4,6 +4,44 @@ Release notes, newest first. Bundled inside the package so luban can show
 "what's new" and reconcile its enhancement tracker offline, with no network.
 Each entry tags the tracker IDs (E-/F-) it resolves.
 
+## v0.5.25 — folding lands where it aims, and says so honestly
+
+### `/compact` no longer ends a conversation that used web search (E33)
+
+A web search arrives as a pair — the block that asks and the block that answers — and the API rejects a request where the asking block has no answer after it. v0.5.24 stripped any unanswered block before sending, and did it at each of the places that send. Compaction was a fourth place, added earlier and never given the same treatment, so compacting a conversation that had web-searched failed on the spot and kept failing. Folding had the same gap waiting.
+
+The rule now lives inside the two functions that actually talk to the model, so every request — a turn, a fold, a compaction, a subagent, or anything added later — passes through it. The guard was never wrong; the list of places calling it was, and there is no longer a list.
+
+### A journal entry that is too long now says so (E34)
+
+The journal is sent whole on every turn and keeps the newest entries that fit. One very long entry stays within that budget and still pushes out whole earlier days, so the timeline collapses to a few hours of one day. "Keep entries to a few lines" was written in three places and bound nothing, because there was no signal at the moment an entry was actually written.
+
+Entries over the size guide are still written — the content is worth more than the rule — and now come back with their own size, the guide, and where the detail belongs instead. The guide is derived from the journal's share of the budget rather than picked, and the tool now states the number instead of "a few lines".
+
+### A fold now aims at the whole prompt, not just the conversation
+
+Folding triggers on everything sent in a turn — the conversation plus the system prompt, memory blocks, skills catalog and tool guidance that ride along with it. But it sized the part it kept as a share of the window spent entirely on conversation, leaving no room for the rest. So a fold aimed comfortably below the threshold landed above it, the warning returned on the very next turn at a higher number, and folding ran again, and again — each one the most expensive call in a session, because it sends the whole early conversation uncached.
+
+The kept span is now sized against the whole prompt, with the always-on part subtracted first. A fold lands where it aims, and the warning stays gone until the conversation genuinely grows back.
+
+### The context figure survives a fold
+
+The size shown is measured from the last call to the model, and a fold makes no call with the shortened conversation. Nothing updated the figure afterwards, so the "consider /compact" note printed directly beneath a successful fold repeated the number from before it — a fold that had just freed a large part of the window read as one that had done nothing at all.
+
+Folding now records what the next call will send, and the next real measurement replaces it.
+
+### Every way a fold can decline now says so, and stops repeating itself
+
+Three outcomes leave the conversation unchanged: no cut point exists, the older span is too small to be worth the cache it costs, or the bulk of the context is in the recent turns a fold has to keep. One of them printed nothing at all — after announcing "folding now…", the session simply went quiet, which is indistinguishable from a fold that silently failed.
+
+Each now states what it found. And because being over the threshold is a standing condition rather than an event, the warning no longer reprints every turn: it waits for the context to grow materially, and when folding genuinely cannot help any further it says so once, points at `/compact`, and stops offering. A fold blocked only by a result that is still being worked on stays retryable, since that clears on its own as the conversation moves on.
+
+### One oversized tool result no longer defeats folding entirely
+
+Reading a large file or document puts a single very large result into the recent turns that folding exists to preserve. Folding the older conversation then frees almost nothing, correctly by its own rules, and the context stays over the threshold with nothing able to bring it down.
+
+When context is over the threshold, a single result large enough to dominate the window now has its content dropped from what is sent, in place, leaving the request valid with no cut point needed. A marker states how much was dropped and points at the full result, which stays verbatim in the session transcript on disk and can be read back at any time. The result being worked on right now is never touched, and neither is a web search result — that pair cannot be edited without breaking every later request, so web searches remain bounded only by `/compact`.
+
 ## v0.5.24 — a web search no longer ends the conversation, and memory survives a failed write
 
 ### Clearing a web search result no longer bricks the session (E33)

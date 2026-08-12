@@ -146,3 +146,65 @@ def test_a_transient_failure_still_raises(monkeypatch):
     with pytest.raises(_Status500):
         _attempt(_Status500("web_search_tool_result upstream error"), prior_success=True)
     client_mod._PROBES.clear()
+
+
+# ---------------- L4: the guarantee sits at the SEND, not at a list of callers ----------------
+# The recurrence proved the shape of the defect. Three send paths called sanitize_history
+# and a fourth (compaction) did not, so a thread that had web-searched 400'd the moment it
+# was compacted — and folding, added later, had the same gap. Enumerating callers is a
+# promise that each new caller must remember to keep. Enforcing inside the two functions
+# that actually send is a property no caller can miss.
+
+def _stranded():
+    return [{"role": "user", "content": "search"},
+            {"role": "assistant", "content": [
+                {"type": "server_tool_use", "id": "w1", "name": "web_search", "input": {}}]},
+            {"role": "user", "content": "and now compact"}]
+
+
+class _Recorder:
+    """Stands in for the company client, capturing what would go over the wire."""
+    def __init__(self):
+        self.sent = None
+        self.messages = self
+
+    def create(self, **kw):
+        self.sent = kw["messages"]
+        return type("M", (), {"content": [], "usage": None})()
+
+    def stream(self, **kw):
+        self.sent = kw["messages"]
+        raise RuntimeError("stop here — the payload is what is under test")
+
+
+def _blocks(messages):
+    return [b.get("type") for m in messages for b in m.get("content", [])
+            if isinstance(b, dict)]
+
+
+def test_create_turn_cannot_send_a_strand():
+    rec = _Recorder()
+    client_mod.create_turn(rec, model="m", max_tokens=10, system="s",
+                           messages=_stranded(), tools=[])
+    assert "server_tool_use" not in _blocks(rec.sent)
+
+
+def test_stream_turn_cannot_send_a_strand():
+    rec = _Recorder()
+    try:
+        client_mod.stream_turn(rec, model="m", max_tokens=10, system="s",
+                               messages=_stranded(), tools=[], on_text=lambda t: None)
+    except Exception:
+        pass
+    assert rec.sent is not None, "the send never reached the client"
+    assert "server_tool_use" not in _blocks(rec.sent)
+
+
+def test_the_caller_is_not_trusted_to_remember():
+    """Every path that reaches the API — turn, fold, compact, and anything added next —
+    goes through one of these two functions, so none of them can carry a strand."""
+    import inspect
+    for fn in (client_mod.create_turn, client_mod.stream_turn):
+        src = inspect.getsource(fn)
+        assert "sanitize_history(messages)" in src, (
+            f"{fn.__name__} sends the caller's list unchecked")

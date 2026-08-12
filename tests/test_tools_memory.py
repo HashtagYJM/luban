@@ -112,3 +112,40 @@ def test_active_tools_filter():
     assert tools.MEMORY_TOOL_NAMES <= names_on
     assert not (tools.MEMORY_TOOL_NAMES & names_off)
     assert "read_file" in names_off
+
+
+# ---------------- E34: the journal is a timeline, so entry SIZE is a property ----------------
+# The shared budget bounds the journal's total; it cannot bound one entry. A bloated entry
+# stays inside the cap and evicts whole earlier days, and a soft rule carried in the tool
+# description and the system prompt did not bind — a blanket instruction with no per-entry
+# signal gets rationalized past. The signal has to be emitted against the entry written.
+
+def test_a_bloated_entry_is_written_but_answered_with_its_size(mem, tmp_path):
+    import datetime as dt
+    big = "x" * (memory.journal_entry_limit() + 1)
+    out = tools.run_tool("journal", {"text": big}, make_ctx(tmp_path))
+    assert not out.is_error, "the entry is worth more than the rule — never refuse it"
+    path = mem / "memory" / "journal" / f"{dt.date.today().isoformat()}.md"
+    assert big in path.read_text(encoding="utf-8")
+    assert f"{len(big):,}" in out.content, "the nudge must quote the entry's actual size"
+    assert "TIMELINE" in out.content
+
+
+def test_an_ordinary_entry_gets_no_lecture(mem, tmp_path):
+    out = tools.run_tool("journal", {"text": "shipped the fold fix"}, make_ctx(tmp_path))
+    assert out.content == "Journal updated."
+
+
+def test_the_entry_guide_is_derived_from_the_window_it_shares(monkeypatch):
+    """A number invented here would drift from the budget it exists to protect."""
+    monkeypatch.setattr(memory, "ALWAYS_ON_BUDGET", 38_000)
+    wide = memory.journal_entry_limit()
+    monkeypatch.setattr(memory, "ALWAYS_ON_BUDGET", 8_000)
+    assert memory.journal_entry_limit() < wide
+
+
+def test_the_tool_description_states_the_threshold_not_a_vibe():
+    """"Keep entries to a few lines" is unfalsifiable, so it never bound anything."""
+    desc = next(t["description"] for t in tools.TOOLS if t["name"] == "journal")
+    assert "few lines" not in desc
+    assert any(ch.isdigit() for ch in desc)

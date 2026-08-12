@@ -17,7 +17,7 @@ import types
 from pathlib import Path
 from types import SimpleNamespace
 
-from luban import paths
+from luban import history, paths
 from luban.providers import openai as openai_mod
 from typing import Any
 
@@ -294,7 +294,7 @@ def create_turn(client, *, model, max_tokens, system, messages, tools,
                 ctx_mgmt=None):
     p = probes(model)
     base = dict(model=model, max_tokens=max_tokens, system=system,
-                messages=messages, tools=tools)
+                messages=history.sanitize_history(messages), tools=tools)
     extras = _thinking_extras(thinking, effort, verbose) if p["extras"] is not False else {}
     if ctx_mgmt:
         msg = _try_context_managed(client, "create", base, extras, ctx_mgmt, on_retry)
@@ -445,7 +445,7 @@ def stream_turn(client, *, model, max_tokens, system, messages, tools, on_text,
                 on_retry=None, ctx_mgmt=None):
     p = probes(model)
     base = dict(model=model, max_tokens=max_tokens, system=system,
-                messages=messages, tools=tools)
+                messages=history.sanitize_history(messages), tools=tools)
     extras = _thinking_extras(thinking, effort, verbose) if p["extras"] is not False else {}
     if ctx_mgmt:
         msg = _try_context_managed(client, "stream", base, extras, ctx_mgmt, on_retry,

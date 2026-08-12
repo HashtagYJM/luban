@@ -4,6 +4,16 @@ Release notes, newest first. Bundled inside the package so luban can show
 "what's new" and reconcile its enhancement tracker offline, with no network.
 Each entry tags the tracker IDs (E-/F-) it resolves.
 
+Landed-but-unshipped work goes under `## Unreleased`, which the upgrade hook cannot
+see — it matches `## v<number>`. A release RENAMES that heading to its derived version;
+it never writes a version heading ahead of the release, and never edits the heading
+below. Only user-facing behaviour earns a line here.
+
+## Unreleased
+
+Nothing user-facing since v0.5.25. Landed: this file's own v0.5.22 heading, restored
+after v0.5.23 absorbed it, and a test that fails if any released version has no heading.
+
 ## v0.5.25 — folding lands where it aims, and says so honestly
 
 ### `/compact` no longer ends a conversation that used web search (E33)

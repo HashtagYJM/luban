@@ -67,3 +67,32 @@ def test_every_released_version_has_a_heading_of_its_own():
                      and changelog._parse_ver(t[1:]) > oldest
                      and changelog._parse_ver(t[1:]) not in headed)
     assert not missing, f"released with no changelog heading of its own: {missing}"
+
+
+def test_the_version_matches_the_newest_released_heading():
+    """A version heading is written by RENAMING `## Unreleased` at release time, so the
+    package version and the newest `## v` heading move together or the release is
+    half-done. Catches both halves: a version bumped with no notes under it, and notes
+    written under a version number that was never actually cut.
+
+    This is the guard for the failure that produced the v0.5.22 hole — a heading claimed
+    ahead of a release, then rewritten by the next one.
+    """
+    from pathlib import Path
+    text = Path("luban/CHANGELOG.md").read_text(encoding="utf-8")
+    heads = [changelog._VER_HEAD.match(ln).group(1) for ln in text.splitlines()
+             if changelog._VER_HEAD.match(ln)]
+    assert heads, "no version headings at all"
+    newest = max(heads, key=changelog._parse_ver)
+    assert changelog._parse_ver(luban.__version__) == changelog._parse_ver(newest), (
+        f"__version__ is {luban.__version__} but the newest changelog heading is v{newest}")
+
+
+def test_pending_notes_never_reach_upgrade_notes():
+    """`## Unreleased` must stay invisible to the hook — otherwise work that has not
+    shipped is announced to someone who cannot have it."""
+    from pathlib import Path
+    text = Path("luban/CHANGELOG.md").read_text(encoding="utf-8")
+    assert "## Unreleased" in text, "the convention is documented in this file's header"
+    assert not changelog._VER_HEAD.match("## Unreleased"), (
+        "the hook would collect pending notes as if they were a release")

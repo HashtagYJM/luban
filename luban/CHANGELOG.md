@@ -9,6 +9,10 @@ see — it matches `## v<number>`. A release RENAMES that heading to its derived
 it never writes a version heading ahead of the release, and never edits the heading
 below. Only user-facing behaviour earns a line here.
 
+## Unreleased
+
+Nothing yet since v0.6.0.
+
 ## v0.6.0 — luban keeps track of where each project stands
 
 ### luban now keeps track of where each project stands, without being asked

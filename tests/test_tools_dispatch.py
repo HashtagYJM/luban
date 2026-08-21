@@ -11,7 +11,7 @@ def test_tools_schema_names():
     assert names == {
         "list_dir", "glob", "grep", "read_file",
         "write_file", "edit_file", "run_command", "load_skill", "sessions",
-        "remember", "recall", "forget", "journal",
+        "remember", "recall", "forget", "journal", "checkpoint",
     }
     for t in tools.TOOLS:
         assert "description" in t and "input_schema" in t

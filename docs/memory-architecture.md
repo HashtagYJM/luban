@@ -30,12 +30,41 @@ stores**, each matched to a kind of information.
 
 ---
 
+## The organising rule: route by re-injection cost
+
+Every design choice below follows from one asymmetry, so it is worth having in mind
+before the stores themselves.
+
+A store that is **always-on** is re-sent on *every model call*. A store read **on
+demand** costs nothing until something asks for it. In an agentic session a single
+user turn can mean many model calls, so a line that sits in the always-on block is
+paid for again and again, while the same line in a file is paid for once, if ever.
+
+**So always-on stores hold POINTERS, and on-demand stores hold DEPTH.**
+
+| Store | What it costs | Present at the start of the next session? |
+|---|---|---|
+| Journal window | Every call, for as long as it stays in the window | Yes, automatically |
+| Fact **index** line | Every call, forever | Yes, automatically |
+| Fact **body** | Nothing until `recall` names it | No — one deliberate fetch |
+| A plan, spec, or `PROGRESS.md` | Nothing until someone opens it | No — one deliberate read |
+| Session transcript | Nothing until it is resumed or read | No — one deliberate read |
+
+That single rule explains the index-versus-body split, the journal-versus-transcript
+split, and `USER.md` versus a recallable fact. It also settles the question people
+usually get wrong in the other direction: **writing costs output tokens once, and
+re-injection costs input tokens forever.** Being reluctant to write an entry because
+of what it costs to *produce* is optimising the wrong number by orders of magnitude.
+Write the entry; make it a pointer.
+
+---
+
 ## The three stores
 
 | Store | Where | What it holds | Loaded into context? | Lifecycle |
 |---|---|---|---|---|
 | **Session** | `~/.luban/sessions/<id>.json` | The **full verbatim transcript** of a conversation, per project | **No** — re-read on demand (`--continue`, `--resume`, the `sessions` tool) | Kept indefinitely; the raw record |
-| **Journal** | `~/.luban/memory/journal/YYYY-MM-DD.md` | Append-only, timestamped one-liners: *what happened, what was decided, what's next* | **Yes**, but only **today + yesterday** | Auto-decays — old days simply stop being loaded |
+| **Journal** | `~/.luban/memory/journal/YYYY-MM-DD.md` | Append-only, timestamped one-liners: *what happened, what was decided, what's next* | **Yes** — the two most recent days that actually **have** entries for this project | Auto-decays — old days simply stop being loaded |
 | **Facts** | `~/.luban/memory/*.md` + `MEMORY.md` index | Durable truths, **one per file**, with an always-loaded index | **Index always; full fact via `recall`** | Permanent until you `forget` it |
 
 Plus the always-on blocks that frame every turn:
@@ -86,11 +115,18 @@ narrative into the fact store, you get the worst of both: the episode is
 flattened *and* the fact store fills with noise that pollutes every future turn.
 
 This is exactly the bug the memory-hygiene work fixed. Before a `/compact`,
-luban writes to the **journal** (episodic timeline), never to **facts**
-(semantic) — and it's structurally prevented from doing otherwise: the flush
-turn is handed *only* the `journal` tool, and any other tool call is rejected at
-dispatch. The full episode is preserved losslessly in the session transcript.
-Each tier stays in its lane.
+luban writes to the **journal** (episodic timeline) and the **continuity pointer**
+(below), never to ordinary **facts** (semantic).
+
+And it is structurally prevented from doing otherwise. The flush turn carries the
+whole conversation it is about to compact — including earlier turns where `remember`
+*was* on offer — so leaving a tool out of the schema list is a request, not a
+control. Instead the turn declares the set of tools it may call at all, and that set
+is checked at **dispatch**: every tool call in luban funnels through one choke point,
+and a call outside the set is refused there and reported to both the model and the
+audit trail. It is a general capability gate rather than a memory feature; the flush
+turn is simply its first user. The full episode is preserved losslessly in the
+session transcript. Each tier stays in its lane.
 
 ### The graduation question
 
@@ -109,6 +145,36 @@ simple bar:
 A user preference, a standing decision, an environment truth — yes. Session
 events, task progress, "we discussed X today" — no; those belong in the journal
 and the transcript.
+
+### The one exception: a continuity pointer
+
+There is a question every session has to answer before it can read anything at all:
+*where am I on this project, and what is next?* By the bar above it is the worst
+possible fact — task-scoped, duplicating what the project's own files record, true
+only until the next thing lands. And yet nothing else answers it. The journal is a
+global timeline whose newest entry may belong to a different project; the transcript
+has to be *found* before it can be read.
+
+So luban keeps one **continuity pointer per project** — a fact named
+`active-<project>` — and it is machine-maintained, which is what makes it safe:
+
+- **It is a pointer, not a record.** Its always-on cost is the single index line, and
+  the plan or transcript it names costs nothing until someone opens it.
+- **Code owns the address, the model owns the status.** luban writes the project, the
+  date and the transcript path itself; the model contributes one sentence saying where
+  things stand and what is next. If the model call never happens, the address still
+  lands.
+- **They carry separate dates**, so refreshing the address can never re-date a status
+  the model did not write. A pointer nobody has updated reads as exactly that, rather
+  than looking current and being wrong — which is the failure mode a stale pointer
+  shares with the journal's newest entry.
+- **Nobody has to maintain it.** It is refreshed at every `/compact` and at session
+  exit, and the `checkpoint` tool lets the agent update it the moment a milestone
+  actually lands. A hand-written "current work" note goes stale the first time
+  somebody forgets, and then quietly misleads every session after that.
+
+`/reflect` is shown these pointers but explicitly forbidden to touch them — see
+*Curation* below.
 
 ---
 
@@ -160,9 +226,9 @@ deserved to go, and the journal promptly grew to dominate everything sent each t
 
 Three properties set a timeline apart:
 
-- **It grows by design.** The agent is *instructed* to write an entry at the close
-  of every working block, in every project. Following the instruction is what
-  causes the growth — the write path has no cost signal.
+- **It grows by design.** luban appends an entry itself at every `/compact` and at
+  session exit, in every project, and the agent adds more as work happens. Growth is
+  the feature: a timeline with gaps is not a timeline.
 - **It has no curation lever.** You can merge duplicate facts and delete stale
   ones. There is no equivalent operation on a diary, and there shouldn't be: a
   journal is append-only by definition. The only thing that shrinks it is choosing
@@ -171,14 +237,74 @@ Three properties set a timeline apart:
   transcript is kept. Showing the two most recent days is not deleting the rest;
   it is choosing a window.
 
+The window is **scoped to the project you are in**, for the same continuity reason.
+The journal is one global timeline, so without scoping a busy week elsewhere spends
+this project's whole allowance and its window comes back blank — and a gap here reads
+as "nothing happened" when the answer is sitting on disk two days back. Entries are
+tagged with their project as they are written, at the single point every writer passes
+through, and the window keeps this project's entries plus any untagged ones. `recall`
+still searches all of them.
+
 So the journal's invariant is **bounded window, full record on disk** — with the
 omission *stated* rather than silent, so you always know what you're not seeing
 and where it still lives. That last part is the general rule: a bound nobody is
 told about is indistinguishable from a bug.
 
+### A total is not a quality: what belongs in one entry
+
+The allowance bounds what the journal *costs*. It cannot stop one bloated entry from
+evicting every earlier day, and each such entry is perfectly legal under the total. A
+timeline needs a **run** of entries to be a timeline at all, so the useful measure is
+entry *count*, and there is a derived per-entry guide: the allowance divided by the
+number of entries a window needs to be worth having. The `journal` tool always writes
+the entry — the content is worth more than the rule — and answers an oversized one
+with its own size against that guide.
+
+The reason a blanket instruction was not enough is worth stating, because it
+generalises: **an instruction with no per-entry signal gets rationalised past**, since
+at the moment of writing there is always a reason *this* entry is the important one.
+The signal has to arrive at the write, measured against what was actually written.
+
+What that means for content follows straight from the routing rule:
+
+- **Write pointers.** A line or two naming what moved and the file that holds the
+  detail. The decision itself usually belongs in a plan or spec, where it costs
+  nothing until someone opens it.
+- **Two things have no cheaper home**, and belong in the journal in full: a
+  **reversal** (we did X, it was wrong, we do Y now) and a **surprise** (something
+  behaved unlike its documentation). Plan files record decisions; they rarely record
+  the reasoning that overturned one.
+- **Not:** edit plans, code, tracebacks, or a retelling of the conversation. The
+  transcript already holds all of it, losslessly, at no recurring cost.
+
 The deeper lesson: **rationing is not curation.** A cap is a way of avoiding the
 judgment call about what deserves to be there, and it fails quietly. The budget's
 real job is to be a forcing function for the curation pass below.
+
+## Where to write: route by how it will be used
+
+The stores only stay separate if there is a rule for choosing between them, and the
+rule is *not* "whichever tool is handiest". luban carries this one in its own system
+prompt:
+
+| What you have | Where it goes | Why |
+|---|---|---|
+| A standing preference about you, or how you want work done | **`USER.md`** | It has to govern behaviour, so it must already be in context |
+| luban's own character or behaviour | **`SOUL.md`** | Same, but about the agent rather than you |
+| A detail worth having *once it becomes relevant* | **a fact** (`remember`) | The index line is always-on; the body is fetched |
+| A repeatable procedure for a class of task | **a skill** | Loaded when the task calls for it |
+| Something true only inside one codebase | **that project's memory file** | It travels with the repo |
+| What happened | **the journal** | A timeline, not a state store |
+| Where a project stands and what is next | **the continuity pointer** | Machine-maintained; see above |
+
+One rule dominates all of them: **never store always-on behaviour as a recallable
+fact.** You cannot know to recall it before you act, so by the time you would look it
+up you have already done the thing the wrong way. That single failure mode is why
+`USER.md` and `SOUL.md` exist as separate always-on files rather than as facts.
+
+And the mirror image, for continuity: **never infer "where we left off" from the
+journal.** It is a timeline of what happened, and its newest entry may belong to a
+different project entirely. Read the continuity pointer, then the transcript it names.
 
 ## Retrieval: a fetch, not a search
 
@@ -199,11 +325,13 @@ details matter more than the scoring:
 - **A miss says so honestly.** It reports that nothing matched *and* that this is
   not evidence the fact doesn't exist, pointing back at the index. Otherwise the
   agent's natural response to a failed lookup is to save a duplicate.
-- **Documents are not facts.** A long, hand-maintained document living in the
-  memory folder — an issue tracker, say — will win almost any search about a
-  problem it once recorded, simply by quoting it. Such files are excluded from
-  fuzzy matching and surface only when named exactly. Filing a document as a fact
-  is the actual error; tuning the ranking only masks it.
+- **A document is not a fact.** A long, hand-maintained document living in the
+  memory folder — the enhancement tracker, say — will win almost any search about a
+  problem it once recorded, simply by quoting the search back at you. It is therefore
+  excluded from fuzzy matching by name and surfaces only when asked for exactly.
+  This is a short explicit list, not a heuristic: guessing which files are
+  "documents" would eventually exclude a real fact. Filing a document as a fact is
+  the actual error; tuning the ranking only masks it.
 
 ## Curation: the mechanism that makes the rest work
 
@@ -219,6 +347,24 @@ ledger, then works through: survey → merge duplicates into one better note →
 resolve contradictions in favour of what's true now → delete anything the
 transcripts, journal, or project files already record → graduate → tighten →
 report. Every change is an ordinary write, shown as a diff you confirm.
+
+**Every one of those verbs reduces.** `/reflect` is a *curator*, not a synthesiser —
+it never invents a fact. Capture is the job of the session in which something was
+learned, where the context to judge it still exists; asking a later isolated turn to
+mine the journal for durable truths is asking it to guess. (An early version did have
+such a promotion step, and it was removed: it produced generalisations from a
+timeline that was never meant to support them.)
+
+The one thing it must **not** rewrite is a continuity pointer. Every rule above would
+delete one — it is task-scoped and it duplicates the project's own files by design,
+which is the whole point of it. So the pointers are shown to the curator separately,
+ring-fenced, and excluded from duplicate suggestions (one per project, all the same
+shape, so a naive pass would happily merge two projects into one).
+
+It may still *forget* one whose project has gone untouched for months — every writable
+store needs a retire path, and one of these accumulates for every directory you ever run
+luban in. That is the safe direction to be wrong in: the next `/compact` in that project
+writes it straight back.
 
 **Graduation is the delicate step.** A pattern about *how you want work done* is a
 standing instruction, not a look-up detail — and a recallable fact cannot govern
@@ -307,8 +453,10 @@ the system healthy:
    `forget` it when it's dead.
 4. **Let the index be rebuilt, not written.** Curate the notes; leave `MEMORY.md`
    to the machine.
-5. **Reflect periodically.** `/reflect` is the *lint* pass — a moment to promote
-   real facts out of the journal, prune stale ones, and catch contradictions.
+5. **Reflect periodically.** `/reflect` is the *lint* pass — merge duplicates, prune
+   what the transcripts and project files already hold, catch contradictions, and
+   graduate the rare standing instruction. It only ever *reduces*: capture belongs to
+   the session that learned the thing, not to a later pass mining the journal for it.
    Do it occasionally, not every turn.
 6. **Cross-link with `[[wikilinks]]`.** When one fact refers to another, link it
    by name (`[[some-other-note]]`). `recall` **follows** these one level, pulling
@@ -322,6 +470,10 @@ the system healthy:
 7. **Watch the total, not each file.** Everything always-on shares one budget
    (below). Adding a line to `USER.md` spends the same budget the fact index and
    the journal draw on — so promoting something is a trade, not an append.
+8. **Route by re-injection cost, not by how much you care.** Something important is
+   not thereby always-on. Ask what it costs on *every* call versus what it costs to
+   fetch when wanted, and put a pointer in the cheap place and the depth in the
+   expensive-to-fetch one.
 
 ---
 

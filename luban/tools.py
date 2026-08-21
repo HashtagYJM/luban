@@ -36,6 +36,12 @@ class ToolContext:
     audit: Callable[[dict], None] | None = None
     allow_out_of_tree: bool = False  # config gate for editing files outside the project
     subagent: Callable[[str], str] | None = None  # run a nested read-only sub-agent
+    # The tools this context may call AT ALL. None means the full dispatch. Withholding a
+    # tool by leaving it out of the schema list is a request, not a control: the model
+    # still has the whole prior conversation, including turns where it WAS offered, and a
+    # proxied or rogue backend need not read the schema at all. run_tool is the one choke
+    # point every call passes through, so the capability lives here.
+    only: frozenset[str] | None = None
 
 
 def _truncate(text: str) -> str:
@@ -378,6 +384,20 @@ def _recall(inp: dict, ctx: ToolContext) -> ToolResult:
     return ToolResult(memory_mod.recall(inp.get("query", "")))
 
 
+def _checkpoint(inp: dict, ctx: ToolContext) -> ToolResult:
+    status = " ".join(inp.get("status", "").split())
+    if not status:
+        return ToolResult("Empty checkpoint status.", is_error=True)
+    project = Path(ctx.project_root).name
+    ctx.render_command(f"checkpoint[{project}] = {status}")
+    if not ctx.confirm("Update the continuity pointer?"):
+        return ToolResult("User declined the checkpoint.")
+    memory_mod.checkpoint(project, status)
+    return ToolResult(
+        f"Checkpoint saved — [{memory_mod.checkpoint_slug(project)}] now reads: {status}"
+    )
+
+
 def _journal(inp: dict, ctx: ToolContext) -> ToolResult:
     text = inp.get("text", "").strip()
     if not text:
@@ -385,7 +405,7 @@ def _journal(inp: dict, ctx: ToolContext) -> ToolResult:
     ctx.render_command(f"journal += {text}")
     if not ctx.confirm("Append to journal?"):
         return ToolResult("User declined the journal entry.")
-    memory_mod.journal_append(text)
+    memory_mod.journal_append(text, project=Path(ctx.project_root).name)
     limit = memory_mod.journal_entry_limit()
     if len(text) <= limit:
         return ToolResult("Journal updated.")
@@ -450,6 +470,7 @@ _DISPATCH = {
     "forget": _forget,
     "recall": _recall,
     "journal": _journal,
+    "checkpoint": _checkpoint,
 }
 
 TOOLS = [
@@ -594,12 +615,31 @@ TOOLS = [
         },
     },
     {
+        "name": "checkpoint",
+        "description": "Record where THIS project now stands and what the next step is, "
+        "in one sentence. It overwrites the project's continuity pointer, which is the "
+        "line you will read in the memory index at the start of the next session — so "
+        "name the concrete next action and the file to open, not what you have been "
+        "doing. Use it when a milestone actually lands or the next step changes; luban "
+        "also refreshes it at /compact and at exit.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"status": {
+                "type": "string",
+                "description": "One sentence: state, then next step and where it lives.",
+            }},
+            "required": ["status"],
+        },
+    },
+    {
         "name": "journal",
-        "description": "Append a short note to today's journal: what happened, "
-        f"decisions made, progress. Hard guide: keep it under "
-        f"{memory_mod.journal_entry_limit():,} characters — the journal is a timeline "
-        "sent whole on every turn, and one long entry evicts earlier days. Edit plans, "
-        "code, and tracebacks belong in a file, not here.",
+        "description": "Append a short note to today's journal: what happened and what "
+        "was decided, as a POINTER — name what moved and the file that holds the detail. "
+        f"Hard guide: keep it under {memory_mod.journal_entry_limit():,} characters — "
+        "the journal is a timeline sent whole on every turn, and one long entry evicts "
+        "earlier days. Plans, code and tracebacks belong in a file. Write out in full "
+        "only what has no other home: a reversal, or something that behaved unlike its "
+        "documentation.",
         "input_schema": {
             "type": "object",
             "properties": {"text": {"type": "string"}},
@@ -608,7 +648,7 @@ TOOLS = [
     },
 ]
 
-MEMORY_TOOL_NAMES = {"remember", "forget", "recall", "journal"}
+MEMORY_TOOL_NAMES = {"remember", "forget", "recall", "journal", "checkpoint"}
 
 
 def active_tools(memory_enabled: bool = True) -> list[dict]:
@@ -709,6 +749,12 @@ def run_tool(name: str, tool_input: dict, ctx: ToolContext) -> ToolResult:
     fn = _DISPATCH.get(name)
     if fn is None:
         return ToolResult(f"Unknown tool: {name}", is_error=True)
+    if ctx.only is not None and name not in ctx.only:
+        # Not a permission decision — the tool was never on offer here. Reported to the
+        # model and the audit trail both, because no tool call is silently dropped.
+        out = ToolResult(f"Blocked: {name} is not available on this turn.", is_error=True)
+        _audit_call(ctx, name, tool_input, "not_offered", out)
+        return out
     decision = ctx.decide(name, tool_input) if ctx.decide is not None else None
     if decision is not None and decision.action == "deny":
         out = ToolResult(f"Blocked: {decision.reason}", is_error=True)

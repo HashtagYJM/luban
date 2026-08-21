@@ -5,7 +5,7 @@ import json
 import os
 import subprocess
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
 
@@ -27,9 +27,12 @@ COMPACT_PROMPT = (
     "current state, and open items or next steps. Reply with only the summary."
 )
 FLUSH_PROMPT = (
-    "Before this conversation is compacted, write a short journal entry with the "
-    "journal tool: 2-4 lines on what happened, what was decided, and what's next. "
-    "Then reply with just: saved."
+    "Before this conversation is compacted, do two things. First call checkpoint with "
+    "ONE sentence saying where this project now stands and what the next step is — that "
+    "sentence is the line you will read at the start of the next session, so name the "
+    "concrete next action and the file to open. Then write a short journal entry with "
+    "the journal tool: 2-4 lines on what happened and what was decided, pointing at the "
+    "files that hold the detail rather than repeating it. Then reply with just: saved."
 )
 REFLECT_PROMPT = (
     "Curate your long-term memory. The COMPLETE fact store is given below — you do not "
@@ -45,6 +48,10 @@ REFLECT_PROMPT = (
     "stale one. Say which you dropped and why.\n"
     "4. DELETE — forget anything the project's own files, the journal, or the session "
     "transcripts already record, and anything that was only ever true for one task.\n"
+    "   EXCEPT the continuity pointers shown separately below. They are task-scoped and "
+    "they duplicate the project's own files by design — that is what they are for, and "
+    "luban rewrites them itself. Leave every current one alone; the only one you may "
+    "forget is a project you have not touched in months.\n"
     "5. GRADUATE — sparingly. A pattern that keeps recurring about how the user wants "
     "work done is a STANDING instruction, not a look-up detail: it belongs in USER.md, "
     "because a recallable fact cannot govern how you behave — you cannot know to recall "
@@ -742,26 +749,36 @@ def build_agent_config(session: Session, cfg: config_mod.Config, project_root: P
 
 
 def flush_memory(session: Session, client, ctx, cfg: config_mod.Config) -> None:
-    """Best-effort: capture a journal entry before compaction destroys context.
+    """Best-effort: checkpoint and journal before compaction destroys context.
 
-    Structural guarantee: the flush turn is offered ONLY the journal tool, so it
-    cannot write facts (remember/forget) — session narrative belongs in the
-    journal and the compact summary, never in the permanent fact store. Runs at
-    most once per session; exit_journal is the fallback when it never runs.
+    Structural guarantee: the flush turn may call ONLY journal and checkpoint — the
+    allowlist is enforced at dispatch, not merely left out of the schema, so it cannot
+    write or delete facts even though the conversation it inherits contains turns where
+    remember was on offer. Session narrative belongs in the journal and the compact
+    summary, never in the permanent fact store.
+
+    The continuity pointer's ADDRESS is written first, from code. If the model call below
+    never happens or fails, the pointer is still there and still dated, with its status
+    visibly older than its address — which is the true state, and the one thing a stale
+    pointer must not do is look current.
     """
-    if not cfg.memory_enabled or not session.messages or session.journaled:
+    if not cfg.memory_enabled or not session.messages:
+        return
+    memory_mod.checkpoint(Path(ctx.project_root).name, "", session.session_id)
+    if session.journaled:
         return
     ui.print_text("(memory flush…)\n")
-    journal_only = [t for t in tools.active_tools(True) if t["name"] == "journal"]
+    allowed = frozenset({"journal", "checkpoint"})
+    flush_tools = [t for t in tools.active_tools(True) if t["name"] in allowed]
     msgs = session.messages + [{"role": "user", "content": FLUSH_PROMPT}]
     config = agent.AgentConfig(
         session.model, session.max_tokens, stream=False, platform=cfg.platform,
-        global_memory=memory_mod.bootstrap_block(), tools=journal_only,
+        global_memory=memory_mod.bootstrap_block(), tools=flush_tools,
         on_usage=lambda u: session.ledger.add(u, session.model, context=False),
     )
     before = memory_mod._journal_writes
     try:
-        agent.run_turn(client, config, msgs, ctx, lambda t: None)
+        agent.run_turn(client, config, msgs, replace(ctx, only=allowed), lambda t: None)
     except Exception as exc:
         ui.print_text(f"(memory flush skipped: {exc})\n")
         return
@@ -795,11 +812,22 @@ def reflect_session(session: Session, client, ctx, cfg: config_mod.Config,
 
 
 def exit_journal(session: Session, cfg: config_mod.Config, project_root: Path) -> None:
-    if not cfg.memory_enabled or not session.messages or session.journaled:
+    """Close the session out: refresh the continuity pointer, and journal if nothing has.
+
+    The pointer is refreshed on every exit, including one that already journalled — an
+    exit is the last moment this project's transcript can be recorded, and the address is
+    free. The project tag on the journal entry is applied by journal_append, not here.
+    """
+    if not cfg.memory_enabled or not session.messages:
+        return
+    project = Path(project_root).name
+    memory_mod.checkpoint(project, "", session.session_id)
+    if session.journaled:
         return
     memory_mod.journal_append(
-        f"[{Path(project_root).name}] '{session.title or 'untitled'}' — "
-        f"{len(session.messages)} messages ({session.model})"
+        f"'{session.title or 'untitled'}' — {len(session.messages)} messages "
+        f"({session.model})",
+        project=project,
     )
 
 
@@ -1606,6 +1634,7 @@ def main(argv: list[str] | None = None) -> None:
             ui.print_text("config.toml is already up to date.\n")
         return
     project_root = Path(ns.dir).resolve()
+    memory_mod.set_project(project_root.name)  # tags journal writes, filters the window
     notice = home_notice()
     if notice:
         ui.print_text(notice + "\n")

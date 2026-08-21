@@ -68,20 +68,27 @@ def test_compact_two_arg_call_still_works(monkeypatch, mem):
     assert not called
 
 
+def _flush_ctx():
+    return cli.tools.ToolContext(
+        project_root=Path("."), confirm=lambda p: True,
+        render_diff=lambda p, o, n: None, render_command=lambda c: None,
+    )
+
+
 def test_flush_failure_is_swallowed(monkeypatch, mem, tmp_path):
     def boom(*a, **kw):
         raise RuntimeError("api down")
     monkeypatch.setattr(cli.agent, "run_turn", boom)
     s = make_session()
-    cli.flush_memory(s, object(), object(), make_cfg())  # must not raise
+    cli.flush_memory(s, object(), _flush_ctx(), make_cfg())  # must not raise
 
 
 def test_flush_skips_when_disabled_or_empty(monkeypatch, mem):
     def boom(*a, **kw):
         raise AssertionError("must not call the model")
     monkeypatch.setattr(cli.agent, "run_turn", boom)
-    cli.flush_memory(make_session(), object(), object(), make_cfg(enabled=False))
-    cli.flush_memory(make_session(messages=[]), object(), object(), make_cfg())
+    cli.flush_memory(make_session(), object(), _flush_ctx(), make_cfg(enabled=False))
+    cli.flush_memory(make_session(messages=[]), object(), _flush_ctx(), make_cfg())
 
 
 def test_reflect_leaves_session_untouched(monkeypatch, mem):

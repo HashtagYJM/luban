@@ -121,15 +121,26 @@ _HYGIENE = (
     "files like the enhancements tracker, skills, config.toml) — every write shows a "
     "diff and asks. Never edit ~/.luban/memory/MEMORY.md itself: it is a machine-"
     "rebuilt index; edit the component files instead."
-    " The journal is for what happened; facts are for what stays true."
+    " The journal is for what happened; facts are for what stays true. Write journal "
+    "entries as POINTERS — a line or two naming what moved and the file that holds the "
+    "detail — because the journal is re-sent on EVERY model call for days afterwards, "
+    "while a plan, spec or PROGRESS file costs nothing until someone opens it. Two "
+    "things have no cheaper home and belong in the journal in full: a REVERSAL (we did "
+    "X, it was wrong, we do Y now) and a SURPRISE (something behaved unlike its "
+    "documentation) — plan files record decisions, rarely the reasoning that overturned "
+    "one."
     " For a project whose details live in its own files, save a short POINTER fact "
     "(path + status + 'details live at …') rather than copying code that will go "
     "stale, and cross-reference related facts by name with [[slug]] — recall follows "
     "those links."
-    " CONTINUITY — to recover what you were doing, read the SESSION TRANSCRIPT: list "
+    " CONTINUITY — the index holds an [active-<project>] pointer for each project, "
+    "refreshed automatically at /compact and at exit; read that first, and use the "
+    "checkpoint tool to update it whenever a real milestone lands or the next step "
+    "changes. Its status line carries the date it was written, so an old date means "
+    "nobody has checkpointed since — go to the SESSION TRANSCRIPT it names, or list "
     "them with the sessions tool and read ~/.luban/sessions/<id>.json with read_file. "
-    "The journal is a TIMELINE of what happened, not a state store — its newest entry "
-    "may belong to a different project, so never infer 'where we left off' from it. "
+    "The journal is a TIMELINE of what happened, not a state store — never infer "
+    "'where we left off' from it. "
     "Always use the ~/.luban path alias with the file tools; a shell '~' resolves to "
     "the OS home, which on a relocated LUBAN_HOME silently finds nothing."
     " WHERE TO WRITE — route by how the knowledge will be USED, not by whichever "
@@ -195,32 +206,10 @@ def read_user() -> str:
     return _read_whole(USER_PATH, "USER.md")
 
 
-_INDEX_LINE = re.compile(r"^- \[([a-z0-9][a-z0-9-]*)\]")
-_INDEX_TRIM_NOTE = "<!-- descriptions trimmed to fit; use recall for details -->"
-
-
-def _slug_only_index(lines: list[str]) -> str:
-    slugs = [f"- [{m.group(1)}]" for ln in lines if (m := _INDEX_LINE.match(ln))]
-    header = lines[0] if lines else "# Long-term memory index"
-    return "\n".join([header, _INDEX_TRIM_NOTE, *slugs])
-
-
 def read_index() -> str:
     """The whole fact index. No per-file cap: the TOTAL always-on budget is what is
     watched, and going over is reported rather than quietly trimmed."""
     return _read_whole(MEMORY_DIR / "MEMORY.md", "memory index")
-
-
-def _read_raw_index() -> str:
-    try:
-        return (MEMORY_DIR / "MEMORY.md").read_text(encoding="utf-8", errors="replace").strip()
-    except OSError:
-        return ""
-
-
-def index_slugs_dropped() -> int:
-    """Always 0 now — the index is never trimmed for size. Kept so callers don't break."""
-    return 0
 
 
 JOURNAL_DAYS = 2
@@ -229,8 +218,9 @@ JOURNAL_DAYS = 2
 # reasons that do not apply to any other (E31: in the field it had grown to the clear
 # majority of an always-on block that was itself over budget):
 #
-#   - It grows BY DESIGN. _HYGIENE asks for an entry at the close of every working block, in
-#     every project. Following the system prompt is what causes the breach.
+#   - It grows BY DESIGN. luban appends an entry itself at every /compact and at session
+#     exit, in every project, and the model adds more as work happens. Growth is the
+#     feature — a timeline with gaps is not a timeline.
 #   - It has NO curation lever. /reflect curates facts; remember/forget act on facts. There
 #     is no operation that consolidates a timeline, and there should not be — a journal is
 #     append-only by definition.
@@ -243,6 +233,52 @@ JOURNAL_DAYS = 2
 # those two properties: lossless to trim, and no curation path. Today that is the journal
 # and nothing else — a second one would be the five caps returning by increments.
 JOURNAL_SHARE = 0.30
+
+# The journal is ONE global timeline, but the window is a CONTINUITY device and
+# continuity is per-project. An entry is tagged with its project at journal_append —
+# the single chokepoint every writer passes through — rather than by each caller
+# remembering to prefix it, which is how half the timeline ended up unlabelled (E33's
+# lesson: enforce at the chokepoint, never enumerate the call sites).
+#
+# Filtering the window matters more than tagging it. Untagged, a busy week in another
+# project spends this one's whole allowance and blanks its continuity; and a gap here
+# reads as "nothing happened" when the real answer is on disk two days back.
+_project = ""
+
+# An entry starts with its timestamp; the lines after it are its continuation and
+# belong to the same project, so filtering is per ENTRY, not per line.
+_ENTRY_START = re.compile(r"^\[\d{2}:\d{2}\] (?:\[([^\]\n]+)\] )?")
+
+
+def set_project(name: str) -> None:
+    """Name the project journal entries are tagged with and the window filtered to.
+
+    Module state rather than a parameter because the readers are deep — the window is
+    rendered from bootstrap_volatile on every model call, and nothing on that path
+    carries a project root. Unset means no tagging and no filtering, which is what
+    every test and every pre-tagging journal file already assumes.
+    """
+    global _project
+    _project = (name or "").strip()
+
+
+def _for_project(text: str) -> str:
+    """One day's entries, narrowed to the current project.
+
+    Untagged entries are kept: they were written before tagging existed, and dropping
+    them would silently delete the older half of the timeline.
+    """
+    if not _project:
+        return text
+    kept: list[str] = []
+    keeping = True  # anything before the first entry header is preamble, not another project's
+    for line in text.splitlines():
+        m = _ENTRY_START.match(line)
+        if m:
+            keeping = m.group(1) in (None, _project)
+        if keeping:
+            kept.append(line)
+    return "\n".join(kept).strip()
 
 
 def _journal_allowance() -> int:
@@ -313,6 +349,7 @@ def _recent_journal_text() -> str:
             text = path.read_text(encoding="utf-8", errors="replace").strip()
         except OSError:
             continue
+        text = _for_project(text)
         if text:
             with_content.append((path.stem, text))
 
@@ -336,14 +373,20 @@ def _recent_journal_text() -> str:
         return ""
     shown, total = len(picked), len(with_content)
     body = "\n".join(reversed(picked))  # back to chronological order
+    notes = []
     if shown < total or used > budget:
         # State the bound. A bound nobody is told about is indistinguishable from a bug —
         # that is the whole lesson of E31, where a docstring promised a truncation the code
         # had stopped doing and no one noticed for three releases.
-        return (f"[journal: showing the {shown} most recent day(s) of {total} within its "
-                f"context allowance — every day file is still on disk in "
-                f"~/.luban/memory/journal/]\n{body}")
-    return body
+        notes.append(f"[journal: showing the {shown} most recent day(s) of {total} within "
+                     f"its context allowance — every day file is still on disk in "
+                     f"~/.luban/memory/journal/]")
+    if _project:
+        # Same rule for the filter as for the window: what was left out is stated, and
+        # where to find it. Filtering is a narrower view, not a smaller record.
+        notes.append(f"[journal: entries for '{_project}' only — other projects' days are "
+                     f"on disk in ~/.luban/memory/journal/, and recall searches all of them]")
+    return "\n".join([*notes, body]) if notes else body
 
 
 def read_recent_journal() -> str:
@@ -503,8 +546,8 @@ def duplicate_candidates() -> list[tuple[str, str, float]]:
     facts = []
     if MEMORY_DIR.is_dir():
         for p in sorted(MEMORY_DIR.glob("*.md")):
-            if p.name == "MEMORY.md":
-                continue
+            if p.name == "MEMORY.md" or is_checkpoint(p.stem):
+                continue  # one pointer per project; they are meant to look alike
             try:
                 facts.append((p.stem, p.read_text(encoding="utf-8", errors="replace")))
             except OSError:
@@ -545,29 +588,39 @@ def audit(extra: list[tuple[str, int]] | None = None) -> str:
     consolidation never happened. This is injected into the isolated /reflect turn only,
     so an ordinary turn never carries it.
     """
-    facts = []
+    facts, maintained = [], []
     if MEMORY_DIR.is_dir():
         for p in sorted(MEMORY_DIR.glob("*.md")):
             if p.name == "MEMORY.md":
                 continue
             try:
-                facts.append(f"[{p.stem}]\n{p.read_text(encoding='utf-8', errors='replace').strip()}")
+                entry = f"[{p.stem}]\n{p.read_text(encoding='utf-8', errors='replace').strip()}"
             except OSError:
                 continue
-    if not facts:
+            (maintained if is_checkpoint(p.stem) else facts).append(entry)
+    if not facts and not maintained:
         return always_on_budget(extra) + "\n\n(the fact store is empty)"
     body = "\n\n".join(facts)
     parts = [always_on_budget(extra),
              f"THE COMPLETE FACT STORE ({len(facts)} facts, {len(body):,} chars):\n\n{body}"]
+    if maintained:
+        # Shown, because they spend the same budget and the curator is being asked to
+        # account for it — but ring-fenced, because every rule in REFLECT_PROMPT would
+        # delete them: they are task-scoped and they duplicate the project's own files
+        # BY DESIGN. That is the job, not a defect.
+        parts.append("MAINTAINED BY LUBAN — continuity pointers, rewritten automatically "
+                     "at /compact and at exit. Never merge, graduate, rewrite or "
+                     "shorten one, and never treat two of them as duplicates: there is "
+                     "one per project and they are meant to look alike. The ONE edit "
+                     "you may make is to forget a pointer whose project has not been "
+                     "touched in months — the 'last session' date is in the fact, and "
+                     "if you are wrong the next /compact there writes it back.\n\n"
+                     + "\n\n".join(maintained))
     dupes = duplicate_candidates()
     if dupes:
         listing = "\n".join(f"  - [{a}] vs [{b}]  (overlap {s})" for a, b, s in dupes[:20])
         parts.append("POSSIBLE DUPLICATES (lexical overlap — judge for yourself, these "
                      f"are only candidates):\n{listing}")
-    over = index_slugs_dropped()
-    if over:
-        parts.append(f"WARNING: the always-on index is over budget — {over} fact(s) no "
-                     "longer fit. Consolidation is overdue.")
     return "\n\n".join(parts)
 
 
@@ -633,6 +686,67 @@ def forget(name: str) -> str:
     except OSError as exc:
         return f"Could not delete memory: {exc}"
     return f"Forgot '{name}'."
+
+
+# --- continuity pointers ---------------------------------------------------------
+# The one question a session has to answer before it can read anything: where am I on
+# this project, and what is next. Everything that could answer it is either wrong for
+# the job or unmaintained — the journal is a global timeline whose newest entry may
+# belong to another project, the transcript has to be found before it can be read, and
+# a hand-written fact goes stale the first time nobody updates it.
+#
+# So it is machine-maintained, and it is a POINTER: it lives in the always-on index as
+# one line, and the detail it names costs nothing until someone opens it. One per
+# project, because a single shared fact is overwritten by whichever project compacted
+# last — which is the stale-pointer failure again, wearing the fix's clothes.
+#
+# Code owns the ADDRESS and the model owns the STATUS, and they carry SEPARATE dates.
+# That split is the whole design: the address lands even when the model call that would
+# supply a status never happens, and refreshing the address can never re-date a status
+# the model did not actually write.
+CHECKPOINT_PREFIX = "active-"
+
+_STATUS_RX = re.compile(r"^status \((\d{4}-\d\d-\d\d)\): (.+)$", re.M)
+_TRANSCRIPT_RX = re.compile(r"^transcript: ~/\.luban/sessions/(\S+)\.json$", re.M)
+
+
+def checkpoint_slug(project: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", (project or "").lower()).strip("-")[:56]
+    return f"{CHECKPOINT_PREFIX}{slug or 'work'}"
+
+
+def is_checkpoint(name: str) -> bool:
+    return name.startswith(CHECKPOINT_PREFIX)
+
+
+def checkpoint(project: str, status: str = "", session_id: str = "") -> str:
+    """Write or refresh this project's continuity pointer.
+
+    Called with a status by the model, and with none by luban at /compact and at exit —
+    the second form refreshes the address and leaves the last real status standing under
+    its own, older date, so a pointer that nobody has updated reads as exactly that.
+    """
+    name = checkpoint_slug(project)
+    old = read_fact(name) or ""
+    today = date.today().isoformat()
+    status = " ".join(status.split())
+    if status:
+        recorded = today
+    else:
+        m = _STATUS_RX.search(old)
+        status, recorded = (m.group(2), m.group(1)) if m else ("", "")
+    if not session_id:
+        m = _TRANSCRIPT_RX.search(old)
+        session_id = m.group(1) if m else ""
+    lines = [f"project: {project}", f"last session: {today}"]
+    if session_id:
+        lines.append(f"transcript: ~/.luban/sessions/{session_id}.json")
+    lines.append(f"status ({recorded}): {status}" if status
+                 else "status: not recorded — read the transcript.")
+    lines.append("Maintained by luban at /compact and at exit. Never merge, graduate, "
+                 "rewrite or forget it; it is refreshed automatically.")
+    description = status[:160] if status else f"where {project} stands — status not recorded"
+    return remember(name, description, "\n".join(lines))
 
 
 RECALL_TOP_FACTS = 8      # best-scoring facts returned (wikilinks followed on top of this)
@@ -824,15 +938,22 @@ def recall(query: str) -> str:
     return out
 
 
-def journal_append(text: str) -> None:
+def journal_append(text: str, project: str | None = None) -> None:
+    """Append one entry to today's journal, tagged with its project.
+
+    The tag is applied HERE and nowhere else. It used to be part of the text at one
+    caller and absent at the other, so half the timeline was labelled and half was not.
+    """
     global _journal_writes
+    tag = (_project if project is None else project).strip()
     try:
         journal_dir = MEMORY_DIR / "journal"
         journal_dir.mkdir(parents=True, exist_ok=True)
         stamp = datetime.now().strftime("%H:%M")
         path = journal_dir / f"{date.today().isoformat()}.md"
+        head = f"[{stamp}] " + (f"[{tag}] " if tag else "")
         with path.open("a", encoding="utf-8") as fh:
-            fh.write(f"[{stamp}] {text.strip()}\n")
+            fh.write(f"{head}{text.strip()}\n")
         _journal_writes += 1
     except Exception:
         pass  # journaling must never break the loop

@@ -9,10 +9,31 @@ see — it matches `## v<number>`. A release RENAMES that heading to its derived
 it never writes a version heading ahead of the release, and never edits the heading
 below. Only user-facing behaviour earns a line here.
 
-## Unreleased
+## v0.6.0 — luban keeps track of where each project stands
 
-Nothing user-facing since v0.5.25. Landed: this file's own v0.5.22 heading, restored
-after v0.5.23 absorbed it, and a test that fails if any released version has no heading.
+### luban now keeps track of where each project stands, without being asked
+
+Starting a session meant working out where you were from scratch. The journal is one global timeline, so its newest entry often belonged to a different project; a hand-written "current work" note went stale the first time nobody updated it, and `/reflect` deleted it on sight, because a note about one task that repeats what the project's own files say is exactly what `/reflect` exists to remove.
+
+There is now a continuity pointer per project, `active-<project>`, kept up to date by luban itself. Its one-line status is in the memory index at the start of every session, and the fact behind it names the session transcript to read for the rest. luban refreshes it at every `/compact` and when you exit, and can update it mid-session the moment something actually lands.
+
+Two things make it trustworthy rather than just another note that rots. The address — project, date, transcript — is written by luban, and the status sentence by the model, and they carry separate dates: refreshing one never re-dates the other, so a pointer nobody has updated reads as out of date instead of looking current and being wrong. And `/reflect` is now shown these pointers separately and told to leave them alone — it may still retire one for a project you have not touched in months — so the two mechanisms no longer undo each other.
+
+### The journal window now follows the project you are in
+
+The journal is a single timeline across every project, and the window shows the two most recent days that have entries. A busy few days in one project therefore spent the whole allowance and left another project's window blank — most visibly right after you switched back to something you had not touched in a while.
+
+Entries are now tagged with the project they were written in, and the window keeps this project's entries. Older untagged entries are still shown, the window says which project it is filtered to, and `recall` still searches every day file across every project.
+
+### Journal entries are pointers now, not transcripts
+
+Everything in the journal window is re-sent on every single call to the model for as long as it stays there, while a plan or spec file costs nothing until someone opens it. luban is now asked to write entries accordingly: a line or two naming what moved and the file that holds the detail, rather than the detail itself. Two things have no cheaper home and still get written out in full — a reversal, and something behaving unlike its documentation.
+
+### A tool that is withheld from a turn can no longer be called
+
+Before compacting, luban runs one turn whose only job is to record what happened, and that turn is deliberately not offered the tools that write to permanent memory. But it inherits the whole conversation being compacted, including earlier turns where those tools *were* offered, so leaving them out of its list was a request rather than a restriction.
+
+The restriction is now enforced where every tool call in luban already passes through: a call outside the allowed set is refused there and reported, both to the model and in the audit trail. This applies to the whole tool surface, not just memory.
 
 ## v0.5.25 — folding lands where it aims, and says so honestly
 

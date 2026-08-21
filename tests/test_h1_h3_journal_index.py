@@ -59,7 +59,10 @@ def test_index_is_never_trimmed_for_size(mem):
     idx = memory.read_index()
     for i in range(200):
         assert f"fact-{i:03d}" in idx  # every slug AND its description survive
-    assert memory.index_slugs_dropped() == 0  # nothing is ever dropped now
+    # Descriptions too, not just slugs — the index used to shed them to fit a cap.
+    lines = [ln for ln in idx.splitlines() if ln.startswith("- [")]
+    assert len(lines) == 200
+    assert all(ln.split("] ", 1)[1].startswith("a fairly long description") for ln in lines)
 
 
 def test_late_alphabet_fact_survives_and_is_recallable(mem):

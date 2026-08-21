@@ -47,12 +47,40 @@ def _mem(tmp_path, monkeypatch):
     monkeypatch.setattr(memory, "MEMORY_DIR", tmp_path / "memory")
 
 
-def test_flush_offers_only_journal_tool(tmp_path):
+def test_flush_may_only_journal_and_checkpoint(tmp_path):
+    """The flush turn writes the timeline and the pointer, and nothing else."""
     stub = _Stub([[_text("saved.")]])
     sess = _session([{"role": "user", "content": "hi"}])
     cli.flush_memory(sess, stub, _ctx(tmp_path), _cfg())
     offered = {t["name"] for t in stub.calls[0]["tools"]}
-    assert offered == {"journal"}, offered  # remember/forget/recall NOT offered
+    assert offered == {"journal", "checkpoint"}, offered  # remember/forget/recall NOT offered
+
+
+def test_flush_restriction_is_enforced_at_dispatch(tmp_path, monkeypatch):
+    """Withholding by omission is a request; the allowlist on the context is the control.
+
+    The flush turn inherits the whole conversation, including earlier turns where
+    remember WAS offered, so the schema list it is handed proves nothing on its own.
+    """
+    seen = {}
+    monkeypatch.setattr(cli.agent, "run_turn",
+                        lambda c, cfg_, m, ctx, on_text, on_thinking=None: seen.setdefault("ctx", ctx))
+    sess = _session([{"role": "user", "content": "hi"}])
+    cli.flush_memory(sess, _Stub([[_text("saved.")]]), _ctx(tmp_path), _cfg())
+    ctx = seen["ctx"]
+    assert ctx.only == frozenset({"journal", "checkpoint"})
+    out = tools.run_tool("remember", {"name": "x", "description": "d", "body": "b"}, ctx)
+    assert out.is_error and memory.read_fact("x") is None
+
+
+def test_flush_writes_the_pointer_address_even_when_the_model_call_fails(tmp_path, monkeypatch):
+    """A pointer that never lands is the stale-pointer failure with an extra step."""
+    monkeypatch.setattr(cli.agent, "run_turn",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("api down")))
+    sess = _session([{"role": "user", "content": "hi"}])
+    cli.flush_memory(sess, _Stub([[_text("x")]]), _ctx(tmp_path), _cfg())
+    fact = memory.read_fact(memory.checkpoint_slug(tmp_path.name))
+    assert fact is not None and "status: not recorded" in fact
 
 
 def test_flush_prompt_has_no_remember_instruction():

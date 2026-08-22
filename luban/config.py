@@ -13,6 +13,7 @@ import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from luban import hooks as hooks_mod
 from luban import paths
 
 CONFIG_DIR = paths.luban_home()
@@ -63,6 +64,9 @@ class Config:
     web_search: bool = False  # offer the model the API's server-side web search tool
     web_search_tool_type: str = "web_search_20250305"  # server-tool type version string
     subagents: bool = False  # offer the spawn_subagent tool (nested read-only agent)
+    # Lifecycle hooks, from `[[hooks]]`. Empty = the feature costs nothing at all:
+    # nothing declared, nothing fires, nothing spent. See hooks.py.
+    hooks: list = field(default_factory=list)
 
 
 def detect_platform() -> str:
@@ -145,6 +149,31 @@ def _default_text(plat: str) -> str:
         "# [permissions]\n"
         '# allow = ["run_command:python *"]\n'
         '# deny  = ["run_command:del *"]\n'
+        "\n"
+        "# Lifecycle hooks — a command luban runs ITSELF on an event, so a step you want\n"
+        "# to always happen no longer depends on the model remembering to do it. Its\n"
+        "# output is fed back as text. Declaring one here IS the permission to run it\n"
+        "# (no prompt), though a deny rule above still blocks it. Nothing declared =\n"
+        "# nothing runs. Events: session_start (start, and after /compact),\n"
+        "# user_prompt_submit, post_tool_use, stop.\n"
+        "#\n"
+        "# Auto-load a skill at the start of every session:\n"
+        "# [[hooks]]\n"
+        '# event = "session_start"\n'
+        '# run   = "type C:\\\\Users\\\\you\\\\.luban\\\\skills\\\\my-skill\\\\SKILL.md"\n'
+        "#\n"
+        "# Keep the active plan in view every turn (replaces its own previous copy):\n"
+        "# [[hooks]]\n"
+        '# event = "user_prompt_submit"\n'
+        '# run   = "type plan.md"\n'
+        "#\n"
+        "# Always check after a write. `match` is a tool name; omit it to fire for all.\n"
+        "# inject = false makes it a pure side effect — it runs, nothing enters context:\n"
+        "# [[hooks]]\n"
+        '# event  = "post_tool_use"\n'
+        '# match  = "write_file"\n'
+        '# run    = "python scripts\\\\render_check.py"\n'
+        "# inject = true\n"
     )
 
 
@@ -234,16 +263,28 @@ def misplaced_keys(path: Path = CONFIG_PATH) -> list[tuple[str, str]]:
 
 def config_warnings(path: Path = CONFIG_PATH) -> list[str]:
     """Told to the HUMAN at startup: settings that are in the file but ignored."""
+    out: list[str] = []
     bad = misplaced_keys(path)
-    if not bad:
+    if bad:
+        listing = ", ".join(f"{k} (under [{t}])" for k, t in sorted(bad))
+        out.append(
+            f"warning: {len(bad)} setting(s) in your config.toml are being IGNORED — "
+            f"{listing}. A [table] header captures every key below it, so these became "
+            f"table entries, not settings. Run `luban --sync-config` to move them back "
+            f"to the top of the file."
+        )
+    # A hook that was dropped for being malformed is the same failure class: the user
+    # believes a step always happens, and nothing is running.
+    out.extend(f"warning: {w}" for w in _hook_warnings(path))
+    return out
+
+
+def _hook_warnings(path: Path) -> list[str]:
+    try:
+        data = tomllib.loads(path.read_text(encoding="utf-8", errors="replace"))
+    except (tomllib.TOMLDecodeError, OSError):
         return []
-    listing = ", ".join(f"{k} (under [{t}])" for k, t in sorted(bad))
-    return [
-        f"warning: {len(bad)} setting(s) in your config.toml are being IGNORED — "
-        f"{listing}. A [table] header captures every key below it, so these became "
-        f"table entries, not settings. Run `luban --sync-config` to move them back "
-        f"to the top of the file."
-    ]
+    return hooks_mod.parse(data.get("hooks"))[1]
 
 
 _SYNC_BANNER = re.compile(r"^#\s*---\s*settings added by luban --sync-config")
@@ -388,6 +429,7 @@ def load_config(path: Path = CONFIG_PATH) -> Config:
     subagents = data.get("subagents")
     if not isinstance(subagents, bool):
         subagents = False
+    hooks, _dropped = hooks_mod.parse(data.get("hooks"))
     return Config(
         platform=plat,
         model=model,
@@ -408,4 +450,5 @@ def load_config(path: Path = CONFIG_PATH) -> Config:
         web_search_tool_type=web_search_type,
         subagents=subagents,
         context_editing=context_editing,
+        hooks=hooks,
     )

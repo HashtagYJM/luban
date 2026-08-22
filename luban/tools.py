@@ -5,10 +5,12 @@ import re
 import signal
 import subprocess
 import sys
-from dataclasses import dataclass, replace
+import threading
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Callable
 
+from luban import hooks as hooks_mod
 from luban import memory as memory_mod
 from luban import paths
 from luban import permissions as permissions_mod
@@ -42,6 +44,11 @@ class ToolContext:
     # proxied or rogue backend need not read the schema at all. run_tool is the one choke
     # point every call passes through, so the capability lives here.
     only: frozenset[str] | None = None
+    # Lifecycle hooks available on THIS context. A subagent and the pre-compact flush
+    # turn build their own contexts and get none: a nested read-only run must not fire a
+    # write-check, and the flush turn must not spend the compact budget on hooks.
+    hooks: list = field(default_factory=list)
+    notify: Callable[[str], None] | None = None  # say something to the human mid-turn
 
 
 def _truncate(text: str) -> str:
@@ -289,24 +296,130 @@ def _kill_tree(proc: subprocess.Popen) -> None:  # type: ignore
         proc.kill()  # group already gone or unreachable — kill the child directly
 
 
+def _spawn(command: str, cwd, merge_stderr: bool = False) -> subprocess.Popen:
+    """The one place a child process is started. Foreground runs, background jobs and
+    lifecycle hooks all come through here, so the UTF-8 decoding, the DEVNULL stdin and
+    the process-group setup that makes _kill_tree work cannot drift apart."""
+    return subprocess.Popen(
+        command,
+        shell=True,
+        cwd=str(cwd),
+        stdin=subprocess.DEVNULL,  # interactive children EOF instead of hanging
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT if merge_stderr else subprocess.PIPE,
+        text=True,
+        encoding="utf-8",  # decode child output as UTF-8 (children run in UTF-8 mode
+        errors="replace",  # via PYTHONUTF8); never charmap-crash reading their output
+        start_new_session=(sys.platform != "win32"),  # POSIX: own process group so we can kill the whole tree
+    )
+
+
+MAX_BACKGROUND_JOBS = 8  # a runaway loop must not fork-bomb the machine luban runs on
+
+
+@dataclass
+class _Job:
+    handle: str
+    command: str
+    proc: subprocess.Popen
+    buffer: list          # appended by the drainer thread
+    read_to: int = 0      # chars already handed to the model — reads are incremental
+
+
+_JOBS: dict[str, _Job] = {}
+_JOB_SEQ = 0
+
+
+def _drain(job: _Job) -> None:
+    # A child that fills the pipe buffer blocks forever if nobody reads it. Draining on
+    # a thread is what makes "spawn now, read later" safe — it is the deadlock that the
+    # hand-built `start /min cmd /c "... > log"` workaround exists to dodge.
+    try:
+        for line in job.proc.stdout:
+            job.buffer.append(line)
+    except Exception:
+        pass
+    finally:
+        try:
+            job.proc.stdout.close()
+        except Exception:
+            pass
+
+
+def _start_background(command: str, ctx: ToolContext) -> ToolResult:
+    global _JOB_SEQ
+    live = [j for j in _JOBS.values() if j.proc.poll() is None]
+    if len(live) >= MAX_BACKGROUND_JOBS:
+        return ToolResult(
+            f"Too many background jobs already running ({len(live)}). Read one to "
+            "completion or kill it with read_output(kill=true) first.",
+            is_error=True,
+        )
+    try:
+        proc = _spawn(command, ctx.project_root, merge_stderr=True)
+    except Exception as exc:
+        return ToolResult(f"Could not start: {exc}", is_error=True)
+    _JOB_SEQ += 1
+    handle = f"bg{_JOB_SEQ}"
+    job = _Job(handle=handle, command=command, proc=proc, buffer=[])
+    _JOBS[handle] = job
+    threading.Thread(target=_drain, args=(job,), daemon=True).start()
+    return ToolResult(
+        f"Started in the background as {handle}. It keeps running across turns; read it "
+        f"with read_output(handle=\"{handle}\"). Nothing is captured for you elsewhere."
+    )
+
+
+def _read_output(inp: dict, ctx: ToolContext) -> ToolResult:
+    handle = str(inp.get("handle", "")).strip()
+    job = _JOBS.get(handle)
+    if job is None:
+        known = ", ".join(sorted(_JOBS)) or "(none)"
+        return ToolResult(f"Unknown handle: {handle!r}. Started jobs: {known}",
+                          is_error=True)
+    if inp.get("kill") is True:
+        if job.proc.poll() is None:
+            _kill_tree(job.proc)
+        # Fall through: whatever it produced before the kill is still worth reporting.
+    text = "".join(job.buffer)
+    fresh = text[job.read_to:]
+    job.read_to = len(text)
+    code = job.proc.poll()
+    if code is None:
+        status = "still running"
+    else:
+        status = f"finished, exit code {code}"
+        # Keep the record so a later read can still report the exit code, but the
+        # buffer has been fully handed over.
+    body = fresh or "(no new output)"
+    return ToolResult(_truncate(f"[{handle}: {status}]\n{body}"))
+
+
+def kill_all_jobs() -> list[str]:
+    """Kill every still-running background job. Returns the handles that were killed.
+
+    Called at session exit: a job outliving the session that started it is an orphaned
+    process tree nobody can see, which is the failure background execution is meant to
+    remove rather than relocate.
+    """
+    killed = []
+    for handle, job in list(_JOBS.items()):
+        if job.proc.poll() is None:
+            _kill_tree(job.proc)
+            killed.append(handle)
+    _JOBS.clear()
+    return killed
+
+
 def _run_command(inp: dict, ctx: ToolContext) -> ToolResult:
     command = inp["command"]
     timeout = min(int(inp.get("timeout", 120)), MAX_COMMAND_TIMEOUT)
     ctx.render_command(command)
     if not ctx.confirm(f"Run: {command}"):
         return ToolResult("User declined the command.")
-    proc = subprocess.Popen(
-        command,
-        shell=True,
-        cwd=str(ctx.project_root),
-        stdin=subprocess.DEVNULL,  # interactive children EOF instead of hanging
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        encoding="utf-8",  # decode child output as UTF-8 (children run in UTF-8 mode
-        errors="replace",  # via PYTHONUTF8); never charmap-crash reading their output
-        start_new_session=(sys.platform != "win32"),  # POSIX: own process group so we can kill the whole tree
-    )
+    if inp.get("background") is True:
+        return _start_background(command, ctx)
+    proc = _spawn(command, ctx.project_root)
     try:
         out, err = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
@@ -464,6 +577,7 @@ _DISPATCH = {
     "write_file": _write_file,
     "edit_file": _edit_file,
     "run_command": _run_command,
+    "read_output": _read_output,
     "load_skill": _load_skill,
     "sessions": _sessions,
     "remember": _remember,
@@ -540,14 +654,34 @@ TOOLS = [
     },
     {
         "name": "run_command",
-        "description": "Run a shell command in the project root. Shows the command and asks to confirm.",
+        "description": "Run a shell command in the project root. Shows the command and "
+        "asks to confirm. Set background=true for anything long-running (a build, a test "
+        "suite, a server): it returns a handle immediately instead of blocking the turn, "
+        "and you read it with read_output. Do NOT hand-roll a detached command with output "
+        "redirected to a log file — that is what background=true replaces.",
         "input_schema": {
             "type": "object",
             "properties": {
                 "command": {"type": "string"},
-                "timeout": {"type": "integer", "description": "Seconds, default 120"},
+                "timeout": {"type": "integer", "description": "Seconds, default 120. Ignored when background=true."},
+                "background": {"type": "boolean", "description": "Run without waiting; returns a handle for read_output."},
             },
             "required": ["command"],
+        },
+    },
+    {
+        "name": "read_output",
+        "description": "Read new output from a background command started with "
+        "run_command(background=true), and whether it is still running or has exited. "
+        "Each call returns only what has arrived SINCE the last read. Set kill=true to "
+        "terminate it (the last output is still returned).",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "handle": {"type": "string", "description": "The handle run_command returned, e.g. bg1"},
+                "kill": {"type": "boolean", "description": "Terminate the job's whole process tree."},
+            },
+            "required": ["handle"],
         },
     },
     {
@@ -769,4 +903,33 @@ def run_tool(name: str, tool_input: dict, ctx: ToolContext) -> ToolResult:
     except Exception as exc:  # tools must never crash the loop
         out = ToolResult(f"Tool error: {exc}", is_error=True)
     _audit_call(ctx, name, tool_input, decision.action if decision is not None else "", out)
-    return out
+    return _fire_post_tool_use(name, ctx, out)
+
+
+def _fire_post_tool_use(name: str, ctx: ToolContext, out: ToolResult) -> ToolResult:
+    """Run any post_tool_use hook and hang its output off THIS tool's result.
+
+    Fired here rather than in the turn loop because run_tool is the choke point every
+    call already passes through — so a context that carries no hooks (a subagent, the
+    flush turn) cannot fire one, and a tool added later gets the behaviour for free.
+    """
+    if not ctx.hooks:
+        return out
+    try:
+        injected = hooks_mod.run_hooks(
+            ctx.hooks, "post_tool_use", ctx.project_root, tool_name=name,
+            decide=_hook_decider(ctx), audit=ctx.audit, notify=ctx.notify,
+        )
+    except Exception:
+        return out  # a broken hook must never turn a good tool call into a failure
+    if not injected:
+        return out
+    return ToolResult(f"{out.content}\n\n{injected}", is_error=out.is_error)
+
+
+def _hook_decider(ctx: ToolContext):
+    """Deny rules still apply to a hook, even though declaring one is the consent to
+    run it. Deny can only ever subtract, so honouring it cannot surprise anyone."""
+    if ctx.decide is None:
+        return None
+    return lambda command: ctx.decide("run_command", {"command": command})

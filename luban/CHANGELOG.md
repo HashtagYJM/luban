@@ -11,7 +11,21 @@ below. Only user-facing behaviour earns a line here.
 
 ## Unreleased
 
-Nothing yet since v0.6.0.
+### A step you want to always happen can now be made to always happen (E36)
+
+Until now the only way to tell luban "always do this" was to write it down — in `USER.md`, in the project's memory file, in a skill — and rely on it reading and complying. Mostly it does. But a skill that should load itself at the start of every session never loads, a check that should follow every write gets skipped on a busy turn, and a plan you want kept in view drifts out of attention as the conversation grows. Writing the rule more emphatically does not fix any of that, because nothing was ever bound to it.
+
+`config.toml` now takes a `[[hooks]]` block: an event, and a command luban runs itself when that event happens. The command's output comes back as text the model sees. Four events — `session_start` (at launch, and again after `/compact` resets the session), `user_prompt_submit` (each prompt you send), `post_tool_use` (after a tool call, optionally filtered to one tool by name), and `stop` (when a turn hands control back to you).
+
+That covers the three things that prompted this. A skill loads itself with `run = "type SKILL.md"` on `session_start`. A plan stays in view with the same command on `user_prompt_submit` — and it replaces its own previous copy each turn rather than stacking one per turn, so reciting a plan for an hour costs one copy of it, not sixty. A check that must follow a write is `post_tool_use` with `match = "write_file"`, and its output arrives attached to that write's own result, so the model sees the two together.
+
+Nothing is declared by default, and nothing declared means nothing runs and nothing is spent — this is not always-on context, it is a command that fires on an event. Declaring a hook is the permission to run it, so there is no prompt each time (a hook that asks every turn is a hook you delete), but a `deny` rule still blocks it and every firing is written to the audit log. A hook that fails still hands you its output, says which hook failed and with what exit code, and tells you as well as the model — a verification that has quietly stopped running is worse than none. A malformed entry is reported at startup rather than ignored. Hooks cannot block or redirect a turn, and they do not fire inside a sub-agent or the pre-compact memory flush.
+
+### Long commands no longer hold the session hostage (E35)
+
+`run_command` waited for whatever it started, so a build, a test suite or anything else long meant the session sat blocked until it finished or the timeout killed it. The way around it was to hand-build a detached command with its output redirected into a log file, then re-read that file and guess — which never said whether the thing was still alive or what it exited with.
+
+`run_command` now takes `background = true`. It returns a handle straight away, the command keeps running across turns, and the new `read_output` tool reads whatever has arrived since the last read, along with whether it is still running or has exited and with what code. `read_output` can also kill it, and still returns what it produced first. A handful of jobs can run at once; anything still running when you exit is killed, and luban says which ones.
 
 ## v0.6.0 — luban keeps track of where each project stands
 

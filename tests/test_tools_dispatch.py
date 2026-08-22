@@ -7,12 +7,12 @@ def _ctx(root: Path):
 
 
 def test_tools_schema_names():
-    names = {t["name"] for t in tools.TOOLS}
-    assert names == {
-        "list_dir", "glob", "grep", "read_file",
-        "write_file", "edit_file", "run_command", "load_skill", "sessions",
-        "remember", "recall", "forget", "journal", "checkpoint",
-    }
+    """Offered and dispatchable must be the same set. A name in one and not the other
+    is either a tool the model can see and cannot call, or one it can call and was
+    never told about. spawn_subagent is config-gated, so cli appends its schema
+    separately — it is still dispatchable and still has to be accounted for here."""
+    names = {t["name"] for t in tools.TOOLS} | {tools.SUBAGENT_TOOL["name"]}
+    assert names == set(tools._DISPATCH)
     for t in tools.TOOLS:
         assert "description" in t and "input_schema" in t
 

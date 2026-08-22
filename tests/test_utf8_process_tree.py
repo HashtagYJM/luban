@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from luban import cli, tools
+from luban import cli, hooks, tools
 
 
 @pytest.fixture(autouse=True)
@@ -48,13 +48,18 @@ def test_run_command_decodes_utf8_child_output(tmp_path):
     assert "→" in out.content and "\U0001F4CA" in out.content
 
 
-def test_run_command_popen_pins_utf8_decode():
-    """Code guard (anti-whack-a-mole): the child pipe must be decoded as UTF-8,
-    not the cp1252 locale default."""
+def test_child_spawn_pins_utf8_decode():
+    """Code guard (anti-whack-a-mole): the child pipe must be decoded as UTF-8, not the
+    cp1252 locale default. Every child luban starts — a foreground command, a background
+    job, a lifecycle hook — goes through ONE spawn, so this guard has one place to look
+    and a new caller cannot reintroduce the bug by writing its own Popen."""
     src = Path(tools.__file__).read_text(encoding="utf-8")
-    start = src.index("proc = subprocess.Popen(")
-    popen = src[start:start + 600]  # the whole Popen call spans several lines
-    assert 'encoding="utf-8"' in popen, "run_command Popen must decode child output as UTF-8"
+    fn = src[src.index("def _spawn("):]
+    fn = fn[: fn.index("\ndef ")]
+    assert 'encoding="utf-8"' in fn, "the shared spawn must decode child output as UTF-8"
+    assert src.count("subprocess.Popen(") == 1, "children must be started through _spawn"
+    hooks_src = Path(hooks.__file__).read_text(encoding="utf-8")
+    assert "subprocess.Popen(" not in hooks_src, "hooks must spawn through tools._spawn"
 
 
 def test_configure_utf8_io_forces_env_in_source():

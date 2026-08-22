@@ -14,6 +14,7 @@ from luban import audit as audit_mod
 from luban import changelog
 from luban import client as client_mod
 from luban import custom_tools as custom_tools_mod
+from luban import hooks as hooks_mod
 from luban import memory as memory_mod
 from luban import permissions as permissions_mod
 from luban import sessions as sessions_mod
@@ -216,7 +217,29 @@ def build_tool_context(
         audit=audit_cb,
         allow_out_of_tree=cfg.allow_out_of_tree_file_edits if cfg is not None else False,
         subagent=subagent,
+        hooks=cfg.hooks if cfg is not None else [],
+        notify=lambda msg: ui.print_text(f"({msg})\n"),
     )
+
+
+def fire_hooks(session: Session, cfg: config_mod.Config, ctx, event: str) -> None:
+    """Run this event's hooks and park the output for the next model call.
+
+    pending_context is the same channel the post-upgrade reconcile directive already
+    rides: it merges into the next user message. For the events that fire repeatedly the
+    previous injection is stripped first — a hook reciting the plan every turn otherwise
+    leaves one copy per turn in a conversation that is re-sent on every call.
+    """
+    if not cfg.hooks:
+        return
+    if event in hooks_mod.REPLACING:
+        hooks_mod.strip_previous(session.messages, event)
+    text = hooks_mod.run_hooks(
+        cfg.hooks, event, ctx.project_root,
+        decide=tools._hook_decider(ctx), audit=ctx.audit, notify=ctx.notify,
+    )
+    if text:
+        session.pending_context.append(text)
 
 
 NO_STREAM_MAX_TOKENS = 16_000  # a non-streamed request holds an idle connection open
@@ -778,7 +801,8 @@ def flush_memory(session: Session, client, ctx, cfg: config_mod.Config) -> None:
     )
     before = memory_mod._journal_writes
     try:
-        agent.run_turn(client, config, msgs, replace(ctx, only=allowed), lambda t: None)
+        agent.run_turn(client, config, msgs, replace(ctx, only=allowed, hooks=[]),
+                       lambda t: None)
     except Exception as exc:
         ui.print_text(f"(memory flush skipped: {exc})\n")
         return
@@ -1277,6 +1301,11 @@ def compact_session(session: Session, client, ctx=None, cfg=None) -> None:
     session.journaled = False  # the post-compaction segment can journal again
     save_session(session)  # mint the new file now so the seed survives a crash
     ui.print_text(f"✓ compacted — new session started (previous saved as {old_id})\n")
+    if ctx is not None and cfg is not None:
+        # A session_start hook exists to put something in front of the model at the
+        # start of a session; /compact resets the session, so firing only at launch
+        # would drop it at exactly the moment the emptied context needs it most.
+        fire_hooks(session, cfg, ctx, "session_start")
 
 
 def _print_last_exchange(messages: list) -> None:
@@ -1712,6 +1741,7 @@ def main(argv: list[str] | None = None) -> None:
     # (swallowed by a [table] header) looks exactly like luban disobeying you.
     for warning in config_mod.config_warnings():
         ui.print_text(warning + "\n")
+    fire_hooks(session, cfg, ctx, "session_start")
     while True:
         try:
             line = input("\nyou> ").strip()
@@ -1734,6 +1764,7 @@ def main(argv: list[str] | None = None) -> None:
                 break
             if status == "handled":
                 continue
+            fire_hooks(session, cfg, ctx, "user_prompt_submit")
             session.messages.append(
                 {"role": "user", "content": compose_user_message(session, line)}
             )
@@ -1772,5 +1803,13 @@ def main(argv: list[str] | None = None) -> None:
                 ui.print_text(
                     f"\nnote: context is {real:,} tokens — consider /compact\n"
                 )
+            fire_hooks(session, cfg, ctx, "stop")
             ui.print_text("\n")
     exit_journal(session, cfg, project_root)
+    killed = tools.kill_all_jobs()
+    if killed:
+        # A background job outliving the session that started it is an orphaned process
+        # tree nobody can see. Killing it silently would be the same problem again.
+        ui.print_text(
+            f"killed {len(killed)} background job(s) still running: {', '.join(killed)}\n"
+        )

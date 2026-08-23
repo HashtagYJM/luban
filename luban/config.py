@@ -255,9 +255,15 @@ def misplaced_keys(path: Path = CONFIG_PATH) -> list[tuple[str, str]]:
         return []
     found: list[tuple[str, str]] = []
     for table, body in data.items():
-        if not isinstance(body, dict):
-            continue
-        found.extend((key, table) for key in body if key in _TOP_LEVEL_KEYS)
+        # `[table]` gives a dict; `[[table]]` (an array of tables, which is what
+        # [[hooks]] is) gives a LIST of them. Checking only the dict form left the
+        # array form as a silent swallow-hole — a setting written below a [[hooks]]
+        # block became part of that hook entry, was ignored, and nothing said so.
+        entries = body if isinstance(body, list) else [body]
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            found.extend((key, table) for key in entry if key in _TOP_LEVEL_KEYS)
     return found
 
 

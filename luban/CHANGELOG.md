@@ -11,7 +11,9 @@ below. Only user-facing behaviour earns a line here.
 
 ## Unreleased
 
-Nothing yet since v0.7.0.
+### A setting written below a `[[hooks]]` block is no longer ignored in silence
+
+luban already warns you when a setting has been swallowed by a `[table]` header — the case where `warn_tokens = 150000` written under `[permissions]` is valid TOML, completely ignored, and looks exactly like luban disobeying you. `[[hooks]]` is a different shape of table, and the check did not cover it, so a setting written below a hook block was swallowed with nothing said. It is now reported the same way, and `luban --sync-config` moves it back where it is read.
 
 ## v0.7.0 — a step that always happens, and a command that keeps running
 

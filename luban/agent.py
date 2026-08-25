@@ -344,7 +344,8 @@ def run_turn(client, config: AgentConfig, messages: list[dict], ctx, on_text,
     truncations = 0
     while True:
         msg = _run_model_turn(client, config, messages, on_text, on_thinking, on_retry)
-        messages.append({"role": "assistant", "content": client_mod.message_to_blocks(msg)})
+        messages.append({"role": "assistant", "content": client_mod.message_to_blocks(
+            msg, client_mod.provider_for(config.model))})
         if msg.stop_reason == "pause_turn":
             # A server tool (web search) hit the API's internal iteration limit.
             # Re-send the same messages (now including this partial assistant turn,

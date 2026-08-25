@@ -294,7 +294,7 @@ def create_turn(client, *, model, max_tokens, system, messages, tools,
                 ctx_mgmt=None):
     p = probes(model)
     base = dict(model=model, max_tokens=max_tokens, system=system,
-                messages=history.sanitize_history(messages), tools=tools)
+                messages=history.for_send(messages, provider_for(model)), tools=tools)
     extras = _thinking_extras(thinking, effort, verbose) if p["extras"] is not False else {}
     if ctx_mgmt:
         msg = _try_context_managed(client, "create", base, extras, ctx_mgmt, on_retry)
@@ -445,7 +445,7 @@ def stream_turn(client, *, model, max_tokens, system, messages, tools, on_text,
                 on_retry=None, ctx_mgmt=None):
     p = probes(model)
     base = dict(model=model, max_tokens=max_tokens, system=system,
-                messages=history.sanitize_history(messages), tools=tools)
+                messages=history.for_send(messages, provider_for(model)), tools=tools)
     extras = _thinking_extras(thinking, effort, verbose) if p["extras"] is not False else {}
     if ctx_mgmt:
         msg = _try_context_managed(client, "stream", base, extras, ctx_mgmt, on_retry,
@@ -474,7 +474,13 @@ def stream_turn(client, *, model, max_tokens, system, messages, tools, on_text,
         return msg
 
 
-def message_to_blocks(message) -> list[dict]:
+def message_to_blocks(message, provider: str = "") -> list[dict]:
+    """The wire-shaped blocks luban stores for one assistant message.
+
+    `provider` is stamped onto reasoning state so a later /model switch can tell whose
+    it is; see history.for_provider. It defaults to empty for callers that have no model
+    in hand, and those blocks are classified by shape at send time instead.
+    """
     blocks: list[dict] = []
     for b in message.content:
         if b.type == "text":
@@ -489,6 +495,10 @@ def message_to_blocks(message) -> list[dict]:
             signature = getattr(b, "signature", None)
             if signature:
                 block = {"type": "thinking", "thinking": b.thinking, "signature": signature}
+                if provider:
+                    # WHOSE reasoning state this is. Kept in the session file, stripped
+                    # again before every send — history.for_provider owns both halves.
+                    block[history.PROVIDER_KEY] = provider
                 item_id = getattr(b, "id", None)
                 if item_id:
                     # An OpenAI reasoning item must be replayed with its own id alongside

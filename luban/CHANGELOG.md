@@ -11,7 +11,13 @@ below. Only user-facing behaviour earns a line here.
 
 ## Unreleased
 
-Nothing yet since v0.7.0.
+### Switching model mid-session no longer breaks the session (E41)
+
+Switching from a Claude model to a gpt one with `/model` part-way through a session made every turn after it fail, and kept failing: the request was rejected outright, `/retry` re-sent the same rejected request, and the only way out was to start over. It happened whenever the conversation already contained a Claude turn that had done any extended thinking.
+
+The reason is that both providers keep their private reasoning state on the same block, and luban was not recording whose it was. A Claude thinking block's state is not gpt reasoning state, and replaying one as the other is rejected — as is the reverse, replaying gpt state to Claude. Reasoning state is now stamped with the provider that produced it, and state belonging to another provider is left out of the request instead of being sent as though it belonged there. Sessions saved before this are handled too. Nothing about the reasoning of the provider you are actually talking to changes.
+
+Separately, luban now asks the Responses API for the reasoning state it needs to carry from one turn to the next. It never had, so on that provider each turn began its reasoning from nothing — silently, since nothing about it looked like an error. A backend that does not offer it degrades to a plain request instead of failing the turn.
 
 ## v0.7.0 — a step that always happens, and a command that keeps running
 

@@ -140,6 +140,13 @@ def build_request(kw: dict) -> dict:
         "model": kw.get("model", ""),
         "input": input_items(kw.get("messages") or []),
         "store": False,
+        # THE OTHER HALF OF store=false. The API returns replayable reasoning state
+        # only when it is asked for; without the ask, reasoning items come back with no
+        # `encrypted_content`, to_message drops them as unreplayable, and every turn
+        # restarts its reasoning from nothing while raising no error at all. Asking is
+        # what makes the absence of state mean "this backend will not return it"
+        # rather than "nobody asked" (E41).
+        "include": ["reasoning.encrypted_content"],
     }
     instructions = _instructions(kw.get("system"))
     if instructions:
@@ -258,12 +265,47 @@ class _Stream:
         return self._final
 
 
+# Tri-state, same shape and same reason as client.probes: None = untried, True = the
+# backend returns reasoning state when asked, False = it rejected the ask. A gateway that
+# does not know the `include` parameter (or a non-reasoning model behind one) must
+# degrade to a plain request, not fail every turn.
+_INCLUDE_OK: dict = {"reasoning": None}
+
+
+def _rejects_include(exc) -> bool:
+    """A 400 that names the parameter we added, and nothing else.
+
+    Deliberately narrow: swallowing every 400 here would hide a bad model id, a bad
+    tool schema and an oversized request behind a silent retry.
+    """
+    if getattr(exc, "status_code", None) not in (400, 404, None):
+        return False
+    text = str(exc).lower()
+    return "include" in text or "encrypted_content" in text
+
+
 class _Messages:
     def __init__(self, client):
         self._client = client
 
     def create(self, **kw):
-        return to_message(self._client.responses.create(**build_request(kw)))
+        req = build_request(kw)
+        if _INCLUDE_OK["reasoning"] is False:
+            req.pop("include", None)
+        try:
+            resp = self._client.responses.create(**req)
+        except Exception as exc:
+            if _INCLUDE_OK["reasoning"] is not None or "include" not in req:
+                raise  # it worked before, or we did not ask — a real failure
+            if not _rejects_include(exc):
+                raise
+            _INCLUDE_OK["reasoning"] = False
+            req.pop("include")
+            resp = self._client.responses.create(**req)
+        else:
+            if "include" in req:
+                _INCLUDE_OK["reasoning"] = True
+        return to_message(resp)
 
     def stream(self, **kw):
         return _Stream(self.create(**kw))

@@ -19,6 +19,12 @@ An empty turn is now treated like a turn the network killed: nothing is written 
 
 The same fix covers a second route to the identical failure: a response whose only content is a thinking block with no signature. luban deliberately does not echo unsigned thinking back — it would fail validation — which left the turn empty in exactly the same way.
 
+### `context_editing` now says what it actually costs
+
+The setting's comment read "clear stale tool results server-side (saves tokens)". That is true only in a narrow case, and misleading in the common one. What it clears sits inside the cached part of your prompt, so every clear throws that cache away and the next call pays to write it again. The saving is a trickle per call and capped; the cache write is a lump that grows with the size of your conversation — so the trade gets worse the longer you work, which is exactly when you would reach for it.
+
+The comment now states that, names the three situations where it does pay (a long headless run that keeps calling afterwards, a context dominated by tool output rather than conversation, or caching being off anyway so there is no cache to lose), and points at the `-Nk cleared` segment in the status line, whose absence means it never fired at all.
+
 ### A setting written below a `[[hooks]]` block is no longer ignored in silence
 
 luban already warns you when a setting has been swallowed by a `[table]` header — the case where `warn_tokens = 150000` written under `[permissions]` is valid TOML, completely ignored, and looks exactly like luban disobeying you. `[[hooks]]` is a different shape of table, and the check did not cover it, so a setting written below a hook block was swallowed with nothing said. It is now reported the same way, and `luban --sync-config` moves it back where it is read.

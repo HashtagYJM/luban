@@ -344,7 +344,10 @@ def run_turn(client, config: AgentConfig, messages: list[dict], ctx, on_text,
     truncations = 0
     while True:
         msg = _run_model_turn(client, config, messages, on_text, on_thinking, on_retry)
-        blocks = client_mod.message_to_blocks(msg)
+        # The provider stamp says WHOSE reasoning state this is, so a later /model
+        # switch can drop what the new provider cannot replay (E41).
+        blocks = client_mod.message_to_blocks(
+            msg, client_mod.provider_for(config.model))
         if not blocks:
             # The turn produced nothing usable — either the model returned an empty
             # response, or the only block was unsigned thinking, which cannot be echoed

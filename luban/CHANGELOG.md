@@ -29,6 +29,40 @@ The comment now states that, names the three situations where it does pay (a lon
 
 luban already warns you when a setting has been swallowed by a `[table]` header — the case where `warn_tokens = 150000` written under `[permissions]` is valid TOML, completely ignored, and looks exactly like luban disobeying you. `[[hooks]]` is a different shape of table, and the check did not cover it, so a setting written below a hook block was swallowed with nothing said. It is now reported the same way, and `luban --sync-config` moves it back where it is read.
 
+### Hooks now know what they fired on (E37)
+
+A hook was told an event had happened and nothing else — not which tool ran, not with what arguments — so the case hooks exist for could not actually be written: a check on the file that was just written had no way to learn which file that was. Every hook is now handed a JSON payload on stdin (the event, the project and its directory, and for tool events the tool name and its arguments) and the same values in the environment, including `LUBAN_TOOL_PATH` for the file a write or edit touched, so a guard can be a one-liner. The tool's *result* is deliberately not included: it can be an entire file.
+
+Two smaller gaps closed with it. A hook can now be scoped to the projects it is about with `project = "..."` — a glob on the project folder name or its path — so a plan recited every turn no longer follows you into unrelated projects. And hook scripts have a home: the `hooks/` folder inside luban's own directory, which a `run = "python hooks/guard.py"` resolves against, so hook logic no longer has to be inlined into `config.toml`. A project that has a `hooks/` folder of its own is left alone.
+
+Hooks stay declared in your own config file and nowhere else. luban will not read hooks out of a project directory: that would let any repository you clone run commands the moment you started luban in it, which is the same rule that already keeps custom tools and permission rules out of project files.
+
+### `/reflect` no longer misses duplicates that are worded differently (E39)
+
+`/reflect` was shown a list of duplicate candidates scored by how many words two facts share. That finds a fact saved twice in nearly the same language, and nothing else — two facts stating one rule in different words score low and never appeared on the list at all. A pass could then read an empty list, report a clean store, and leave several real overlaps in it, which is how the store kept growing while every pass looked successful.
+
+`/reflect` is now given every fact as a one-line index and asked to compare them by meaning first, before it looks at any score. The scored pairs are still there, with the band below the old threshold now shown as well, and the listing says what it is: a floor, not the set of pairs to consider. When nothing scores at all, that is stated as a fact about vocabulary rather than presented as a clean bill of health. And a pass that merges nothing is asked to name the closest pair it considered.
+
+### The journal window shows this project's entries, and only this project's (E38)
+
+A journal line is `[HH:MM] [project] text`, and that line is the only example of the format luban ever shows the model — so the model imitated it and opened its own entries with a `[topic]` bracket. Both halves of the journal then misread it. An entry whose topic bracket parsed cleanly was filed under a project that does not exist, so it never appeared in any window again and could only be found with `recall`. An entry whose bracket did not parse was kept for **every** project, so a busy day elsewhere could spend this project's whole journal allowance and fill both window slots with work you were not doing — while the window went on saying "entries for this project only".
+
+luban now owns the brackets on a journal line. A topic written at the start of an entry is moved into the text rather than left where a project name goes, so nothing is lost and nothing is misfiled. The reader accepts entries already written that way, and an entry whose tag cannot be read is now left out of a filtered window instead of shown to everyone — every day file is still on disk, and `recall` still searches all of them.
+
+### A tool that returns nothing now says so (E40)
+
+A sub-agent or a custom tool that came back with nothing at all handed that emptiness straight to the model as its result. Nothing distinguished it from a real answer of "I looked and there was nothing", so a review or research step could quietly turn into no step at all — the model reads the empty result, believes the work was done, and carries on.
+
+Both now come back as an explicit error saying the completion was empty, and saying that a refusal, a failure inside the tool and a genuine "nothing to report" cannot be told apart from where the caller stands. A tool that returns output is unaffected.
+
+### Switching model mid-session no longer breaks the session (E41)
+
+Switching from a Claude model to a gpt one with `/model` part-way through a session made every turn after it fail, and kept failing: the request was rejected outright, `/retry` re-sent the same rejected request, and the only way out was to start over. It happened whenever the conversation already contained a Claude turn that had done any extended thinking.
+
+The reason is that both providers keep their private reasoning state on the same block, and luban was not recording whose it was. A Claude thinking block's state is not gpt reasoning state, and replaying one as the other is rejected — as is the reverse, replaying gpt state to Claude. Reasoning state is now stamped with the provider that produced it, and state belonging to another provider is left out of the request instead of being sent as though it belonged there. Sessions saved before this are handled too. Nothing about the reasoning of the provider you are actually talking to changes.
+
+Separately, luban now asks the Responses API for the reasoning state it needs to carry from one turn to the next. It never had, so on that provider each turn began its reasoning from nothing — silently, since nothing about it looked like an error. A backend that does not offer it degrades to a plain request instead of failing the turn.
+
 ## v0.7.0 — a step that always happens, and a command that keeps running
 
 ### A step you want to always happen can now be made to always happen (E36)

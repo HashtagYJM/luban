@@ -183,6 +183,27 @@ def _default_text(plat: str) -> str:
         '# match  = "write_file"\n'
         '# run    = "python scripts\\\\render_check.py"\n'
         "# inject = true\n"
+        "#\n"
+        "# Every hook is handed a JSON payload on stdin — event, project, project_dir,\n"
+        "# and for tool events tool_name and tool_input — and the same values in the\n"
+        "# environment: LUBAN_EVENT, LUBAN_PROJECT, LUBAN_PROJECT_DIR, LUBAN_TOOL_NAME,\n"
+        "# LUBAN_TOOL_INPUT, LUBAN_TOOL_PATH (the file a write/edit touched), and\n"
+        "# LUBAN_HOOKS_DIR. So a check can be about what actually happened:\n"
+        "# [[hooks]]\n"
+        '# event   = "post_tool_use"\n'
+        '# match   = "write_file"\n'
+        '# run     = "python hooks\\\\em_dash_guard.py"\n'
+        "#\n"
+        "# Scripts live in the hooks/ folder of luban's home. A `hooks/<name>` in `run`\n"
+        "# resolves there (the command itself runs in the PROJECT directory), and it is\n"
+        "# left alone if no such file exists, so a project with its own hooks/ is safe.\n"
+        "#\n"
+        "# `project` scopes a hook to the projects it is about — a glob on the project\n"
+        "# folder name or its full path. Omit it and the hook fires everywhere:\n"
+        "# [[hooks]]\n"
+        '# event   = "user_prompt_submit"\n'
+        '# project = "luban"\n'
+        '# run     = "type plan.md"\n'
     )
 
 

@@ -296,20 +296,27 @@ def _kill_tree(proc: subprocess.Popen) -> None:  # type: ignore
         proc.kill()  # group already gone or unreachable — kill the child directly
 
 
-def _spawn(command: str, cwd, merge_stderr: bool = False) -> subprocess.Popen:
+def _spawn(command: str, cwd, merge_stderr: bool = False, *, stdin_pipe: bool = False,
+           env: dict | None = None) -> subprocess.Popen:
     """The one place a child process is started. Foreground runs, background jobs and
-    lifecycle hooks all come through here, so the UTF-8 decoding, the DEVNULL stdin and
-    the process-group setup that makes _kill_tree work cannot drift apart."""
+    lifecycle hooks all come through here, so the UTF-8 decoding, the stdin policy and
+    the process-group setup that makes _kill_tree work cannot drift apart.
+
+    stdin is DEVNULL unless a caller asks for a pipe: an interactive child must EOF
+    rather than hang, and only a hook — which is handed a payload and then read to
+    completion — has anything to send it.
+    """
     return subprocess.Popen(
         command,
         shell=True,
         cwd=str(cwd),
-        stdin=subprocess.DEVNULL,  # interactive children EOF instead of hanging
+        stdin=subprocess.PIPE if stdin_pipe else subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT if merge_stderr else subprocess.PIPE,
         text=True,
         encoding="utf-8",  # decode child output as UTF-8 (children run in UTF-8 mode
         errors="replace",  # via PYTHONUTF8); never charmap-crash reading their output
+        env={**os.environ, **env} if env else None,  # None = inherit, unchanged
         start_new_session=(sys.platform != "win32"),  # POSIX: own process group so we can kill the whole tree
     )
 
@@ -544,9 +551,23 @@ def _spawn_subagent(inp: dict, ctx: ToolContext) -> ToolResult:
     if not isinstance(task, str) or not task.strip():
         return ToolResult("Bad request: 'task' must be a non-empty string.", is_error=True)
     try:
-        return ToolResult(_truncate(ctx.subagent(task)))
+        answer = ctx.subagent(task)
     except Exception as exc:  # a sub-run failure must not kill the parent turn
         return ToolResult(f"Subagent failed: {exc}", is_error=True)
+    if not (answer or "").strip():
+        # An EMPTY completion, not an empty answer. Returned as an ordinary result it is
+        # indistinguishable from a sub-agent that looked and found nothing — so a critic
+        # or research stage silently degrades to no stage at all, and nothing anywhere
+        # says so (E40). The caller cannot tell a refusal from a gateway failure from a
+        # genuinely empty completion; it can at least be told that it cannot.
+        return ToolResult(
+            "The sub-agent returned no text at all. That is an EMPTY COMPLETION, not an "
+            "answer of 'nothing found' — a refusal, a gateway failure and a completion "
+            "with no body all look like this, and none of them can be told apart from "
+            "here. Nothing was investigated. Do the work yourself or re-run the "
+            "sub-agent with a different task.",
+            is_error=True)
+    return ToolResult(_truncate(answer))
 
 
 # Offered only when config.subagents is on (build_agent_config appends it); the
@@ -773,7 +794,9 @@ TOOLS = [
         "the journal is a timeline sent whole on every turn, and one long entry evicts "
         "earlier days. Plans, code and tracebacks belong in a file. Write out in full "
         "only what has no other home: a reversal, or something that behaved unlike its "
-        "documentation.",
+        "documentation. Write the note ALONE: luban stamps the time and the project "
+        "itself, so do not open with a [bracketed] topic of your own — the brackets are "
+        "the record's, not the text's, and one there is read as the project name.",
         "input_schema": {
             "type": "object",
             "properties": {"text": {"type": "string"}},
@@ -814,7 +837,19 @@ def _wrap_custom(spec: dict) -> Callable[[dict, ToolContext], ToolResult]:
                 return ToolResult(f"User declined {name}.")
         # Handler exceptions deliberately propagate: run_tool's catch turns
         # them into the standard "Tool error:" is_error result.
-        return ToolResult(_truncate(str(handler(inp, ctx.project_root))))
+        out = str(handler(inp, ctx.project_root))
+        if not out.strip():
+            # Silence is the one result that cannot be read: a failure inside the
+            # handler, a refusal from whatever it called, and a genuine "nothing to
+            # report" are the same empty string, and the caller reads it as an answer
+            # (E40). Saying so costs a line; not saying so costs the step.
+            return ToolResult(
+                f"{name} returned an empty result — no output at all. A failure inside "
+                f"the tool, a refusal from whatever it called, and a genuine 'nothing "
+                f"to report' are indistinguishable here, so do not read this as an "
+                f"answer.",
+                is_error=True)
+        return ToolResult(_truncate(out))
 
     return call
 
@@ -903,10 +938,11 @@ def run_tool(name: str, tool_input: dict, ctx: ToolContext) -> ToolResult:
     except Exception as exc:  # tools must never crash the loop
         out = ToolResult(f"Tool error: {exc}", is_error=True)
     _audit_call(ctx, name, tool_input, decision.action if decision is not None else "", out)
-    return _fire_post_tool_use(name, ctx, out)
+    return _fire_post_tool_use(name, ctx, out, tool_input)
 
 
-def _fire_post_tool_use(name: str, ctx: ToolContext, out: ToolResult) -> ToolResult:
+def _fire_post_tool_use(name: str, ctx: ToolContext, out: ToolResult,
+                        tool_input: dict | None = None) -> ToolResult:
     """Run any post_tool_use hook and hang its output off THIS tool's result.
 
     Fired here rather than in the turn loop because run_tool is the choke point every
@@ -919,6 +955,7 @@ def _fire_post_tool_use(name: str, ctx: ToolContext, out: ToolResult) -> ToolRes
         injected = hooks_mod.run_hooks(
             ctx.hooks, "post_tool_use", ctx.project_root, tool_name=name,
             decide=_hook_decider(ctx), audit=ctx.audit, notify=ctx.notify,
+            tool_input=tool_input,
         )
     except Exception:
         return out  # a broken hook must never turn a good tool call into a failure

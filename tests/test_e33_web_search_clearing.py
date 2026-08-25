@@ -206,5 +206,7 @@ def test_the_caller_is_not_trusted_to_remember():
     import inspect
     for fn in (client_mod.create_turn, client_mod.stream_turn):
         src = inspect.getsource(fn)
-        assert "sanitize_history(messages)" in src, (
+        # for_send is sanitize_history plus the provider rule (E41) — the send must go
+        # through it, whatever else is added to it later.
+        assert "history.for_send(messages" in src, (
             f"{fn.__name__} sends the caller's list unchecked")

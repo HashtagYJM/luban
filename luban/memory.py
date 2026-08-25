@@ -247,7 +247,16 @@ _project = ""
 
 # An entry starts with its timestamp; the lines after it are its continuation and
 # belong to the same project, so filtering is per ENTRY, not per line.
-_ENTRY_START = re.compile(r"^\[\d{2}:\d{2}\] (?:\[([^\]\n]+)\] )?")
+#
+# The separator after each bracket is `\s*`, not a literal space. It used to require the
+# space, so `[HH:MM] [tag]text` parsed as UNTAGGED — and an untagged entry is kept for
+# every project, so one missing space leaked a whole day of another project's work into
+# this project's window and spent its allowance (E38).
+_ENTRY_START = re.compile(r"^\[\d{2}:\d{2}\]\s*(?:\[([^\]\n]+)\]\s*)?")
+
+# A line that opens a bracket after the timestamp and never closes it. The tag is
+# UNREADABLE, not absent — see _for_project for why the two cannot share a fate.
+_UNPARSEABLE_TAG = re.compile(r"^\[\d{2}:\d{2}\]\s*\[")
 
 
 def set_project(name: str) -> None:
@@ -265,8 +274,17 @@ def set_project(name: str) -> None:
 def _for_project(text: str) -> str:
     """One day's entries, narrowed to the current project.
 
-    Untagged entries are kept: they were written before tagging existed, and dropping
-    them would silently delete the older half of the timeline.
+    Untagged entries — no bracket at all after the timestamp — are kept: they were
+    written before tagging existed, and dropping them would silently delete the older
+    half of the timeline.
+
+    An entry whose tag is UNREADABLE fails CLOSED. That is the opposite of untagged and
+    the two used to share a fate: the reader returned None for both, and None was kept
+    for everyone, so a malformed header leaked its entry into every project's window
+    while the window went on printing "entries for X only" (E38). Keeping a day of
+    another project's work costs this project's whole allowance and blanks its
+    continuity; dropping one line that luban itself did not write costs the line, and
+    recall still searches every day file.
     """
     if not _project:
         return text
@@ -275,7 +293,11 @@ def _for_project(text: str) -> str:
     for line in text.splitlines():
         m = _ENTRY_START.match(line)
         if m:
-            keeping = m.group(1) in (None, _project)
+            tag = m.group(1)
+            if tag is None and _UNPARSEABLE_TAG.match(line):
+                keeping = False  # a bracket that never closes — unreadable, not absent
+            else:
+                keeping = tag in (None, _project)
         if keeping:
             kept.append(line)
     return "\n".join(kept).strip()
@@ -535,8 +557,17 @@ def _overlap(a: str, b: str) -> float:
 
 DUPLICATE_THRESHOLD = 0.34  # tuned to flag candidates for a human/model, not to auto-merge
 
+# The band below the threshold, shown separately rather than not at all. A lexical score
+# can only find duplicates WORDED alike, so the same rule stated twice in different words
+# scores here or lower and was never put in front of the curator at all — and a pass that
+# reads the candidate list as the set of pairs to consider then reports "no duplicates"
+# over a store that holds several (E39). Two bands say what one number cannot: this is a
+# floor, not an answer.
+NEAR_THRESHOLD = 0.15
 
-def duplicate_candidates() -> list[tuple[str, str, float]]:
+
+def duplicate_candidates(threshold: float = DUPLICATE_THRESHOLD
+                         ) -> list[tuple[str, str, float]]:
     """Pairs of facts that look like the same idea, most similar first.
 
     Purely lexical and deliberately loose: this only ever SUGGESTS a merge to the
@@ -556,9 +587,33 @@ def duplicate_candidates() -> list[tuple[str, str, float]]:
     for i, (sa, ta) in enumerate(facts):
         for sb, tb in facts[i + 1:]:
             score = _overlap(f"{sa} {ta}", f"{sb} {tb}")
-            if score >= DUPLICATE_THRESHOLD:
+            if score >= threshold:
                 pairs.append((sa, sb, round(score, 2)))
     return sorted(pairs, key=lambda p: -p[2])
+
+
+def description_index() -> list[tuple[str, str]]:
+    """(slug, one-line description) for every fact. Continuity pointers are left out —
+    there is one per project, they are meant to look alike, and the curator is told
+    elsewhere not to merge them.
+
+    The compact form of the whole store, so the curator can compare every fact against
+    every other in one read. The complete bodies are shown too, but a store large enough
+    to need curating is too large to hold pairwise in one pass — which is how a set of
+    real semantic overlaps survived a pass that had read every one of them (E39).
+    """
+    out: list[tuple[str, str]] = []
+    if not MEMORY_DIR.is_dir():
+        return out
+    for path in sorted(MEMORY_DIR.glob("*.md")):
+        if path.name == "MEMORY.md" or is_checkpoint(path.stem):
+            continue
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        out.append((path.stem, _fact_description(text) or "(no description)"))
+    return out
 
 
 def always_on_budget(extra: list[tuple[str, int]] | None = None) -> str:
@@ -616,11 +671,38 @@ def audit(extra: list[tuple[str, int]] | None = None) -> str:
                      "touched in months — the 'last session' date is in the fact, and "
                      "if you are wrong the next /compact there writes it back.\n\n"
                      + "\n\n".join(maintained))
-    dupes = duplicate_candidates()
-    if dupes:
-        listing = "\n".join(f"  - [{a}] vs [{b}]  (overlap {s})" for a, b, s in dupes[:20])
-        parts.append("POSSIBLE DUPLICATES (lexical overlap — judge for yourself, these "
-                     f"are only candidates):\n{listing}")
+    index = description_index()
+    if len(index) > 1:
+        # Every fact in one place, one line each. The pairwise comparison this exists for
+        # is a comparison of MEANING, and nothing lexical can make it.
+        listing = "\n".join(f"  - [{slug}] {desc}" for slug, desc in index)
+        parts.append(
+            f"EVERY FACT, ONE LINE EACH ({len(index)}) — read this list as a whole and "
+            "ask which of these say the SAME THING in different words. That is the "
+            "comparison the overlap score below cannot make:\n" + listing)
+    if len(index) > 1:
+        scored = duplicate_candidates(NEAR_THRESHOLD)
+        strong = [p for p in scored if p[2] >= DUPLICATE_THRESHOLD]
+        near = [p for p in scored if p[2] < DUPLICATE_THRESHOLD]
+        block = ["LEXICAL OVERLAP — a FLOOR, not the set of pairs to consider. It scores "
+                 "shared words, so it can only find duplicates that are WORDED alike; "
+                 "two facts stating one rule in different words score low here and are "
+                 "still duplicates. Judge every pair yourself, and judge pairs it does "
+                 "not name."]
+        if strong:
+            block.append("  above the threshold:\n" + "\n".join(
+                f"    - [{a}] vs [{b}]  (overlap {s})" for a, b, s in strong[:20]))
+        if near:
+            block.append("  below it, shown because the threshold is not evidence:\n"
+                         + "\n".join(f"    - [{a}] vs [{b}]  (overlap {s})"
+                                      for a, b, s in near[:20]))
+        if not scored:
+            # The empty list is the shape that produced "no true duplicate pairs" over a
+            # store that held several. Say what it does and does not mean.
+            block.append("  no pair shares enough WORDING to score at all. That is a "
+                         "statement about vocabulary, not about duplication — the index "
+                         "above is where the answer is.")
+        parts.append("\n".join(block))
     return "\n\n".join(parts)
 
 
@@ -938,14 +1020,53 @@ def recall(query: str) -> str:
     return out
 
 
+# A bracket at the very start of an entry's TEXT. luban owns the bracket namespace on a
+# journal line; anything the writer puts there is prose wearing metadata's clothes.
+_LEADING_BRACKET = re.compile(r"^\[([^\]\n]*)\]\s*")
+_CLOCKISH = re.compile(r"^\d{1,2}:\d{2}$")
+
+
+def _own_the_brackets(text: str, tag: str) -> str:
+    """Move any leading `[label]` runs out of the metadata namespace and into the text.
+
+    A journal line is `[HH:MM] [project] text`, and that rendered line is the only
+    example of the format the model ever sees — so it imitates it and writes its own
+    `[topic]` first. Independently, in different sessions. Both halves then fail: the
+    reader parses the model's topic AS the project tag, so the entry matches no project
+    and is dropped from every window; or the header does not parse at all and the entry
+    is kept for every project. One unescaped line, two opposite failures (E38).
+
+    The label is information — it just is not metadata — so it is re-attached as plain
+    text rather than deleted. A label that merely repeats the project tag, or that is
+    the writer imitating the timestamp, is dropped: it says nothing luban is not already
+    writing.
+    """
+    labels: list[str] = []
+    while True:
+        m = _LEADING_BRACKET.match(text)
+        if not m:
+            break
+        label = m.group(1).strip()
+        text = text[m.end():]
+        if label and not _CLOCKISH.match(label) and label.casefold() != tag.casefold():
+            labels.append(label)
+    if not labels:
+        return text
+    prefix = ", ".join(labels)
+    return f"{prefix}: {text}" if text else prefix
+
+
 def journal_append(text: str, project: str | None = None) -> None:
     """Append one entry to today's journal, tagged with its project.
 
     The tag is applied HERE and nowhere else. It used to be part of the text at one
     caller and absent at the other, so half the timeline was labelled and half was not.
+    The same chokepoint is where the text is kept OUT of the tag's namespace, for the
+    same reason: enforce it here, or enumerate every writer and hope.
     """
     global _journal_writes
     tag = (_project if project is None else project).strip()
+    text = _own_the_brackets(text.strip(), tag)
     try:
         journal_dir = MEMORY_DIR / "journal"
         journal_dir.mkdir(parents=True, exist_ok=True)

@@ -80,7 +80,7 @@ def test_run_turn_sanitizes_max_tokens_truncated_tool_use(monkeypatch):
                 stop_reason="max_tokens",
             )
     monkeypatch.setattr(agent.client_mod, "message_to_blocks",
-                        lambda msg: [{"type": "text", "text": "…"}, _tu("t")])
+                        lambda msg, provider="": [{"type": "text", "text": "…"}, _tu("t")])
     cfg = agent.AgentConfig("m", 50, stream=False, platform="mac")
     out = agent.run_turn(Stub(), cfg, [{"role": "user", "content": "hi"}], None, lambda t: None)
     assert not any(b.get("type") == "tool_use"

@@ -114,3 +114,81 @@ def sanitize_history(messages: list[dict]) -> list[dict]:
             break  # message still valid (text remains), tail is now clean
         out.pop()  # nothing but tool_use — drop the whole message and re-check
     return out
+
+
+# --------------------------------------------------------------- reasoning state ----
+# The key luban stores an assistant thinking block's ORIGIN provider under. Internal:
+# it is written by client.message_to_blocks and stripped again by for_send, so it never
+# reaches either provider's wire format — an unknown key inside a content block is not
+# in either schema, and shipping one would trade a known 400 for a possible one.
+PROVIDER_KEY = "provider"
+
+
+def _origin(block: dict) -> str:
+    """Which provider produced the reasoning state in this thinking block.
+
+    Untagged blocks come from sessions written before the tag existed, and there is
+    exactly one piece of evidence left in them: luban replays an OpenAI reasoning item
+    with its own `id` alongside the encrypted state, and an Anthropic thinking block has
+    no id at all (see client.message_to_blocks). So `id` present means OpenAI.
+    """
+    tagged = block.get(PROVIDER_KEY)
+    if isinstance(tagged, str) and tagged:
+        return tagged
+    return "openai" if block.get("id") else "anthropic"
+
+
+def for_provider(messages: list[dict], provider: str) -> list[dict]:
+    """Drop reasoning state belonging to another provider, and strip the internal tag.
+
+    Reasoning state is provider-specific and BOTH providers ride it on the same block:
+    an Anthropic thinking block carries `signature`, and the OpenAI adapter maps that
+    same field into a Responses reasoning item's `encrypted_content`. So after /model
+    switches provider mid-session, every stored Claude signature was replayed to OpenAI
+    as OpenAI reasoning state — which it is not — and every later turn 400'd with
+    `invalid_encrypted_content`, permanently: the block never left history, so /retry
+    re-sent the same rejected request. The mirror case (a `gAAA...` blob replayed to
+    Anthropic) is equally invalid (E41).
+
+    Dropping is safe where forgetting would not be: a thinking block is only REQUIRED on
+    the assistant turn currently being answered, and that turn is always the running
+    provider's own. Foreign blocks are by definition older than the switch.
+    """
+    out: list[dict] = []
+    changed = False
+    for m in messages:
+        content = m.get("content")
+        if not isinstance(content, list):
+            out.append(m)
+            continue
+        kept: list[dict] = []
+        touched = False
+        for b in content:
+            if not (isinstance(b, dict) and b.get("type") == "thinking"):
+                kept.append(b)
+                continue
+            if _origin(b) != provider:
+                touched = True
+                continue  # another provider's reasoning state — unusable here
+            if PROVIDER_KEY in b:
+                b = {k: v for k, v in b.items() if k != PROVIDER_KEY}
+                touched = True
+            kept.append(b)
+        if not touched:
+            out.append(m)
+            continue
+        changed = True
+        if kept:
+            out.append({**m, "content": kept})
+        # else: the message held nothing but foreign reasoning — drop it entirely.
+    return out if changed else messages
+
+
+def for_send(messages: list[dict], provider: str) -> list[dict]:
+    """Everything that must be true of a history about to be sent to `provider`.
+
+    One function because it has one caller shape: client.create_turn and
+    client.stream_turn. The rules are enforced at the SEND for the reason this module
+    exists — enumerating guards is a promise, enforcing at the send is a property.
+    """
+    return for_provider(sanitize_history(messages), provider)

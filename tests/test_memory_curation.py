@@ -89,7 +89,7 @@ def test_audit_flags_duplicate_candidates(mem):
                     "prefers ruff and type hints on every function")
     memory.remember("unrelated", "the weather", "it rains in April")
     out = memory.audit()
-    assert "POSSIBLE DUPLICATES" in out
+    assert "LEXICAL OVERLAP" in out
     assert "coding-style" in out and "user-code-preferences" in out
     pairs = memory.duplicate_candidates()
     assert not any("unrelated" in (a, b) for a, b, _ in pairs)

@@ -11,6 +11,12 @@ below. Only user-facing behaviour earns a line here.
 
 ## Unreleased
 
+### `/reflect` no longer misses duplicates that are worded differently (E39)
+
+`/reflect` was shown a list of duplicate candidates scored by how many words two facts share. That finds a fact saved twice in nearly the same language, and nothing else — two facts stating one rule in different words score low and never appeared on the list at all. A pass could then read an empty list, report a clean store, and leave several real overlaps in it, which is how the store kept growing while every pass looked successful.
+
+`/reflect` is now given every fact as a one-line index and asked to compare them by meaning first, before it looks at any score. The scored pairs are still there, with the band below the old threshold now shown as well, and the listing says what it is: a floor, not the set of pairs to consider. When nothing scores at all, that is stated as a fact about vocabulary rather than presented as a clean bill of health. And a pass that merges nothing is asked to name the closest pair it considered.
+
 ### The journal window shows this project's entries, and only this project's (E38)
 
 A journal line is `[HH:MM] [project] text`, and that line is the only example of the format luban ever shows the model — so the model imitated it and opened its own entries with a `[topic]` bracket. Both halves of the journal then misread it. An entry whose topic bracket parsed cleanly was filed under a project that does not exist, so it never appeared in any window again and could only be found with `recall`. An entry whose bracket did not parse was kept for **every** project, so a busy day elsewhere could spend this project's whole journal allowance and fill both window slots with work you were not doing — while the window went on saying "entries for this project only".

@@ -557,8 +557,17 @@ def _overlap(a: str, b: str) -> float:
 
 DUPLICATE_THRESHOLD = 0.34  # tuned to flag candidates for a human/model, not to auto-merge
 
+# The band below the threshold, shown separately rather than not at all. A lexical score
+# can only find duplicates WORDED alike, so the same rule stated twice in different words
+# scores here or lower and was never put in front of the curator at all — and a pass that
+# reads the candidate list as the set of pairs to consider then reports "no duplicates"
+# over a store that holds several (E39). Two bands say what one number cannot: this is a
+# floor, not an answer.
+NEAR_THRESHOLD = 0.15
 
-def duplicate_candidates() -> list[tuple[str, str, float]]:
+
+def duplicate_candidates(threshold: float = DUPLICATE_THRESHOLD
+                         ) -> list[tuple[str, str, float]]:
     """Pairs of facts that look like the same idea, most similar first.
 
     Purely lexical and deliberately loose: this only ever SUGGESTS a merge to the
@@ -578,9 +587,31 @@ def duplicate_candidates() -> list[tuple[str, str, float]]:
     for i, (sa, ta) in enumerate(facts):
         for sb, tb in facts[i + 1:]:
             score = _overlap(f"{sa} {ta}", f"{sb} {tb}")
-            if score >= DUPLICATE_THRESHOLD:
+            if score >= threshold:
                 pairs.append((sa, sb, round(score, 2)))
     return sorted(pairs, key=lambda p: -p[2])
+
+
+def description_index() -> list[tuple[str, str]]:
+    """(slug, one-line description) for every fact, checkpoints included.
+
+    The compact form of the whole store, so the curator can compare every fact against
+    every other in one read. The complete bodies are shown too, but a store large enough
+    to need curating is too large to hold pairwise in a single pass — which is how four
+    real semantic overlaps survived a pass that read all of them (E39).
+    """
+    out: list[tuple[str, str]] = []
+    if not MEMORY_DIR.is_dir():
+        return out
+    for path in sorted(MEMORY_DIR.glob("*.md")):
+        if path.name == "MEMORY.md" or is_checkpoint(path.stem):
+            continue
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        out.append((path.stem, _fact_description(text) or "(no description)"))
+    return out
 
 
 def always_on_budget(extra: list[tuple[str, int]] | None = None) -> str:
@@ -638,11 +669,38 @@ def audit(extra: list[tuple[str, int]] | None = None) -> str:
                      "touched in months — the 'last session' date is in the fact, and "
                      "if you are wrong the next /compact there writes it back.\n\n"
                      + "\n\n".join(maintained))
-    dupes = duplicate_candidates()
-    if dupes:
-        listing = "\n".join(f"  - [{a}] vs [{b}]  (overlap {s})" for a, b, s in dupes[:20])
-        parts.append("POSSIBLE DUPLICATES (lexical overlap — judge for yourself, these "
-                     f"are only candidates):\n{listing}")
+    index = description_index()
+    if len(index) > 1:
+        # Every fact in one place, one line each. The pairwise comparison this exists for
+        # is a comparison of MEANING, and nothing lexical can make it.
+        listing = "\n".join(f"  - [{slug}] {desc}" for slug, desc in index)
+        parts.append(
+            f"EVERY FACT, ONE LINE EACH ({len(index)}) — read this list as a whole and "
+            "ask which of these say the SAME THING in different words. That is the "
+            "comparison the overlap score below cannot make:\n" + listing)
+    scored = duplicate_candidates(NEAR_THRESHOLD)
+    strong = [p for p in scored if p[2] >= DUPLICATE_THRESHOLD]
+    near = [p for p in scored if p[2] < DUPLICATE_THRESHOLD]
+    if len(index) > 1:
+        block = ["LEXICAL OVERLAP — a FLOOR, not the set of pairs to consider. It scores "
+                 "shared words, so it can only find duplicates that are WORDED alike; "
+                 "two facts stating one rule in different words score low here and are "
+                 "still duplicates. Judge every pair yourself, and judge pairs it does "
+                 "not name."]
+        if strong:
+            block.append("  above the threshold:\n" + "\n".join(
+                f"    - [{a}] vs [{b}]  (overlap {s})" for a, b, s in strong[:20]))
+        if near:
+            block.append("  below it, shown because the threshold is not evidence:\n"
+                         + "\n".join(f"    - [{a}] vs [{b}]  (overlap {s})"
+                                      for a, b, s in near[:20]))
+        if not scored:
+            # The empty list is the shape that produced "no true duplicate pairs" over a
+            # store that held several. Say what it does and does not mean.
+            block.append("  no pair shares enough WORDING to score at all. That is a "
+                         "statement about vocabulary, not about duplication — the index "
+                         "above is where the answer is.")
+        parts.append("\n".join(block))
     return "\n\n".join(parts)
 
 

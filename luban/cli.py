@@ -258,6 +258,26 @@ def resolve_max_tokens(flag: int | None, cfg: config_mod.Config, stream: bool) -
     return want
 
 
+def empty_turn_notice(session: Session, stop_reason: str) -> None:
+    """A turn that came back with no content at all — say so, and keep the prompt.
+
+    Before this, an empty response printed nothing and left an empty assistant message in
+    the history. The API rejects a message with empty content, so that ONE blank answer
+    then failed every later send in the session, and the saved file carried the damage
+    into any resume. What the user saw was a blank reply and then a session that had
+    inexplicably died.
+    """
+    if session.messages and session.messages[-1].get("role") == "user":
+        session.last_failed = session.messages.pop()["content"]
+    why = f" (stop reason: {stop_reason})" if stop_reason else ""
+    ui.print_text(
+        f"\n[the model returned an empty response{why} — nothing was written and your "
+        "prompt was kept; /retry to send it again]\n"
+        "  If this keeps happening: it is usually the request shape, not the prompt. Try "
+        "context_editing = false first, then a lower max_tokens, then --no-stream.\n"
+    )
+
+
 def truncation_notice(cap: int, n: int, total: int) -> None:
     """A turn cut off mid-tool-call. NEVER let this be silent: the tool didn't run, so a
     write the model announced simply never happened — and the model will claim it did."""
@@ -1770,11 +1790,13 @@ def main(argv: list[str] | None = None) -> None:
             )
         agent_config = build_agent_config(session, cfg, project_root)
         ui.print_text("\nluban> ")
+        empty_turn = []
         try:
             session.messages = agent.run_turn(
                 client, agent_config, session.messages, ctx, ui.print_text,
                 ui.print_thinking, on_retry=stream_retry_notice,
                 on_truncated=truncation_notice,
+                on_empty=empty_turn.append,
             )
         except KeyboardInterrupt:
             session.messages.pop()  # drop the unanswered user turn so history stays valid
@@ -1786,6 +1808,14 @@ def main(argv: list[str] | None = None) -> None:
                 session.last_failed = session.messages.pop()["content"]
             ui.print_text(f"\n[turn failed: {exc}]\n{failure_hint(exc)}")
         else:
+            if empty_turn:
+                # The model answered with nothing at all. Treat it exactly like a turn the
+                # network killed: keep the typed prompt for /retry and take it out of the
+                # history, which must never end on an unanswered user turn. Silence here
+                # is what made this look like luban hanging rather than the model
+                # returning empty.
+                empty_turn_notice(session, empty_turn[0])
+                continue
             save_session(session)
             # The live token line: what this turn cost and how full the window is.
             ui.print_text(usage_mod.turn_line(session.ledger, cfg.warn_tokens,

@@ -49,12 +49,45 @@ def strip_stranded_server_tools(messages: list[dict]) -> list[dict]:
     return out if changed else messages
 
 
+def _is_empty(message: dict) -> bool:
+    """A message the API will reject: content that is `[]`, `""`, or whitespace."""
+    content = message.get("content")
+    if isinstance(content, list):
+        return not content
+    if isinstance(content, str):
+        return not content.strip()
+    return content is None
+
+
+def drop_empty(messages: list[dict]) -> list[dict]:
+    """Remove messages with no content at all.
+
+    A turn that comes back empty produces one of these, and it is FATAL rather than
+    cosmetic: the API rejects a message with empty content, so a single blank response
+    400s every later send in that session — and because the session is saved after each
+    turn, resuming reopens the same dead thread. The visible symptom is a blank answer
+    followed by a session that never works again.
+
+    Two different upstream causes land here. The model may genuinely return nothing, and
+    a thinking-only response whose blocks carry no signature is dropped by
+    `message_to_blocks` (correctly — an unsigned block fails validation if echoed back),
+    which empties the message just the same. Neither is repairable upstream, and neither
+    should cost the session.
+
+    Whole-history, not just the tail: a session poisoned before this existed must heal
+    when it is loaded, not merely avoid being poisoned again.
+    """
+    kept = [m for m in messages if not _is_empty(m)]
+    return kept if len(kept) != len(messages) else messages
+
+
 def sanitize_history(messages: list[dict]) -> list[dict]:
-    """Guarantee an API-valid history. Two rules:
+    """Guarantee an API-valid history. Three rules:
 
     1. No server_tool_use may stand without the web_search_tool_result answering it,
        anywhere in the history — see strip_stranded_server_tools.
-    2. History must never END in an assistant message with unanswered tool_use blocks.
+    2. No message may have empty content — see drop_empty.
+    3. History must never END in an assistant message with unanswered tool_use blocks.
 
     The Anthropic API requires every tool_use to be immediately followed by its
     tool_result. A response truncated at max_tokens mid-tool-call (or any path that
@@ -65,7 +98,7 @@ def sanitize_history(messages: list[dict]) -> list[dict]:
     """
     if not messages:
         return messages
-    out = list(strip_stranded_server_tools(messages))
+    out = list(drop_empty(strip_stranded_server_tools(messages)))
     while out:
         last = out[-1]
         if last.get("role") != "assistant":

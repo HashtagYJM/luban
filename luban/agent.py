@@ -338,13 +338,24 @@ def _has_tool_use(content) -> bool:
 
 
 def run_turn(client, config: AgentConfig, messages: list[dict], ctx, on_text,
-             on_thinking=None, on_retry=None, on_truncated=None) -> list[dict]:
+             on_thinking=None, on_retry=None, on_truncated=None, on_empty=None) -> list[dict]:
     messages = list(messages)
     pauses = 0
     truncations = 0
     while True:
         msg = _run_model_turn(client, config, messages, on_text, on_thinking, on_retry)
-        messages.append({"role": "assistant", "content": client_mod.message_to_blocks(msg)})
+        blocks = client_mod.message_to_blocks(msg)
+        if not blocks:
+            # The turn produced nothing usable — either the model returned an empty
+            # response, or the only block was unsigned thinking, which cannot be echoed
+            # back. Appending it would put a message with empty content into the history,
+            # which the API rejects on EVERY later send: one blank answer would kill the
+            # session, and the saved file with it. Report it and leave history untouched
+            # so the next prompt still works.
+            if on_empty is not None:
+                on_empty(getattr(msg, "stop_reason", "") or "")
+            return sanitize_history(messages)
+        messages.append({"role": "assistant", "content": blocks})
         if msg.stop_reason == "pause_turn":
             # A server tool (web search) hit the API's internal iteration limit.
             # Re-send the same messages (now including this partial assistant turn,

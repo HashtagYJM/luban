@@ -11,6 +11,14 @@ below. Only user-facing behaviour earns a line here.
 
 ## Unreleased
 
+### A blank answer no longer kills the session
+
+Occasionally the model returns a turn with nothing in it. luban printed the blank and carried on — but it also put that empty turn into the conversation, and the API rejects a message with no content. So one blank answer failed *every* later send in that session, and because the session is saved after each turn, resuming reopened the same dead thread. What you saw was an empty reply and then a session that had inexplicably stopped working.
+
+An empty turn is now treated like a turn the network killed: nothing is written to the history, your typed prompt is kept for `/retry`, and luban says what happened instead of showing you a blank line — along with the settings worth changing if it keeps happening, since the cause is almost always the shape of the request rather than the prompt. A session already damaged this way now repairs itself when it is loaded.
+
+The same fix covers a second route to the identical failure: a response whose only content is a thinking block with no signature. luban deliberately does not echo unsigned thinking back — it would fail validation — which left the turn empty in exactly the same way.
+
 ### A setting written below a `[[hooks]]` block is no longer ignored in silence
 
 luban already warns you when a setting has been swallowed by a `[table]` header — the case where `warn_tokens = 150000` written under `[permissions]` is valid TOML, completely ignored, and looks exactly like luban disobeying you. `[[hooks]]` is a different shape of table, and the check did not cover it, so a setting written below a hook block was swallowed with nothing said. It is now reported the same way, and `luban --sync-config` moves it back where it is read.

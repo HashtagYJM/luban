@@ -68,11 +68,29 @@ def test_a_skill_body_is_not_a_title_either():
         == "run the backtest"
 
 
-def test_an_ordinary_message_titles_exactly_as_before():
-    """Whitespace collapsed and cut at 60 — unchanged, injections aside."""
-    assert cli.title_from("just a normal prompt\nsecond line") \
-        == "just a normal prompt second line"
+def test_the_fallback_takes_the_first_non_empty_line():
+    """A pasted brief or a stack trace must not fill the sixty characters with noise —
+    the reason titling was cut down in the first place."""
+    assert cli.title_from("just a normal prompt\nsecond line") == "just a normal prompt"
+    assert cli.title_from("\n\n   \nfirst real line\nmore") == "first real line"
     assert cli.title_from("x" * 100) == "x" * 60
+
+
+def test_the_close_journal_entry_carries_the_users_words(tmp_path, monkeypatch):
+    """The harm the row is actually about: exit_journal writes the title as the
+    session's close record, so the journal — the continuity artifact — held several
+    sessions under one name and looked healthy doing it."""
+    from luban import config as config_mod, memory
+
+    monkeypatch.setattr(memory, "MEMORY_DIR", tmp_path / "memory")
+    (tmp_path / "memory" / "journal").mkdir(parents=True)
+    s = _session(pending_context=[HOOK], model="claude-opus-5")
+    s.messages.append({"role": "user", "content": cli.compose_user_message(
+        s, "why is /reflect missing duplicates")})
+    cli.exit_journal(s, config_mod.Config(platform="linux"), tmp_path / "luban")
+    written = next((tmp_path / "memory" / "journal").glob("*.md")).read_text()
+    assert "why is /reflect missing duplicates" in written
+    assert "[hook:" not in written
 
 
 def test_save_session_uses_the_users_words(tmp_path, monkeypatch):

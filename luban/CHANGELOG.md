@@ -13,9 +13,11 @@ below. Only user-facing behaviour earns a line here.
 
 ### Sessions are named after what you asked, not after your hook (E42)
 
-Since hooks arrived, every session in a project was called the same thing: the first sixty characters of whatever your `session_start` hook printed. `/sessions` listed four threads under one name and `/resume <fragment>` could not tell them apart, because it matches what you type against the title.
+Since hooks arrived, every session in a project was called the same thing: the first sixty characters of whatever your `session_start` hook printed. That name is not only a label. `/sessions` listed several threads under one name and `/resume <fragment>` could not tell them apart, because it matches what you type against the title — and luban writes the title into the journal as the session's closing record, so the timeline you rely on to remember what you were doing filled up with identical entries and looked perfectly healthy doing it.
 
-A session's name was taken from its first user message, and a user message also carries whatever luban puts in front of it — a hook's output, a skill body. The name is now taken from the line you typed, before anything is attached to it. A session you named yourself with `/title` is untouched, and a session already saved under a hook's output gets its name re-derived when you resume it.
+A session's name was taken from its first user message, and a user message also carries whatever luban puts in front of it — a hook's output, a skill body. The name is now taken from the line you typed, before anything is attached to it. A session you named yourself with `/title` is untouched, and a session already saved under a hook's output gets its name re-derived when you resume it. Journal entries already written stay as they are: a timeline is append-only, and every session transcript is still on disk.
+
+The name also now stops at your first line rather than running the whole message together, so a pasted brief or stack trace no longer fills it with noise. That is what luban always said it did.
 
 ## v0.7.1 — a session that survives its own bad turns
 

@@ -157,10 +157,12 @@ def test_clear_still_does_not_rename(store):
 
 
 def test_autotitle_is_the_first_line_whitespace_collapsed(store):
+    """What the name always said. The body used to collapse the WHOLE message, so a
+    pasted trace still filled the title with noise (E42)."""
     s = _session(store / "p")
     s.messages.append({"role": "user", "content": "fix   the parser\n\nTraceback...\n  File x"})
     cli.save_session(s)
-    assert s.title == "fix the parser Traceback... File x"[:60]
+    assert s.title == "fix the parser"
     assert "\n" not in s.title
 
 

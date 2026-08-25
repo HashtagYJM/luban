@@ -569,11 +569,9 @@ def save_session(session: Session) -> None:
              if m["role"] == "user" and isinstance(m["content"], str)),
             "",
         )
-        # Whitespace collapsed and cut at 60: a pasted stack trace or a multi-line
-        # brief used to make a title that was 60 chars of noise, and two threads in
-        # one folder were then impossible to tell apart in /sessions. /title renames.
-        # The fallback for a session with no typed line in hand — see title_from, which
-        # is also what keeps luban's own injections out of the name.
+        # The fallback for a session with no typed line in hand — a file, a restored
+        # thread. First non-empty line, whitespace collapsed, luban's own injections
+        # stripped first: see title_from. /title renames.
         session.title = title_from(first)
     try:
         sessions_mod.save({
@@ -596,18 +594,27 @@ _INJECTED_PREFIX = ("[hook:", "[skill:")
 
 
 def title_from(text: str) -> str:
-    """A session title from a user message: the user's own first line, collapsed.
+    """A session title from a user message: the user's first non-empty line.
 
-    The title used to be the first line of the message AS STORED, and a user message
-    stores what luban prepends to it as well. So once a session_start hook existed, every
-    session in a project was titled with the same 60 characters of that hook's output —
-    the user's words pushed below the fold, and `/resume <fragment>` unable to tell two
-    threads apart because their titles were identical (E42). That is the very failure
-    first-line-only titling was introduced to fix, arriving by another road.
+    The title used to be taken from the message AS STORED, and a user message stores what
+    luban prepends to it as well. So once a session_start hook existed, every session in a
+    project was titled with the same 60 characters of that hook's output — and the title
+    is not only a label. `/resume <fragment>` matches on it, so two threads became
+    indistinguishable; and exit_journal writes it as the session's close record, so the
+    JOURNAL — the continuity artifact — recorded several sessions under one name and
+    looked perfectly healthy doing it (E42).
+
+    First non-empty LINE, not the whole message collapsed: a pasted brief or a stack
+    trace otherwise fills the sixty characters with noise, which is the failure titling
+    was cut down for in the first place.
     """
     body = hooks_mod.strip_injection(text)
     kept = [p for p in body.split("\n\n") if not p.lstrip().startswith(_INJECTED_PREFIX)]
-    return " ".join("\n\n".join(kept).split())[:60]
+    for line in "\n\n".join(kept).splitlines():
+        collapsed = " ".join(line.split())
+        if collapsed:
+            return collapsed[:60]
+    return ""
 
 
 def compose_user_message(session: Session, line: str) -> str:

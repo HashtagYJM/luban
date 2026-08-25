@@ -247,7 +247,16 @@ _project = ""
 
 # An entry starts with its timestamp; the lines after it are its continuation and
 # belong to the same project, so filtering is per ENTRY, not per line.
-_ENTRY_START = re.compile(r"^\[\d{2}:\d{2}\] (?:\[([^\]\n]+)\] )?")
+#
+# The separator after each bracket is `\s*`, not a literal space. It used to require the
+# space, so `[HH:MM] [tag]text` parsed as UNTAGGED — and an untagged entry is kept for
+# every project, so one missing space leaked a whole day of another project's work into
+# this project's window and spent its allowance (E38).
+_ENTRY_START = re.compile(r"^\[\d{2}:\d{2}\]\s*(?:\[([^\]\n]+)\]\s*)?")
+
+# A line that opens a bracket after the timestamp and never closes it. The tag is
+# UNREADABLE, not absent — see _for_project for why the two cannot share a fate.
+_UNPARSEABLE_TAG = re.compile(r"^\[\d{2}:\d{2}\]\s*\[")
 
 
 def set_project(name: str) -> None:
@@ -265,8 +274,17 @@ def set_project(name: str) -> None:
 def _for_project(text: str) -> str:
     """One day's entries, narrowed to the current project.
 
-    Untagged entries are kept: they were written before tagging existed, and dropping
-    them would silently delete the older half of the timeline.
+    Untagged entries — no bracket at all after the timestamp — are kept: they were
+    written before tagging existed, and dropping them would silently delete the older
+    half of the timeline.
+
+    An entry whose tag is UNREADABLE fails CLOSED. That is the opposite of untagged and
+    the two used to share a fate: the reader returned None for both, and None was kept
+    for everyone, so a malformed header leaked its entry into every project's window
+    while the window went on printing "entries for X only" (E38). Keeping a day of
+    another project's work costs this project's whole allowance and blanks its
+    continuity; dropping one line that luban itself did not write costs the line, and
+    recall still searches every day file.
     """
     if not _project:
         return text
@@ -275,7 +293,11 @@ def _for_project(text: str) -> str:
     for line in text.splitlines():
         m = _ENTRY_START.match(line)
         if m:
-            keeping = m.group(1) in (None, _project)
+            tag = m.group(1)
+            if tag is None and _UNPARSEABLE_TAG.match(line):
+                keeping = False  # a bracket that never closes — unreadable, not absent
+            else:
+                keeping = tag in (None, _project)
         if keeping:
             kept.append(line)
     return "\n".join(kept).strip()
@@ -938,14 +960,53 @@ def recall(query: str) -> str:
     return out
 
 
+# A bracket at the very start of an entry's TEXT. luban owns the bracket namespace on a
+# journal line; anything the writer puts there is prose wearing metadata's clothes.
+_LEADING_BRACKET = re.compile(r"^\[([^\]\n]*)\]\s*")
+_CLOCKISH = re.compile(r"^\d{1,2}:\d{2}$")
+
+
+def _own_the_brackets(text: str, tag: str) -> str:
+    """Move any leading `[label]` runs out of the metadata namespace and into the text.
+
+    A journal line is `[HH:MM] [project] text`, and that rendered line is the only
+    example of the format the model ever sees — so it imitates it and writes its own
+    `[topic]` first. Independently, in different sessions. Both halves then fail: the
+    reader parses the model's topic AS the project tag, so the entry matches no project
+    and is dropped from every window; or the header does not parse at all and the entry
+    is kept for every project. One unescaped line, two opposite failures (E38).
+
+    The label is information — it just is not metadata — so it is re-attached as plain
+    text rather than deleted. A label that merely repeats the project tag, or that is
+    the writer imitating the timestamp, is dropped: it says nothing luban is not already
+    writing.
+    """
+    labels: list[str] = []
+    while True:
+        m = _LEADING_BRACKET.match(text)
+        if not m:
+            break
+        label = m.group(1).strip()
+        text = text[m.end():]
+        if label and not _CLOCKISH.match(label) and label.casefold() != tag.casefold():
+            labels.append(label)
+    if not labels:
+        return text
+    prefix = ", ".join(labels)
+    return f"{prefix}: {text}" if text else prefix
+
+
 def journal_append(text: str, project: str | None = None) -> None:
     """Append one entry to today's journal, tagged with its project.
 
     The tag is applied HERE and nowhere else. It used to be part of the text at one
     caller and absent at the other, so half the timeline was labelled and half was not.
+    The same chokepoint is where the text is kept OUT of the tag's namespace, for the
+    same reason: enforce it here, or enumerate every writer and hope.
     """
     global _journal_writes
     tag = (_project if project is None else project).strip()
+    text = _own_the_brackets(text.strip(), tag)
     try:
         journal_dir = MEMORY_DIR / "journal"
         journal_dir.mkdir(parents=True, exist_ok=True)

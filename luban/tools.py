@@ -787,7 +787,9 @@ TOOLS = [
         "the journal is a timeline sent whole on every turn, and one long entry evicts "
         "earlier days. Plans, code and tracebacks belong in a file. Write out in full "
         "only what has no other home: a reversal, or something that behaved unlike its "
-        "documentation.",
+        "documentation. Write the note ALONE: luban stamps the time and the project "
+        "itself, so do not open with a [bracketed] topic of your own — the brackets are "
+        "the record's, not the text's, and one there is read as the project name.",
         "input_schema": {
             "type": "object",
             "properties": {"text": {"type": "string"}},

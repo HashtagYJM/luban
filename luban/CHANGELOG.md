@@ -11,6 +11,12 @@ below. Only user-facing behaviour earns a line here.
 
 ## Unreleased
 
+### The journal window shows this project's entries, and only this project's (E38)
+
+A journal line is `[HH:MM] [project] text`, and that line is the only example of the format luban ever shows the model — so the model imitated it and opened its own entries with a `[topic]` bracket. Both halves of the journal then misread it. An entry whose topic bracket parsed cleanly was filed under a project that does not exist, so it never appeared in any window again and could only be found with `recall`. An entry whose bracket did not parse was kept for **every** project, so a busy day elsewhere could spend this project's whole journal allowance and fill both window slots with work you were not doing — while the window went on saying "entries for this project only".
+
+luban now owns the brackets on a journal line. A topic written at the start of an entry is moved into the text rather than left where a project name goes, so nothing is lost and nothing is misfiled. The reader accepts entries already written that way, and an entry whose tag cannot be read is now left out of a filtered window instead of shown to everyone — every day file is still on disk, and `recall` still searches all of them.
+
 ### A tool that returns nothing now says so (E40)
 
 A sub-agent or a custom tool that came back with nothing at all handed that emptiness straight to the model as its result. Nothing distinguished it from a real answer of "I looked and there was nothing", so a review or research step could quietly turn into no step at all — the model reads the empty result, believes the work was done, and carries on.

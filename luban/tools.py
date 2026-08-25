@@ -296,20 +296,27 @@ def _kill_tree(proc: subprocess.Popen) -> None:  # type: ignore
         proc.kill()  # group already gone or unreachable — kill the child directly
 
 
-def _spawn(command: str, cwd, merge_stderr: bool = False) -> subprocess.Popen:
+def _spawn(command: str, cwd, merge_stderr: bool = False, *, stdin_pipe: bool = False,
+           env: dict | None = None) -> subprocess.Popen:
     """The one place a child process is started. Foreground runs, background jobs and
-    lifecycle hooks all come through here, so the UTF-8 decoding, the DEVNULL stdin and
-    the process-group setup that makes _kill_tree work cannot drift apart."""
+    lifecycle hooks all come through here, so the UTF-8 decoding, the stdin policy and
+    the process-group setup that makes _kill_tree work cannot drift apart.
+
+    stdin is DEVNULL unless a caller asks for a pipe: an interactive child must EOF
+    rather than hang, and only a hook — which is handed a payload and then read to
+    completion — has anything to send it.
+    """
     return subprocess.Popen(
         command,
         shell=True,
         cwd=str(cwd),
-        stdin=subprocess.DEVNULL,  # interactive children EOF instead of hanging
+        stdin=subprocess.PIPE if stdin_pipe else subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT if merge_stderr else subprocess.PIPE,
         text=True,
         encoding="utf-8",  # decode child output as UTF-8 (children run in UTF-8 mode
         errors="replace",  # via PYTHONUTF8); never charmap-crash reading their output
+        env={**os.environ, **env} if env else None,  # None = inherit, unchanged
         start_new_session=(sys.platform != "win32"),  # POSIX: own process group so we can kill the whole tree
     )
 
@@ -931,10 +938,11 @@ def run_tool(name: str, tool_input: dict, ctx: ToolContext) -> ToolResult:
     except Exception as exc:  # tools must never crash the loop
         out = ToolResult(f"Tool error: {exc}", is_error=True)
     _audit_call(ctx, name, tool_input, decision.action if decision is not None else "", out)
-    return _fire_post_tool_use(name, ctx, out)
+    return _fire_post_tool_use(name, ctx, out, tool_input)
 
 
-def _fire_post_tool_use(name: str, ctx: ToolContext, out: ToolResult) -> ToolResult:
+def _fire_post_tool_use(name: str, ctx: ToolContext, out: ToolResult,
+                        tool_input: dict | None = None) -> ToolResult:
     """Run any post_tool_use hook and hang its output off THIS tool's result.
 
     Fired here rather than in the turn loop because run_tool is the choke point every
@@ -947,6 +955,7 @@ def _fire_post_tool_use(name: str, ctx: ToolContext, out: ToolResult) -> ToolRes
         injected = hooks_mod.run_hooks(
             ctx.hooks, "post_tool_use", ctx.project_root, tool_name=name,
             decide=_hook_decider(ctx), audit=ctx.audit, notify=ctx.notify,
+            tool_input=tool_input,
         )
     except Exception:
         return out  # a broken hook must never turn a good tool call into a failure

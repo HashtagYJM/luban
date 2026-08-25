@@ -11,6 +11,14 @@ below. Only user-facing behaviour earns a line here.
 
 ## Unreleased
 
+### Hooks now know what they fired on (E37)
+
+A hook was told an event had happened and nothing else — not which tool ran, not with what arguments — so the case hooks exist for could not actually be written: a check on the file that was just written had no way to learn which file that was. Every hook is now handed a JSON payload on stdin (the event, the project and its directory, and for tool events the tool name and its arguments) and the same values in the environment, including `LUBAN_TOOL_PATH` for the file a write or edit touched, so a guard can be a one-liner. The tool's *result* is deliberately not included: it can be an entire file.
+
+Two smaller gaps closed with it. A hook can now be scoped to the projects it is about with `project = "..."` — a glob on the project folder name or its path — so a plan recited every turn no longer follows you into unrelated projects. And hook scripts have a home: the `hooks/` folder inside luban's own directory, which a `run = "python hooks/guard.py"` resolves against, so hook logic no longer has to be inlined into `config.toml`. A project that has a `hooks/` folder of its own is left alone.
+
+Hooks stay declared in your own config file and nowhere else. luban will not read hooks out of a project directory: that would let any repository you clone run commands the moment you started luban in it, which is the same rule that already keeps custom tools and permission rules out of project files.
+
 ### `/reflect` no longer misses duplicates that are worded differently (E39)
 
 `/reflect` was shown a list of duplicate candidates scored by how many words two facts share. That finds a fact saved twice in nearly the same language, and nothing else — two facts stating one rule in different words score low and never appeared on the list at all. A pass could then read an empty list, report a clean store, and leave several real overlaps in it, which is how the store kept growing while every pass looked successful.

@@ -544,9 +544,23 @@ def _spawn_subagent(inp: dict, ctx: ToolContext) -> ToolResult:
     if not isinstance(task, str) or not task.strip():
         return ToolResult("Bad request: 'task' must be a non-empty string.", is_error=True)
     try:
-        return ToolResult(_truncate(ctx.subagent(task)))
+        answer = ctx.subagent(task)
     except Exception as exc:  # a sub-run failure must not kill the parent turn
         return ToolResult(f"Subagent failed: {exc}", is_error=True)
+    if not (answer or "").strip():
+        # An EMPTY completion, not an empty answer. Returned as an ordinary result it is
+        # indistinguishable from a sub-agent that looked and found nothing — so a critic
+        # or research stage silently degrades to no stage at all, and nothing anywhere
+        # says so (E40). The caller cannot tell a refusal from a gateway failure from a
+        # genuinely empty completion; it can at least be told that it cannot.
+        return ToolResult(
+            "The sub-agent returned no text at all. That is an EMPTY COMPLETION, not an "
+            "answer of 'nothing found' — a refusal, a gateway failure and a completion "
+            "with no body all look like this, and none of them can be told apart from "
+            "here. Nothing was investigated. Do the work yourself or re-run the "
+            "sub-agent with a different task.",
+            is_error=True)
+    return ToolResult(_truncate(answer))
 
 
 # Offered only when config.subagents is on (build_agent_config appends it); the
@@ -814,7 +828,19 @@ def _wrap_custom(spec: dict) -> Callable[[dict, ToolContext], ToolResult]:
                 return ToolResult(f"User declined {name}.")
         # Handler exceptions deliberately propagate: run_tool's catch turns
         # them into the standard "Tool error:" is_error result.
-        return ToolResult(_truncate(str(handler(inp, ctx.project_root))))
+        out = str(handler(inp, ctx.project_root))
+        if not out.strip():
+            # Silence is the one result that cannot be read: a failure inside the
+            # handler, a refusal from whatever it called, and a genuine "nothing to
+            # report" are the same empty string, and the caller reads it as an answer
+            # (E40). Saying so costs a line; not saying so costs the step.
+            return ToolResult(
+                f"{name} returned an empty result — no output at all. A failure inside "
+                f"the tool, a refusal from whatever it called, and a genuine 'nothing "
+                f"to report' are indistinguishable here, so do not read this as an "
+                f"answer.",
+                is_error=True)
+        return ToolResult(_truncate(out))
 
     return call
 

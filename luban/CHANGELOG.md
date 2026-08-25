@@ -11,6 +11,12 @@ below. Only user-facing behaviour earns a line here.
 
 ## Unreleased
 
+### A tool that returns nothing now says so (E40)
+
+A sub-agent or a custom tool that came back with nothing at all handed that emptiness straight to the model as its result. Nothing distinguished it from a real answer of "I looked and there was nothing", so a review or research step could quietly turn into no step at all — the model reads the empty result, believes the work was done, and carries on.
+
+Both now come back as an explicit error saying the completion was empty, and saying that a refusal, a failure inside the tool and a genuine "nothing to report" cannot be told apart from where the caller stands. A tool that returns output is unaffected.
+
 ### Switching model mid-session no longer breaks the session (E41)
 
 Switching from a Claude model to a gpt one with `/model` part-way through a session made every turn after it fail, and kept failing: the request was rejected outright, `/retry` re-sent the same rejected request, and the only way out was to start over. It happened whenever the conversation already contained a Claude turn that had done any extended thinking.

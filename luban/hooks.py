@@ -148,6 +148,18 @@ def _block_re(event: str) -> re.Pattern:
     )
 
 
+def strip_injection(text: str) -> str:
+    """One string with every hook block removed.
+
+    strip_previous does this per event across a conversation, to keep a repeating hook
+    from stacking. This is the other need: reading the USER'S words back out of a message
+    an injection rides in — the title of a session, for one (E42).
+    """
+    for event in EVENTS:
+        text = _block_re(event).sub("", text)
+    return text.strip()
+
+
 def strip_previous(messages: list, event: str) -> None:
     """Remove this event's earlier injections from the conversation, in place.
 

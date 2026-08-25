@@ -11,7 +11,11 @@ below. Only user-facing behaviour earns a line here.
 
 ## Unreleased
 
-Nothing yet since v0.7.1.
+### Sessions are named after what you asked, not after your hook (E42)
+
+Since hooks arrived, every session in a project was called the same thing: the first sixty characters of whatever your `session_start` hook printed. `/sessions` listed four threads under one name and `/resume <fragment>` could not tell them apart, because it matches what you type against the title.
+
+A session's name was taken from its first user message, and a user message also carries whatever luban puts in front of it — a hook's output, a skill body. The name is now taken from the line you typed, before anything is attached to it. A session you named yourself with `/title` is untouched, and a session already saved under a hook's output gets its name re-derived when you resume it.
 
 ## v0.7.1 — a session that survives its own bad turns
 

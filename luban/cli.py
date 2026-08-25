@@ -569,10 +569,12 @@ def save_session(session: Session) -> None:
              if m["role"] == "user" and isinstance(m["content"], str)),
             "",
         )
-        # First LINE, whitespace collapsed: a pasted stack trace or a multi-line
+        # Whitespace collapsed and cut at 60: a pasted stack trace or a multi-line
         # brief used to make a title that was 60 chars of noise, and two threads in
         # one folder were then impossible to tell apart in /sessions. /title renames.
-        session.title = " ".join(first.split())[:60]
+        # The fallback for a session with no typed line in hand — see title_from, which
+        # is also what keeps luban's own injections out of the name.
+        session.title = title_from(first)
     try:
         sessions_mod.save({
             "id": session.session_id,
@@ -587,7 +589,36 @@ def save_session(session: Session) -> None:
         ui.print_text(f"warning: could not save session ({exc})\n")
 
 
+# Everything luban itself puts at the front of a user message: a hook's output, a skill
+# body, the post-upgrade reconcile directive. Named here because the title has to be able
+# to tell them from what the user typed.
+_INJECTED_PREFIX = ("[hook:", "[skill:")
+
+
+def title_from(text: str) -> str:
+    """A session title from a user message: the user's own first line, collapsed.
+
+    The title used to be the first line of the message AS STORED, and a user message
+    stores what luban prepends to it as well. So once a session_start hook existed, every
+    session in a project was titled with the same 60 characters of that hook's output —
+    the user's words pushed below the fold, and `/resume <fragment>` unable to tell two
+    threads apart because their titles were identical (E42). That is the very failure
+    first-line-only titling was introduced to fix, arriving by another road.
+    """
+    body = hooks_mod.strip_injection(text)
+    kept = [p for p in body.split("\n\n") if not p.lstrip().startswith(_INJECTED_PREFIX)]
+    return " ".join("\n\n".join(kept).split())[:60]
+
+
 def compose_user_message(session: Session, line: str) -> str:
+    """The typed line plus anything luban has parked for the next turn.
+
+    Also where the session takes its name, because this is the last place the user's own
+    words exist ALONE — one line, straight off the prompt. Deriving it later, from the
+    composed message, is what let an injection become the title of every session.
+    """
+    if not session.title and line.strip():
+        session.title = " ".join(line.split())[:60]
     if not session.pending_context:
         return line
     parts = session.pending_context + [line]
@@ -1356,6 +1387,25 @@ def _print_last_exchange(messages: list) -> None:
         ui.print_text(f"(luban) {' '.join(last_texts)}\n")
 
 
+def _repaired_title(data: dict) -> str:
+    """A stored title, re-derived if an injection became it.
+
+    Sessions saved before titles knew about injections carry one — and a title is not
+    rewritten on load for any other reason, because a title the user chose is theirs.
+    This only fires on one that luban itself mis-derived (E42).
+    """
+    title = data.get("title", "")
+    stem = title[len("compacted: "):] if title.startswith("compacted: ") else title
+    if not stem.lstrip().startswith(_INJECTED_PREFIX):
+        return title
+    first = next((m["content"] for m in data.get("messages", [])
+                  if m.get("role") == "user" and isinstance(m.get("content"), str)), "")
+    repaired = title_from(first)
+    if not repaired:
+        return title  # nothing better to say than what is there
+    return f"compacted: {repaired}"[:60] if title.startswith("compacted: ") else repaired
+
+
 def restore_session(session: Session, data: dict) -> None:
     # Repair any already-saved history that ends in an unanswered tool_use, so a
     # session closed mid-tool-call resumes cleanly instead of 400-crashing (E14).
@@ -1363,7 +1413,7 @@ def restore_session(session: Session, data: dict) -> None:
     session.model = data.get("model", session.model)
     session.session_id = data["id"]
     session.created = data.get("created", "")
-    session.title = data.get("title", "")
+    session.title = _repaired_title(data)
     # Switching threads starts a new journal segment. Otherwise a `journaled` flag
     # set by the thread you just left would suppress the journal entry for this one.
     session.journaled = False

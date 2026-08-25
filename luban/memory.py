@@ -593,12 +593,14 @@ def duplicate_candidates(threshold: float = DUPLICATE_THRESHOLD
 
 
 def description_index() -> list[tuple[str, str]]:
-    """(slug, one-line description) for every fact, checkpoints included.
+    """(slug, one-line description) for every fact. Continuity pointers are left out —
+    there is one per project, they are meant to look alike, and the curator is told
+    elsewhere not to merge them.
 
     The compact form of the whole store, so the curator can compare every fact against
     every other in one read. The complete bodies are shown too, but a store large enough
-    to need curating is too large to hold pairwise in a single pass — which is how four
-    real semantic overlaps survived a pass that read all of them (E39).
+    to need curating is too large to hold pairwise in one pass — which is how a set of
+    real semantic overlaps survived a pass that had read every one of them (E39).
     """
     out: list[tuple[str, str]] = []
     if not MEMORY_DIR.is_dir():
@@ -678,10 +680,10 @@ def audit(extra: list[tuple[str, int]] | None = None) -> str:
             f"EVERY FACT, ONE LINE EACH ({len(index)}) — read this list as a whole and "
             "ask which of these say the SAME THING in different words. That is the "
             "comparison the overlap score below cannot make:\n" + listing)
-    scored = duplicate_candidates(NEAR_THRESHOLD)
-    strong = [p for p in scored if p[2] >= DUPLICATE_THRESHOLD]
-    near = [p for p in scored if p[2] < DUPLICATE_THRESHOLD]
     if len(index) > 1:
+        scored = duplicate_candidates(NEAR_THRESHOLD)
+        strong = [p for p in scored if p[2] >= DUPLICATE_THRESHOLD]
+        near = [p for p in scored if p[2] < DUPLICATE_THRESHOLD]
         block = ["LEXICAL OVERLAP — a FLOOR, not the set of pairs to consider. It scores "
                  "shared words, so it can only find duplicates that are WORDED alike; "
                  "two facts stating one rule in different words score low here and are "

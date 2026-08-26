@@ -11,11 +11,9 @@ below. Only user-facing behaviour earns a line here.
 
 ## Unreleased
 
-### Sessions are named after what you asked, not after your hook (E42)
+### Sessions are named after what you asked (E42)
 
-Since hooks arrived, every session in a project was called the same thing: the first sixty characters of whatever your `session_start` hook printed. `/sessions` listed four threads under one name and `/resume <fragment>` could not tell them apart, because it matches what you type against the title.
-
-A session's name was taken from its first user message, and a user message also carries whatever luban puts in front of it — a hook's output, a skill body. The name is now taken from the line you typed, before anything is attached to it. A session you named yourself with `/title` is untouched, and a session already saved under a hook's output gets its name re-derived when you resume it.
+A session took its name from the start of your first message — and luban prepends its own text to that message: a hook's output, a skill body, the post-upgrade notice. So every session in a project ended up with the same name, and since the closing journal entry is that name, the timeline luban reads to remember where it left off filled with identical lines. The name is now taken from the line you typed, before anything is attached to it; sessions already saved under a bad one are repaired when they load, and `/title` still wins. Journal entries already written are not repaired — those are yours to edit.
 
 ## v0.7.1 — a session that survives its own bad turns
 

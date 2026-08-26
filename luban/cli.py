@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 from dataclasses import dataclass, field, replace
@@ -589,10 +590,34 @@ def save_session(session: Session) -> None:
         ui.print_text(f"warning: could not save session ({exc})\n")
 
 
-# Everything luban itself puts at the front of a user message: a hook's output, a skill
-# body, the post-upgrade reconcile directive. Named here because the title has to be able
-# to tell them from what the user typed.
-_INJECTED_PREFIX = ("[hook:", "[skill:")
+# ONE envelope around everything luban prepends to a user message — a hook's output, a
+# skill body, the post-upgrade reconcile directive, and whatever is added next. Reading
+# the user's own words back out has to be reliable, and matching a LIST of prefixes is
+# not: it only knows the injections it was told about, and it drops the first paragraph
+# of a multi-paragraph one while its tail survives as if the user had typed it (E42).
+# A delimited block has neither failure and needs no maintenance.
+_OPEN = "[luban-context]"
+_CLOSE = "[/luban-context]"
+_ENVELOPE = re.compile(re.escape(_OPEN) + r".*?" + re.escape(_CLOSE) + r"\n?", re.DOTALL)
+
+# Sessions saved BEFORE the envelope existed carry a bare injection. Recognised by the
+# markers each kind already had, so an old session still repairs on load.
+_INJECTED_PREFIX = ("[hook:", "[skill:", "[upgrade:")
+
+
+def title_from_body(text: str) -> str:
+    """The user's own words, with everything luban prepended removed.
+
+    Two callers want exactly this and for the same reason: the session title, and the
+    resume echo that prints "(you) ..." — which showed a hook's output back as though
+    the user had typed it (E42).
+    """
+    body = _ENVELOPE.sub("", text)
+    # Legacy shapes, for sessions saved before the envelope: whole hook blocks, then
+    # any paragraph still opening with a known marker.
+    body = hooks_mod.strip_injection(body)
+    kept = [p for p in body.split("\n\n") if not p.lstrip().startswith(_INJECTED_PREFIX)]
+    return "\n\n".join(kept).strip()
 
 
 def title_from(text: str) -> str:
@@ -605,9 +630,7 @@ def title_from(text: str) -> str:
     threads apart because their titles were identical (E42). That is the very failure
     first-line-only titling was introduced to fix, arriving by another road.
     """
-    body = hooks_mod.strip_injection(text)
-    kept = [p for p in body.split("\n\n") if not p.lstrip().startswith(_INJECTED_PREFIX)]
-    return " ".join("\n\n".join(kept).split())[:60]
+    return " ".join(title_from_body(text).split())[:60]
 
 
 def compose_user_message(session: Session, line: str) -> str:
@@ -621,9 +644,9 @@ def compose_user_message(session: Session, line: str) -> str:
         session.title = " ".join(line.split())[:60]
     if not session.pending_context:
         return line
-    parts = session.pending_context + [line]
+    injected = "\n\n".join(session.pending_context)
     session.pending_context.clear()
-    return "\n\n".join(parts)
+    return f"{_OPEN}\n{injected}\n{_CLOSE}\n\n{line}"
 
 
 def read_project_memory(project_root: Path, memory_file: str = "") -> str:
@@ -718,6 +741,10 @@ def reconcile_directive(prev: str, section: str) -> str:
     multi-version jump doesn't miss intermediate fixes."""
     notes = section or "(no bundled notes for these versions)"
     return (
+        # Marked like a hook block and a skill body, because it rides the same channel
+        # into the user's message and everything reading that message back has to be
+        # able to tell luban's words from the user's (E42).
+        f"[upgrade: {prev} -> {__version__}]\n"
         f"luban was just upgraded from {prev} to {__version__}. Here is EVERY "
         f"release's notes across that span:\n{notes}\n\n"
         "Reconcile the Open items in ~/.luban/memory/enhancements.md against these "
@@ -1371,7 +1398,7 @@ def compact_session(session: Session, client, ctx=None, cfg=None) -> None:
 
 def _print_last_exchange(messages: list) -> None:
     last_user = next(
-        (m["content"] for m in reversed(messages)
+        (title_from_body(m["content"]) for m in reversed(messages)
          if m["role"] == "user" and isinstance(m["content"], str)),
         None,
     )
@@ -1396,7 +1423,7 @@ def _repaired_title(data: dict) -> str:
     """
     title = data.get("title", "")
     stem = title[len("compacted: "):] if title.startswith("compacted: ") else title
-    if not stem.lstrip().startswith(_INJECTED_PREFIX):
+    if not stem.lstrip().startswith((_OPEN, *_INJECTED_PREFIX)):
         return title
     first = next((m["content"] for m in data.get("messages", [])
                   if m.get("role") == "user" and isinstance(m.get("content"), str)), "")

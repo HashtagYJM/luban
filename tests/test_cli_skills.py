@@ -51,10 +51,15 @@ def test_skill_command_no_arg_usage(tmp_path, monkeypatch, capsys):
 
 
 def test_compose_prepends_and_drains():
+    """The invariant, not the exact string: what luban parked reaches the model, the
+    user's typed line is last, the queue is drained — and the two are separated by a
+    delimiter, so anything reading the message back can tell them apart (E42)."""
     s = _session("/p")
     s.pending_context = ["[skill: a]\nA body"]
     got = cli.compose_user_message(s, "do the thing")
-    assert got == "[skill: a]\nA body\n\ndo the thing"
+    assert "A body" in got
+    assert got.endswith("do the thing")
+    assert cli.title_from_body(got) == "do the thing"
     assert s.pending_context == []
 
 

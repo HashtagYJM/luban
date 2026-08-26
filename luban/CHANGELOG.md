@@ -9,7 +9,7 @@ see — it matches `## v<number>`. A release RENAMES that heading to its derived
 it never writes a version heading ahead of the release, and never edits the heading
 below. Only user-facing behaviour earns a line here.
 
-## Unreleased
+## v0.7.2 — a session keeps its own name
 
 ### Sessions are named after what you asked (E42)
 

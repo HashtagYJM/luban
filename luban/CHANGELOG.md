@@ -163,6 +163,22 @@ A project has one continuity pointer, and it was written by whoever checkpointed
 
 A status is now stamped with the session that wrote it, and a status displaced by a different session is kept on an `also` line beside it, with the index line marking that another session's step is outstanding. The session doing the displacing is told, by name, whose step it took over.
 
+### A document says so itself
+
+Only the enhancement tracker was ever treated as a maintained document rather than an
+atomic fact, because its name was hardcoded — so the second long hand-edited file you
+filed in the memory folder competed in the fact lane and won searches by quoting them
+back at you, exactly as the tracker once did. Any file can now declare itself with a
+`document: true` line in its header: it stays out of fuzzy matching and surfaces when
+you name it exactly. The tracker keeps working unchanged.
+
+### SOUL.md's template stops contradicting the routing rule
+
+The template offered "add type hints" as an example of what belongs in SOUL.md, while
+luban's own memory instruction routes how you want work done to USER.md. The example
+now shows what SOUL.md is actually for — luban's character — and says where the other
+kind goes. Existing SOUL.md files are untouched; this only affects a fresh install.
+
 ## v0.7.2 — a session keeps its own name
 
 ### Sessions are named after what you asked (E42)

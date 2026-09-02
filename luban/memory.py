@@ -43,7 +43,19 @@ _SLUG_RX = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}\Z")
 # search queries verbatim, so it wins any search about a problem it once recorded.
 # Ranking tweaks only masked that; the real error was filing a document as a fact.
 # Still fully reachable: by its own path, or by naming it exactly.
+#
+# A file SAYS SO ITSELF with a `document: true` line. The roster below is the one name
+# that predates the marker. A hardcoded set can only ever know about documents that
+# already existed when the code was written, so the second one anyone files competes in
+# the fact lane exactly as the tracker did — and whether a file is a maintained document
+# is a property only that file knows.
 _DOCUMENTS = {"enhancements"}
+_DOCUMENT_MARK = re.compile(r"^document:\s*true\s*$", re.MULTILINE | re.IGNORECASE)
+
+
+def is_document(slug: str, text: str) -> bool:
+    return slug in _DOCUMENTS or bool(_DOCUMENT_MARK.search(text))
+
 
 _SOUL_TEMPLATE = (
     "<!-- SOUL.md — luban's character and standing behavior when working with you. -->\n"
@@ -55,7 +67,8 @@ _SOUL_TEMPLATE = (
     "<!-- and offers to compact. Move task-specific detail into a skill instead. -->\n"
     "\n"
     "## How I should work\n"
-    "<!-- standing behavior, e.g. 'add type hints', 'ask before installing', 'keep changes minimal' -->\n"
+    "<!-- luban's own character, e.g. 'say when you are unsure', 'never call -->\n"
+    "<!-- something verified unless you ran it'. How YOU want work done goes in USER.md. -->\n"
     "\n"
     "## Conventions\n"
     "<!-- company/team practices to always follow -->\n"
@@ -83,6 +96,7 @@ _USER_TEMPLATE = (
 
 _ENHANCEMENTS_TEMPLATE = (
     "description: Self-improvement tracker — luban issues seen in the field, to ship to the maintainer\n"
+    "document: true\n"
     "\n"
     "# Luban — Self-Improvement Tracker\n"
     "\n"
@@ -1027,7 +1041,7 @@ def recall(query: str) -> str:
                 text = p.read_text(encoding="utf-8", errors="replace")
             except OSError:
                 continue
-            if p.stem in _DOCUMENTS and query.strip() != p.stem:
+            if is_document(p.stem, text) and query.strip() != p.stem:
                 continue  # a document only surfaces when asked for BY NAME
             score = _recall_score(query, p.stem, text)
             if score > 0:

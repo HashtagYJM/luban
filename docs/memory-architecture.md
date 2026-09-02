@@ -328,10 +328,13 @@ details matter more than the scoring:
 - **A document is not a fact.** A long, hand-maintained document living in the
   memory folder — the enhancement tracker, say — will win almost any search about a
   problem it once recorded, simply by quoting the search back at you. It is therefore
-  excluded from fuzzy matching by name and surfaces only when asked for exactly.
-  This is a short explicit list, not a heuristic: guessing which files are
-  "documents" would eventually exclude a real fact. Filing a document as a fact is
-  the actual error; tuning the ranking only masks it.
+  excluded from fuzzy matching and surfaces only when asked for exactly. A file
+  declares itself one by carrying a `document: true` line in its header — a
+  declaration, not a heuristic, because guessing which files are "documents" would
+  eventually exclude a real fact, and because whether something is a maintained
+  document is a property only that file knows. The tracker is grandfathered by name;
+  everything since says so itself. Filing a document as a fact is the actual error;
+  tuning the ranking only masks it.
 
 ## Curation: the mechanism that makes the rest work
 

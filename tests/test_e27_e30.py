@@ -432,3 +432,20 @@ def test_cap_warnings_states_the_facts_without_prescribing_reflect(mem):
     w = " ".join(memory.cap_warnings(usage))
     assert "39,000" in w and "journal 30,000" in w   # states the total and the biggest
     assert "/reflect" not in w, "must not prescribe /reflect for a journal-driven overage"
+
+
+def test_a_second_document_declares_itself_rather_than_waiting_for_the_list(mem):
+    """`enhancements` was a hardcoded set of one, so the SECOND hand-maintained document
+    filed in the memory dir competed in the fact lane exactly as the tracker once did.
+    The property that matters is "this is a maintained document", which only the file
+    itself knows — so the file states it, rather than the code keeping a roster."""
+    memory.remember("meeting-log", "running log of meetings",
+                    "document: true\n\nE27 recall ranking coding style problem")
+    memory.remember("yjm-coding-style", "how code is written", "Prefers ruff.")
+    facts = [l for l in memory.recall("coding style").splitlines() if l.startswith("[")]
+    assert facts == ["[yjm-coding-style]"]
+
+
+def test_a_declared_document_is_still_reachable_by_name(mem):
+    memory.remember("meeting-log", "running log", "document: true\n\nthe open items")
+    assert memory.recall("meeting-log").startswith("[meeting-log]")

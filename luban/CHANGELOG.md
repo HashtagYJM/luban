@@ -163,6 +163,16 @@ A project has one continuity pointer, and it was written by whoever checkpointed
 
 A status is now stamped with the session that wrote it, and a status displaced by a different session is kept on an `also` line beside it, with the index line marking that another session's step is outstanding. The session doing the displacing is told, by name, whose step it took over.
 
+
+### The memory index keeps its descriptions to one line
+
+The one-line description each fact contributes to the always-on index was bounded in one
+case and not the other: a fact written by `remember` carried a `description:` header and
+was never trimmed at all, so a single verbose line could spend the context budget the
+whole index shares — while a fact without that header was cut at 80 characters and said
+nothing about it. Both now stop at one line, and a trimmed one ends in `…` so you can see
+it happened. The fact files themselves are untouched; `recall` still returns them whole.
+
 ### A document says so itself
 
 Only the enhancement tracker was ever treated as a maintained document rather than an

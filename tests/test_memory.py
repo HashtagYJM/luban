@@ -332,3 +332,22 @@ def test_a_onedrive_conflict_copy_is_not_a_fact(mem):
     assert "real-fact" in index and "SPHD250099" not in index
     assert "SPHD250099" not in memory.recall("index")
     assert all("SPHD250099" not in slug for slug, _ in memory.description_index())
+
+
+def test_a_long_description_cannot_dominate_the_always_on_index(mem):
+    """The index line is what the model reads EVERY turn to choose a fact to recall.
+    `remember` always writes a `description:` header, so every fact luban creates took
+    the uncapped branch — nothing stopped one verbose description from spending the
+    always-on budget the whole index shares."""
+    memory.remember("verbose", "d " * 200, "body")
+    line = next(l for l in memory.read_index().splitlines() if l.startswith("- [verbose]"))
+    assert len(line) < 120
+
+
+def test_a_clipped_description_says_it_was_clipped(mem):
+    """Nothing in the always-on block is silently cut. The first-line branch trimmed at
+    80 chars with no marker, so the index asserted a description that was not the one
+    on disk."""
+    memory.remember("verbose", "x" * 300, "body")
+    line = next(l for l in memory.read_index().splitlines() if l.startswith("- [verbose]"))
+    assert line.rstrip().endswith("…"), line

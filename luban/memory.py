@@ -742,11 +742,25 @@ def _fact_path(name: str) -> Path:
     return MEMORY_DIR / f"{name}.md"
 
 
+# A description is a CATALOG line, not the fact — the model reads it every turn to pick
+# a name, then recalls the fact for the content. One line, and the cut is marked.
+#
+# Both branches share the bound because they failed in opposite directions: the
+# `description:` header had none at all, and remember() always writes one, so every fact
+# luban creates took the unbounded path and one verbose line could spend the budget the
+# whole index shares. The other branch clipped at this same number but said nothing,
+# which is the silent always-on truncation this block is supposed to have none of.
+FACT_DESCRIPTION_MAX = 80
+
+
 def _fact_description(text: str) -> str:
     first = text.splitlines()[0] if text.splitlines() else ""
     if first.lower().startswith("description:"):
-        return first[len("description:"):].strip()
-    return first.strip()[:80]
+        first = first[len("description:"):]
+    desc = " ".join(first.split())
+    if len(desc) > FACT_DESCRIPTION_MAX:
+        desc = desc[:FACT_DESCRIPTION_MAX].rstrip() + "…"
+    return desc
 
 
 def _rebuild_index() -> None:

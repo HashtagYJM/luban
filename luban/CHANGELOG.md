@@ -11,7 +11,29 @@ below. Only user-facing behaviour earns a line here.
 
 ## Unreleased
 
-Nothing yet since v0.7.2.
+### A write now reports on the file, not on the write (E44)
+
+`edit_file` said "Edited f.py" as soon as the write call came back without an error. That is a claim about the call, and everybody read it as a claim about the file — so when the content on disk turned out not to be what you had approved in the diff, nothing said so. The loss surfaced turns later, as a later edit failing with `old_string not found` against text the file did not hold.
+
+Both write tools now read the file back and compare it with what they were asked to write. A clean write reports as before; a file that does not match comes back as an error naming the first line that differs and what is there instead, and telling the model to re-read before touching it again. Line endings are not a difference — the comparison is of text, the way the next edit will read it. The write is not undone: what caused the deviation is outside luban, and restoring from a stale string would destroy more than it saves.
+
+### A sub-agent is told what it actually is (E45)
+
+A dispatched sub-agent was handed the main agent's system prompt while its tools were cut down to reading. So it was told to prefer `edit_file`, to announce mutating tool calls, and to point "the user" at slash-commands — three instructions about things it does not have and a person who is not there. It was also given `load_skill`, whose description says the available skills are listed in the system prompt, with no such list in its prompt: the tool could never fire, and the sub-agent had no way to know what it was missing.
+
+Sub-agents now get their own job description — read-only, no human to ask, and the last message is the whole deliverable — and they get the skill catalog, so `load_skill` works. Their read-only limit is now enforced when a tool is called rather than only left out of the list they are offered.
+
+### A skill stays in force when the conversation is shortened (E46)
+
+Loading a skill put its instructions into the conversation and nowhere else. Folding, `/compact` and the oversized-result trim all shorten that conversation, so each of them could delete a skill you were still working under — and whether the *name* survived was left to whatever the summary happened to mention. When it did not, the next stretch of work simply ran without the method.
+
+luban now keeps a list of the skills loaded in a thread, saved with the session and restored when you resume it. Every path that shortens the conversation writes that list into what replaces it, in luban's own words rather than the summarizer's, saying the skills still apply and must be re-read with `load_skill`. `/context` lists them, `/new` clears them, and hooks are now told which session they fired in.
+
+### Two sessions in one project no longer overwrite each other's next step (E47)
+
+A project has one continuity pointer, and it was written by whoever checkpointed last. Two sessions in the same folder — an import in one window, an analysis in the other — therefore erased each other, in silence and in both directions. Whoever wrote last defined what the project was doing, and a `/resume` reader had no way to tell a second strand had ever existed.
+
+A status is now stamped with the session that wrote it, and a status displaced by a different session is kept on an `also` line beside it, with the index line marking that another session's step is outstanding. The session doing the displacing is told, by name, whose step it took over.
 
 ## v0.7.2 — a session keeps its own name
 

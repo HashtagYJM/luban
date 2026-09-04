@@ -61,3 +61,35 @@ def atomic_write_text(target: Path, text: str) -> None:
     tmp = target.with_name(target.name + ".tmp")
     tmp.write_text(text, encoding="utf-8")
     os.replace(tmp, target)
+
+
+def written_deviation(target: Path, expected: str) -> str:
+    """Empty when the file now reads back as `expected`; otherwise what differs, and where.
+
+    A write that did not raise is not a file that holds what you asked for. `atomic_write_text`
+    can only report on the write CALL; between it and the next reader sit a newline
+    translation, an editor holding the file open, a sync client and any filter driver, none
+    of which raise into this process. Reporting success on that basis is a claim about
+    bytes nobody looked at, and it is how a silent content loss stayed invisible until a
+    LATER edit failed with `old_string not found` (E44).
+
+    Compared as TEXT read with universal newlines — the way the file tools read — because
+    that is what the next `edit_file` will match `old_string` against. A platform line-ending
+    translation is therefore invisible here on purpose: it changes the bytes and not the
+    text, and a verifier that reported it would fire on every Windows write and be ignored.
+    """
+    try:
+        actual = target.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        return f"the file could not be read back after the write ({exc})"
+    if actual == expected:
+        return ""
+    want, got = expected.splitlines(), actual.splitlines()
+    for i, (a, b) in enumerate(zip(want, got), 1):
+        if a != b:
+            return (f"first difference at line {i}: asked for {a!r}, on disk {b!r} "
+                    f"({len(want)} lines requested, {len(got)} on disk)")
+    n = min(len(want), len(got)) + 1
+    side = "on disk" if len(got) > len(want) else "requested"
+    return (f"the file has {len(got)} lines, {len(want)} were requested — line {n} exists "
+            f"only {side}")

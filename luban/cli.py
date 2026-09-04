@@ -107,6 +107,10 @@ class Session:
     created: str = ""
     title: str = ""
     pending_context: list = field(default_factory=list)
+    # Skills loaded in this thread, in load order. The BODY lives in the message list and
+    # dies with it; this is the record that the skill is still in force, so a fold or a
+    # compact can restate it from code instead of hoping the summarizer kept it (E46).
+    skills_loaded: list = field(default_factory=list)
     journaled: bool = False
     last_failed: object = None  # the prompt from a turn the network killed (/retry)
     thinking: bool = True
@@ -206,6 +210,13 @@ def build_tool_context(
             sub_cfg = agent.AgentConfig(
                 session.model, session.max_tokens, stream=False, platform=cfg.platform,
                 tools=read_only,
+                # load_skill is read-only, so it IS offered — and its own description says
+                # the catalog is in the system prompt. Without this the tool could never
+                # fire and the sub-agent could not know what it was missing (E45). Dropping
+                # the tool was the alternative; it would also make skill behaviour
+                # untestable through sub-agents, which is the cheapest place to test it.
+                skills=skills_mod.list_skills(str(project_root)),
+                subagent=True,
             )
             sub_ctx = tools.ToolContext(
                 project_root=Path(project_root),
@@ -213,11 +224,20 @@ def build_tool_context(
                 render_diff=lambda p, o, n: None,
                 render_command=lambda c: None,
                 decide=decide, audit=audit_cb,
+                # Derived from the schema list so the control and the offer cannot drift:
+                # withholding a tool by leaving it out of the schema is a request, and this
+                # nested run is the one place that had nothing but the request.
+                only=frozenset(t["name"] for t in read_only),
+                session_id=session.session_id,
             )
             msgs = agent.run_turn(
                 client, sub_cfg, [{"role": "user", "content": task}], sub_ctx, lambda t: None
             )
             return _final_text(msgs)
+
+    def record_skill(name: str) -> None:
+        if name not in session.skills_loaded:
+            session.skills_loaded.append(name)
 
     return tools.ToolContext(
         project_root=Path(project_root),
@@ -230,6 +250,9 @@ def build_tool_context(
         subagent=subagent,
         hooks=cfg.hooks if cfg is not None else [],
         notify=lambda msg: ui.print_text(f"({msg})\n"),
+        # Read through the session, not captured: /compact mints a new id mid-session.
+        session_id=session.session_id,
+        record_skill=record_skill,
     )
 
 
@@ -248,6 +271,7 @@ def fire_hooks(session: Session, cfg: config_mod.Config, ctx, event: str) -> Non
     text = hooks_mod.run_hooks(
         cfg.hooks, event, ctx.project_root,
         decide=tools._hook_decider(ctx), audit=ctx.audit, notify=ctx.notify,
+        session_id=session.session_id,
     )
     if text:
         session.pending_context.append(text)
@@ -395,6 +419,11 @@ def context_report(session: Session, cfg: config_mod.Config, project_root: Path,
 
     out.append(f"\n  conversation so far          {estimate_tokens(session.messages):>7,} "
                f"tokens (est) of {cfg.warn_tokens:,} before the /compact nudge\n")
+    # Not part of the always-on block — a skill body sits IN the conversation, and is the
+    # one thing in there that is an instruction rather than a record. Naming it is how you
+    # find out a fold took the text away while the rule stayed in force (E46).
+    if session.skills_loaded:
+        out.append(f"  skills loaded this thread    {', '.join(session.skills_loaded)}\n")
     return "".join(out)
 
 
@@ -558,12 +587,25 @@ def failure_hint(exc: BaseException) -> str:
     )
 
 
-def save_session(session: Session) -> None:
-    if not session.messages:
-        return
+def ensure_session_id(session: Session) -> str:
+    """Mint this thread's id if it does not have one yet, and return it.
+
+    The id used to appear only when the first save happened — at the END of a turn. But a
+    checkpoint written DURING that turn has to name the session that wrote it (E47), and a
+    hook fired in it has to be able to attribute what it saw (E46), so the name has to
+    exist before the work does. Minting it costs nothing: no file is written until
+    save_session has messages to write.
+    """
     if not session.session_id:
         session.session_id = sessions_mod.new_session_id()
         session.created = datetime.now().isoformat(timespec="seconds")
+    return session.session_id
+
+
+def save_session(session: Session) -> None:
+    if not session.messages:
+        return
+    ensure_session_id(session)
     if not session.title:
         first = next(
             (m["content"] for m in session.messages
@@ -585,6 +627,9 @@ def save_session(session: Session) -> None:
             "title": session.title,
             # never persist a history that ends in an unanswered tool_use (E14)
             "messages": agent.sanitize_history(session.messages),
+            # A skill loaded before a resume is still in force after it; the body it put
+            # in the window is not, so the successor has to be told to re-read it (E46).
+            "skills_loaded": list(session.skills_loaded),
         })
     except OSError as exc:
         ui.print_text(f"warning: could not save session ({exc})\n")
@@ -1010,6 +1055,28 @@ FOLD_BIG_RESULT = 0.10  # of warn_tokens — one tool result this large is not c
                         # it is a document that landed in the window and crowds out the
                         # turns it was meant to serve
 
+def loaded_skills_line(names: list) -> str:
+    """The one thing a shrink must carry that no summarizer can be trusted with.
+
+    A skill's instructions arrive as a tool result and live only in the message list, so a
+    fold or a compact deletes them. Whether the SKILL survived was therefore a summarizer
+    judgement about a body it was not asked to preserve — and when the name went with it,
+    the successor carried on without a method the user had made mandatory (E46).
+
+    This line is written by code, appended to the seed OUTSIDE the summary, and says the
+    two things the successor cannot work out for itself: which skills are in force, and
+    that their text is gone and has to be fetched again. No judgement is involved.
+    """
+    if not names:
+        return ""
+    return (
+        f"\n\n[skills in force: {', '.join(names)}. These were loaded earlier in this "
+        f"thread and STILL APPLY, but their instructions were in the part of the "
+        f"conversation just replaced. Call load_skill on each before continuing the work "
+        f"they govern — do not carry on from memory of them.]"
+    )
+
+
 FOLD_PROMPT = (
     "Summarize the EARLY part of this conversation so the work can continue without it. "
     "Keep: decisions and their reasoning, files created or changed and why, constraints "
@@ -1164,12 +1231,23 @@ def shrink_oversized_results(messages: list, limit_chars: int, session_id: str,
             body = block.get("content")
             if not isinstance(body, str) or len(body) <= limit_chars:
                 continue
-            block["content"] = (
-                f"[{len(body):,} characters of tool output dropped from the context window "
-                f"— one result this size crowds out the conversation it was meant to serve. "
-                f"The full result is verbatim in this session's transcript at "
-                f"~/.luban/sessions/{where}.json and can be read with the sessions and "
-                f"read_file tools.]")
+            skill = tools.skill_result_name(body)
+            if skill:
+                # A skill body is a tool result, so this reaches it — and "tool output
+                # dropped" is the wrong thing to say about an instruction the model is
+                # still under. Name it and say how to get it back (E46).
+                block["content"] = (
+                    f"[the instructions for skill '{skill}' were dropped from the context "
+                    f"window ({len(body):,} characters). The skill is STILL IN FORCE — "
+                    f"call load_skill on '{skill}' to read it again before continuing the "
+                    f"work it governs.]")
+            else:
+                block["content"] = (
+                    f"[{len(body):,} characters of tool output dropped from the context "
+                    f"window — one result this size crowds out the conversation it was "
+                    f"meant to serve. The full result is verbatim in this session's "
+                    f"transcript at ~/.luban/sessions/{where}.json and can be read with "
+                    f"the sessions and read_file tools.]")
             freed += len(body) - len(block["content"])
     return freed
 
@@ -1282,7 +1360,8 @@ def fold_history(session: Session, client, cfg: config_mod.Config,
             f"[earlier conversation folded — {len(old)} messages summarized to save "
             f"context. The full verbatim transcript is on disk at "
             f"~/.luban/sessions/{where}.json and can be read with the sessions and "
-            f"read_file tools.]\n{summary}"},
+            f"read_file tools.]\n{summary}"
+            + loaded_skills_line(session.skills_loaded)},
         {"role": "assistant", "content":
             [{"type": "text", "text": "Understood — continuing from the summary."}]},
     ] + keep
@@ -1379,7 +1458,8 @@ def compact_session(session: Session, client, ctx=None, cfg=None) -> None:
     ui.print_text(f"\n{summary}\n\n")
     session.messages = [
         {"role": "user",
-         "content": f"[conversation summary — compacted from {old_id}]\n{summary}"},
+         "content": f"[conversation summary — compacted from {old_id}]\n{summary}"
+                    + loaded_skills_line(session.skills_loaded)},
         {"role": "assistant",
          "content": [{"type": "text", "text": "Understood — continuing from the summary."}]},
     ]
@@ -1389,6 +1469,8 @@ def compact_session(session: Session, client, ctx=None, cfg=None) -> None:
     session.journaled = False  # the post-compaction segment can journal again
     save_session(session)  # mint the new file now so the seed survives a crash
     ui.print_text(f"✓ compacted — new session started (previous saved as {old_id})\n")
+    if ctx is not None:
+        ctx.session_id = session.session_id  # /compact detached to a new thread
     if ctx is not None and cfg is not None:
         # A session_start hook exists to put something in front of the model at the
         # start of a session; /compact resets the session, so firing only at launch
@@ -1441,6 +1523,8 @@ def restore_session(session: Session, data: dict) -> None:
     session.session_id = data["id"]
     session.created = data.get("created", "")
     session.title = _repaired_title(data)
+    skills_back = data.get("skills_loaded")
+    session.skills_loaded = list(skills_back) if isinstance(skills_back, list) else []
     # Switching threads starts a new journal segment. Otherwise a `journaled` flag
     # set by the thread you just left would suppress the journal entry for this one.
     session.journaled = False
@@ -1629,6 +1713,9 @@ def handle_command(line: str, session: Session, client=None, ctx=None, cfg=None)
         session.title = arg.strip()[:60] if cmd == "/new" else ""
         session.created = ""
         session.journaled = False
+        # A different thread, not a shorter one. /compact keeps the loaded skills because
+        # the work continues; here the window is empty and nothing is in force (E46).
+        session.skills_loaded.clear()
         if session.title:
             ui.print_text(f'✓ new session: "{session.title}"\n')
         return "handled"
@@ -1875,6 +1962,10 @@ def main(argv: list[str] | None = None) -> None:
             session.messages.append(
                 {"role": "user", "content": compose_user_message(session, line)}
             )
+        # The thread's name has to be settled BEFORE the turn: a checkpoint or a hook
+        # inside it is attributed to the session that made it (E46/E47), and -c/-r and
+        # /compact all change which session that is.
+        ctx.session_id = ensure_session_id(session)
         agent_config = build_agent_config(session, cfg, project_root)
         ui.print_text("\nluban> ")
         empty_turn = []

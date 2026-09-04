@@ -49,6 +49,13 @@ class ToolContext:
     # write-check, and the flush turn must not spend the compact budget on hooks.
     hooks: list = field(default_factory=list)
     notify: Callable[[str], None] | None = None  # say something to the human mid-turn
+    # Which session is making this call. A continuity pointer is one per PROJECT, so
+    # without it two sessions in one project overwrite each other's next step and neither
+    # is told (E47); a hook also cannot attribute what it fired on to a thread (E46).
+    session_id: str = ""
+    # Called with a skill's name when load_skill succeeds. A loaded skill otherwise exists
+    # only as a message, so every context-shrinking path silently revokes it (E46).
+    record_skill: Callable[[str], None] | None = None
 
 
 def _truncate(text: str) -> str:
@@ -231,6 +238,32 @@ def _grep(inp: dict, ctx: ToolContext) -> ToolResult:
 _atomic_write_text = paths.atomic_write_text
 
 
+def _unverified(label: str, target, expected: str) -> ToolResult | None:
+    """None when the file holds what was asked for; a loud error when it does not.
+
+    The write tools used to report success on the strength of the write call not raising.
+    That reads to the model — and to the human who approved the diff — as "the file now
+    contains this", which is a different and unchecked claim (E44). The failure it hid is
+    silent and delayed: the next edit matches `old_string` against text the file does not
+    hold, so the damage surfaces one or more turns later as a mysterious no-match.
+
+    The write is NOT rolled back. The old content is already gone and the new content is
+    at least partly there; a blind restore from a stale string could destroy more than it
+    saves. Say what is on disk and make the model re-read.
+    """
+    deviation = paths.written_deviation(target, expected)
+    if not deviation:
+        return None
+    return ToolResult(
+        f"WROTE {label} BUT IT IS NOT WHAT YOU ASKED FOR. Read back after the write, "
+        f"{deviation}. The write was not undone and the file was NOT left as it was — "
+        f"something outside luban is changing this file (an editor holding it open, a "
+        f"sync client, a formatter). Re-read {label} before touching it again, and do "
+        f"not assume any earlier edit to it landed either.",
+        is_error=True,
+    )
+
+
 def _write_file(inp: dict, ctx: ToolContext) -> ToolResult:
     try:
         target = resolve_tool_path(
@@ -248,7 +281,8 @@ def _write_file(inp: dict, ctx: ToolContext) -> ToolResult:
         _atomic_write_text(target, new)
     except (OSError, ValueError, UnicodeError) as exc:
         return ToolResult(f"Could not write {inp['path']}: {exc}", is_error=True)
-    return ToolResult(f"Wrote {inp['path']} ({len(new)} chars).")
+    bad = _unverified(inp["path"], target, new)
+    return bad or ToolResult(f"Wrote {inp['path']} ({len(new)} chars).")
 
 
 def _edit_file(inp: dict, ctx: ToolContext) -> ToolResult:
@@ -278,7 +312,8 @@ def _edit_file(inp: dict, ctx: ToolContext) -> ToolResult:
         _atomic_write_text(target, new)
     except (OSError, ValueError, UnicodeError) as exc:
         return ToolResult(f"Could not edit {inp['path']}: {exc}", is_error=True)
-    return ToolResult(f"Edited {inp['path']}.")
+    bad = _unverified(inp["path"], target, new)
+    return bad or ToolResult(f"Edited {inp['path']}.")
 
 
 def _kill_tree(proc: subprocess.Popen) -> None:  # type: ignore
@@ -452,7 +487,28 @@ def _load_skill(inp: dict, ctx: ToolContext) -> ToolResult:
             s["name"] for s in skills_mod.list_skills(ctx.project_root)
         ) or "(none)"
         return ToolResult(f"Unknown skill: {name}. Available: {available}", is_error=True)
-    return ToolResult(_truncate(f"[skill: {name}]\n{body}"))
+    if ctx.record_skill is not None:
+        # The body goes back as an ordinary tool result and is gone the moment the
+        # conversation is folded or compacted. What is IN FORCE has to be session state,
+        # or its survival is left to whatever the summarizer happened to keep (E46).
+        ctx.record_skill(name)
+    return ToolResult(_truncate(f"{_SKILL_HEADER}{name}]\n{body}"))
+
+
+_SKILL_HEADER = "[skill: "
+
+
+def skill_result_name(text: str) -> str:
+    """The skill a load_skill result carries, or "". The header's format is owned here.
+
+    A skill body is a tool result like any other, so the machinery that shrinks the window
+    can drop it — and a stub reading "tool output dropped" is true and useless, because
+    what was dropped was an instruction the model is still under (E46).
+    """
+    head = text.split("\n", 1)[0]
+    if head.startswith(_SKILL_HEADER) and head.endswith("]"):
+        return head[len(_SKILL_HEADER):-1]
+    return ""
 
 
 def _sessions(inp: dict, ctx: ToolContext) -> ToolResult:
@@ -512,10 +568,21 @@ def _checkpoint(inp: dict, ctx: ToolContext) -> ToolResult:
     ctx.render_command(f"checkpoint[{project}] = {status}")
     if not ctx.confirm("Update the continuity pointer?"):
         return ToolResult("User declined the checkpoint.")
-    memory_mod.checkpoint(project, status)
-    return ToolResult(
-        f"Checkpoint saved — [{memory_mod.checkpoint_slug(project)}] now reads: {status}"
-    )
+    # Read who holds the pointer BEFORE taking it. There is one pointer per project and
+    # two sessions in one project are ordinary, so this write can be replacing another
+    # workstream's outstanding next step — which used to happen silently, in both
+    # directions, with neither session told (E47).
+    displaced = memory_mod.checkpoint_writer(project)
+    memory_mod.checkpoint(project, status, writer=ctx.session_id)
+    msg = f"Checkpoint saved — [{memory_mod.checkpoint_slug(project)}] now reads: {status}"
+    if displaced and ctx.session_id and displaced != ctx.session_id:
+        msg += (
+            f"\nNOTE: this project's pointer already carried a next step written by a "
+            f"DIFFERENT session ({displaced}). Yours is now the current one and theirs is "
+            f"kept on the `also` line — a second thread is working this project, so do "
+            f"not treat the pointer as the only outstanding work."
+        )
+    return ToolResult(msg)
 
 
 def _journal(inp: dict, ctx: ToolContext) -> ToolResult:
@@ -955,7 +1022,7 @@ def _fire_post_tool_use(name: str, ctx: ToolContext, out: ToolResult,
         injected = hooks_mod.run_hooks(
             ctx.hooks, "post_tool_use", ctx.project_root, tool_name=name,
             decide=_hook_decider(ctx), audit=ctx.audit, notify=ctx.notify,
-            tool_input=tool_input,
+            tool_input=tool_input, session_id=ctx.session_id,
         )
     except Exception:
         return out  # a broken hook must never turn a good tool call into a failure

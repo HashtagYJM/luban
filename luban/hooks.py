@@ -223,7 +223,7 @@ def resolve_run(run: str) -> str:
 
 
 def payload(event: str, project_root, tool_name: str = "",
-            tool_input: dict | None = None) -> dict:
+            tool_input: dict | None = None, session_id: str = "") -> dict:
     """What the hook is told about the thing it fired on.
 
     Without a payload a hook can only be a fixed command: it knows an event happened and
@@ -237,6 +237,11 @@ def payload(event: str, project_root, tool_name: str = "",
     root = Path(project_root)
     data = {"event": event, "project": root.name, "project_dir": str(root),
             "hooks_dir": str(hooks_dir())}
+    if session_id:
+        # Which THREAD this happened in. A project can have two sessions open at once, so
+        # a hook that records what it saw could not say whose work it was — the same gap
+        # that let one session's continuity pointer overwrite another's (E46/E47).
+        data["session_id"] = session_id
     if tool_name:
         data["tool_name"] = tool_name
         data["tool_input"] = tool_input if isinstance(tool_input, dict) else {}
@@ -252,6 +257,8 @@ def _environment(data: dict) -> dict:
     env = {"LUBAN_EVENT": data["event"], "LUBAN_PROJECT": data["project"],
            "LUBAN_PROJECT_DIR": data["project_dir"],
            "LUBAN_HOOKS_DIR": data["hooks_dir"]}
+    if "session_id" in data:
+        env["LUBAN_SESSION_ID"] = data["session_id"]
     if "tool_name" in data:
         env["LUBAN_TOOL_NAME"] = data["tool_name"]
         env["LUBAN_TOOL_INPUT"] = json.dumps(data["tool_input"], ensure_ascii=False)
@@ -305,7 +312,8 @@ def _run_one(hook: Hook, project_root, notify, data: dict | None = None) -> tupl
 
 
 def run_hooks(hooks: list, event: str, project_root, tool_name: str = "",
-              decide=None, audit=None, notify=None, tool_input: dict | None = None) -> str:
+              decide=None, audit=None, notify=None, tool_input: dict | None = None,
+              session_id: str = "") -> str:
     """Fire every hook for this event; return the text to inject ("" for none).
 
     `decide` is the permission layer: declaring a hook in your own config is the consent
@@ -315,7 +323,7 @@ def run_hooks(hooks: list, event: str, project_root, tool_name: str = "",
     firing = for_event(hooks, event, tool_name, project_root)
     if not firing:
         return ""
-    data = payload(event, project_root, tool_name, tool_input)
+    data = payload(event, project_root, tool_name, tool_input, session_id)
     parts = []
     for hook in firing:
         decision = decide(hook.run) if decide is not None else None

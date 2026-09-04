@@ -46,7 +46,13 @@ def test_flush_runs_before_compact_summary(monkeypatch, mem, tmp_path):
 
     monkeypatch.setattr(cli.client_mod, "create_turn", fake_create_turn)
     s = make_session()
-    cli.compact_session(s, Client(), ctx=object(), cfg=make_cfg())
+    # A real context: /compact detaches to a new thread and re-stamps the one it hands to
+    # the tools, so `ctx` is a ToolContext here and not any object at all.
+    ctx = cli.tools.ToolContext(
+        project_root=tmp_path, confirm=lambda p: False,
+        render_diff=lambda p, o, n: None, render_command=lambda c: None,
+    )
+    cli.compact_session(s, Client(), ctx=ctx, cfg=make_cfg())
     assert order == ["flush", "summary"]
 
 

@@ -30,6 +30,30 @@ SYSTEM_PROMPT = (
     "prompt whose turn the network killed — the typed prompt is not lost)."
 )
 
+# A sub-agent ran on SYSTEM_PROMPT, which is written for the interactive main agent: it
+# prefers edit_file, tells the model to announce mutating tool calls, and lists the
+# slash-commands "the user" drives the session with. A sub-agent has none of those tools
+# and no user, so it carried three promises it could not keep — and prose that names a
+# tool the model cannot see is not harmless, it is an instruction to look for one (E45).
+#
+# What it gains instead is the one thing the main prompt has no reason to say: the final
+# message is the whole deliverable. A sub-agent that ends a turn intending to continue
+# simply stops, and the caller receives that intention as the answer.
+SUBAGENT_SYSTEM_PROMPT = (
+    "You are a research sub-agent inside Luban, dispatched by the main agent on one "
+    "self-contained task. You can search, read and recall. You cannot change anything, "
+    "execute anything, or dispatch a sub-agent of your own, and there is no human in "
+    "this run to ask — so if the task cannot be done with reading alone, say that rather "
+    "than working around it. All paths are relative to the project root."
+    " Your LAST message is the entire deliverable: it is the only thing that reaches the "
+    "agent that sent you, and there is no later turn in which to add to it. So finish the "
+    "task and reply with the full answer as plain text — not a plan to produce it, and "
+    "not a summary of a longer answer you did not write."
+    " Name the files and line numbers behind each claim, and say plainly when the answer "
+    "is not in what you could read. A confident guess is worse here than an admission: "
+    "the caller cannot tell one from the other, and will act on it."
+)
+
 _PLATFORM_LINE = {
     "windows": "The user is on Windows: use cmd.exe-compatible shell commands "
     "(e.g. `dir`, `type`, `del`) and Windows-style paths in run_command.",
@@ -41,7 +65,7 @@ _PLATFORM_LINE = {
 def system_blocks(platform: str, skills: list[dict] | None = None, memory: str = "",
                   global_memory: str = "",
                   tool_guidance: list[tuple[str, str]] | None = None,
-                  global_volatile: str = "") -> tuple[str, str]:
+                  global_volatile: str = "", subagent: bool = False) -> tuple[str, str]:
     """The system prompt split into (stable, volatile), in prompt order.
 
     Prompt caching is a PREFIX match, so anything that changes invalidates every byte
@@ -50,15 +74,18 @@ def system_blocks(platform: str, skills: list[dict] | None = None, memory: str =
     whenever the model calls remember/journal — is returned separately because it must
     end up behind the SECOND breakpoint, in the message tail; see with_cache_breakpoint.
     """
-    return (system_prompt_for(platform, skills, memory, global_memory, tool_guidance),
+    return (system_prompt_for(platform, skills, memory, global_memory, tool_guidance,
+                              subagent=subagent),
             global_volatile)
 
 
 def system_prompt_for(platform: str, skills: list[dict] | None = None, memory: str = "",
                       global_memory: str = "",
-                      tool_guidance: list[tuple[str, str]] | None = None) -> str:
-    prompt = SYSTEM_PROMPT
-    line = _PLATFORM_LINE.get(platform)
+                      tool_guidance: list[tuple[str, str]] | None = None,
+                      subagent: bool = False) -> str:
+    prompt = SUBAGENT_SYSTEM_PROMPT if subagent else SYSTEM_PROMPT
+    # The platform line exists to shape run_command, which a sub-agent does not have.
+    line = None if subagent else _PLATFORM_LINE.get(platform)
     if line:
         prompt = f"{prompt}\n\n{line}"
     if global_memory:
@@ -100,6 +127,8 @@ class AgentConfig:
     cache_prompt: bool = False  # send the stable prefix as a cacheable block (P2)
     tools: list | None = None
     tool_guidance: list | None = None  # (name, guidance) from custom tools (E25)
+    # A nested read-only run: it gets its own job description, not the main agent's (E45).
+    subagent: bool = False
     web_search: bool = False
     web_search_tool_type: str = "web_search_20250305"
     thinking: bool = False
@@ -219,7 +248,7 @@ def _run_model_turn(client, config, messages, on_text, on_thinking, on_retry=Non
     volatile_now = config.volatile_fn() if config.volatile_fn else config.global_volatile
     stable, volatile = system_blocks(
         config.platform, config.skills, config.memory, config.global_memory,
-        config.tool_guidance, volatile_now)
+        config.tool_guidance, volatile_now, subagent=config.subagent)
     use_blocks = config.cache_prompt and probe["block_system"] is not False
 
     def _shape(cache: bool):

@@ -788,8 +788,19 @@ def forget(name: str) -> str:
 # the model did not actually write.
 CHECKPOINT_PREFIX = "active-"
 
-_STATUS_RX = re.compile(r"^status \((\d{4}-\d\d-\d\d)\): (.+)$", re.M)
+# A status is stamped with the session that WROTE it, and the pointer keeps the most
+# recent status from one other session under `also`. Two sessions in one project are
+# ordinary — a repo import and an analysis run, say — and each is doing exactly what the
+# tool documents, so "last writer wins" silently deleted a live workstream's next step and
+# a /resume reader could not tell the second strand had ever existed (E47).
+#
+# TWO, not a log. The pointer's whole value is that it is one always-on line per project;
+# what a reader needs is not every session that ever touched it but the fact that someone
+# else's next step is also outstanding, and whose.
+_STATUS_RX = re.compile(r"^status \((\d{4}-\d\d-\d\d)(?:, session (\S+))?\): (.+)$", re.M)
+_ALSO_RX = re.compile(r"^also \((\d{4}-\d\d-\d\d)(?:, session (\S+))?\): (.+)$", re.M)
 _TRANSCRIPT_RX = re.compile(r"^transcript: ~/\.luban/sessions/(\S+)\.json$", re.M)
+_KEPT_STATUSES = 2
 
 
 def checkpoint_slug(project: str) -> str:
@@ -801,33 +812,75 @@ def is_checkpoint(name: str) -> bool:
     return name.startswith(CHECKPOINT_PREFIX)
 
 
-def checkpoint(project: str, status: str = "", session_id: str = "") -> str:
+def _status_entries(body: str) -> list[tuple[str, str, str]]:
+    """The (date, writer, text) statuses recorded in a pointer, current one first."""
+    out = []
+    for rx in (_STATUS_RX, _ALSO_RX):
+        for m in rx.finditer(body):
+            out.append((m.group(1), m.group(2) or "", m.group(3)))
+    return out
+
+
+def _status_line(label: str, entry: tuple[str, str, str]) -> str:
+    when, writer, text = entry
+    stamp = f"{when}, session {writer}" if writer else when
+    return f"{label} ({stamp}): {text}"
+
+
+def checkpoint_writer(project: str) -> str:
+    """The session that wrote this project's current status, or "" if unattributed."""
+    entries = _status_entries(read_fact(checkpoint_slug(project)) or "")
+    return entries[0][1] if entries else ""
+
+
+def checkpoint(project: str, status: str = "", session_id: str = "",
+               writer: str = "") -> str:
     """Write or refresh this project's continuity pointer.
 
     Called with a status by the model, and with none by luban at /compact and at exit —
     the second form refreshes the address and leaves the last real status standing under
     its own, older date, so a pointer that nobody has updated reads as exactly that.
+
+    `session_id` is the ADDRESS: the transcript to open. `writer` is who wrote the STATUS.
+    They are separate because they answer different questions and are set at different
+    times — code refreshes the address at /compact and at exit, the model writes the
+    status mid-turn — and conflating them is what let a status be filed under a transcript
+    it was not in.
+
+    A status from a DIFFERENT session is displaced rather than deleted (E47). Displacement
+    needs both writers to be known: an address refresh and any pointer written before this
+    existed carry none, and inventing a second line for those would grow a line on every
+    upgrade while saying nothing true.
     """
     name = checkpoint_slug(project)
     old = read_fact(name) or ""
     today = date.today().isoformat()
     status = " ".join(status.split())
+    entries = _status_entries(old)
     if status:
-        recorded = today
-    else:
-        m = _STATUS_RX.search(old)
-        status, recorded = (m.group(2), m.group(1)) if m else ("", "")
+        displaced = [e for e in entries if e[1] and writer and e[1] != writer]
+        entries = [(today, writer, status)] + displaced[:_KEPT_STATUSES - 1]
     if not session_id:
         m = _TRANSCRIPT_RX.search(old)
         session_id = m.group(1) if m else ""
     lines = [f"project: {project}", f"last session: {today}"]
     if session_id:
         lines.append(f"transcript: ~/.luban/sessions/{session_id}.json")
-    lines.append(f"status ({recorded}): {status}" if status
-                 else "status: not recorded — read the transcript.")
+    if entries:
+        lines.append(_status_line("status", entries[0]))
+        lines.extend(_status_line("also", e) for e in entries[1:])
+    else:
+        lines.append("status: not recorded — read the transcript.")
     lines.append("Maintained by luban at /compact and at exit. Never merge, graduate, "
                  "rewrite or forget it; it is refreshed automatically.")
-    description = status[:160] if status else f"where {project} stands — status not recorded"
+    if not entries:
+        description = f"where {project} stands — status not recorded"
+    else:
+        # The index line is what a /resume reader sees first, and it costs the always-on
+        # budget on every call — so the other workstream gets a marker, not a second line.
+        description = entries[0][2][:160]
+        if len(entries) > 1:
+            description += f" [+{len(entries) - 1} other session]"
     return remember(name, description, "\n".join(lines))
 
 

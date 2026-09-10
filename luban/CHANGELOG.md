@@ -9,6 +9,10 @@ see — it matches `## v<number>`. A release RENAMES that heading to its derived
 it never writes a version heading ahead of the release, and never edits the heading
 below. Only user-facing behaviour earns a line here.
 
+## Unreleased
+
+Nothing yet since v0.7.4.
+
 ## v0.7.4 — folding keeps up with the turn
 
 ### Folding now works inside a turn, and never gives up on a session

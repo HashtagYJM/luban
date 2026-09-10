@@ -120,3 +120,28 @@ def test_unoffered_tool_is_rejected_not_dispatched(tmp_path):
     assert "not available" in result["content"].lower()
     # File should be unchanged (handler never ran)
     assert (tmp_path / "existing.txt").read_text() == "should not be changed\n"
+
+
+def test_the_turn_continues_on_the_history_the_between_calls_hook_hands_back(tmp_path):
+    """The hook may shorten the history after any tool round; the NEXT model call must
+    be made with what it handed back, not the loop's own copy."""
+    (tmp_path / "f.py").write_text("x\n")
+    fc = FakeClient([
+        FakeMessage([FakeBlock("tool_use", id="t1", name="read_file", input={"path": "f.py"})],
+                    "tool_use"),
+        FakeMessage([FakeBlock("text", text="done")], "end_turn"),
+    ])
+    seen = []
+
+    def shorten(messages):
+        seen.append(len(messages))
+        return [{"role": "user", "content": "[folded]"}] + messages[-2:]
+
+    cfg = agent.AgentConfig(model="m", max_tokens=100, stream=False, between_calls=shorten)
+    history = [{"role": "user", "content": "old " * 50}, {"role": "assistant",
+               "content": [{"type": "text", "text": "old reply"}]},
+               {"role": "user", "content": "read f.py"}]
+    out = agent.run_turn(fc, cfg, history, _ctx(tmp_path), lambda t: None)
+    assert seen == [5], "called once, after the one tool round"
+    assert fc.messages.calls[1]["messages"][0]["content"] == "[folded]"
+    assert out[0]["content"] == "[folded]" and out[-1]["content"][0]["text"] == "done"

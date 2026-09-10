@@ -97,16 +97,32 @@ def test_the_kept_span_is_never_smaller_than_the_target():
             f"kept {cli._history_chars(msgs[cut:])} chars against a target of {keep}")
 
 
-def test_zero_means_no_boundary_exists_at_all():
-    """The one history that genuinely cannot be folded: a single unbroken run. Here the
-    refusal is true, and it is the only shape for which it is."""
-    assert cli.fold_boundary(_agentic_turn(1, 60), 10_000) == 0
+def test_one_unbroken_run_folds_at_an_assistant_step():
+    """A single agentic turn — one prompt, then nothing but tool rounds — is the shape a
+    mature session mostly consists of, and it used to be unfoldable: the only legal cut
+    was the prompt, and everything after it was the working set. The fold then gave up,
+    and the window grew for the rest of the session. An assistant step is a legal opening
+    — its tool_use is still followed by its result — so the run folds like anything else."""
+    msgs = _agentic_turn(1, 60)
+    cut = cli.fold_boundary(msgs, 10_000)
+    assert cut > 0, "an unbroken run must be foldable"
+    assert msgs[cut]["role"] == "assistant"
+    assert msgs[cut + 1]["content"][0]["tool_use_id"] == msgs[cut]["content"][0]["id"], (
+        "the step the kept span opens on must still be followed by its own result")
 
 
-def test_the_boundary_is_a_user_turn_not_an_assistant_reply():
-    msgs = _tool_heavy()
-    cut = cli.fold_boundary(msgs, 3_000)
-    assert msgs[cut]["role"] == "user"
+def test_the_kept_span_never_opens_on_a_tool_result():
+    """The one structural rule. Either kind of message may open the span — the human's
+    prompt or the assistant's step — but never the result half of a tool pair."""
+    for msgs in (_tool_heavy(), _agentic_turn(1, 60), _tool_heavy(4) + _agentic_turn(9, 30)):
+        for keep in range(500, cli._history_chars(msgs), 1_999):
+            cut = cli.fold_boundary(msgs, keep)
+            if cut == 0:
+                continue
+            first = msgs[cut]
+            blocks = first.get("content")
+            assert first["role"] == "assistant" or isinstance(blocks, str) or not any(
+                b.get("type") == "tool_result" for b in blocks)
 
 
 def test_recent_turns_survive_verbatim():
@@ -285,9 +301,12 @@ def test_an_automatic_fold_announces_itself_before_and_after(monkeypatch, tmp_pa
     assert "folded" in said and "transcript" in said  # after: what, and where it still is
 
 
-def test_a_failed_fold_is_not_retried_every_turn(monkeypatch, tmp_path):
-    """Failure costs a model call, and context is still over the threshold — without a
-    latch an automatic fold would burn one call per turn for the rest of the session."""
+def test_a_failed_fold_is_retried_only_after_material_growth(monkeypatch, tmp_path):
+    """Failure costs a model call, and context is still over the threshold — so it is not
+    retried on the very next call. But it is not written off for the session either: a
+    permanent latch is how a session ran for hours at double the threshold, blocked once
+    in its first long turn. Growth earns another attempt, and bounds them to one per
+    FOLD_RENOTIFY of it."""
     monkeypatch.setattr(cli, "save_session", lambda s: None)
     monkeypatch.setattr(cli, "chars_per_token", lambda *a: 2.9)
     monkeypatch.setattr(cli, "FOLD_MIN_TOKENS", 100)
@@ -303,8 +322,11 @@ def test_a_failed_fold_is_not_retried_every_turn(monkeypatch, tmp_path):
     cfg = _auto()
     for _ in range(5):
         cli.maintain_context(s, object(), cfg, tmp_path)
-    assert len(calls) == 1
-    assert s.fold_blocked is True
+    assert len(calls) == 1, "an unchanged situation must not re-buy the failed call"
+    s.ledger.add(usage_mod.Usage(
+        input_tokens=140_000 + int(cfg.warn_tokens * cli.FOLD_RENOTIFY) + 1))
+    cli.maintain_context(s, object(), cfg, tmp_path)
+    assert len(calls) == 2, "material growth must earn another attempt"
 
 
 def test_a_fold_too_small_to_matter_does_not_latch(monkeypatch, tmp_path):
@@ -316,7 +338,6 @@ def test_a_fold_too_small_to_matter_does_not_latch(monkeypatch, tmp_path):
                         lambda *a, **k: pytest.fail("no call for a declined fold"))
     s = _over_threshold(messages=[_u("a" * 200), _a("b" * 200)])
     cli.maintain_context(s, object(), _auto(), tmp_path)
-    assert s.fold_blocked is False
 
 
 def test_auto_fold_is_on_by_default_and_switchable():
@@ -424,7 +445,6 @@ def test_no_way_out_of_a_fold_is_silent(monkeypatch, tmp_path):
     s = _over_threshold(messages=[_u("a" * 200), _a("b" * 200)])
     cli.fold_history(s, object(), _auto(), tmp_path)
     assert "".join(out).strip(), "a declined fold said nothing at all"
-    assert s.fold_blocked is False, "no model call was spent, so it must stay retryable"
 
 
 def test_the_warning_waits_for_the_situation_to_change(monkeypatch, tmp_path):
@@ -490,7 +510,6 @@ def test_a_pending_oversized_result_does_not_latch_folding_off(monkeypatch, tmp_
                     messages=[_u("read it"), _call("t1"), _huge("t1")])
     s.ledger.add(usage_mod.Usage(input_tokens=140_000))
     cli.fold_history(s, object(), config_mod.Config(platform="mac"), tmp_path)
-    assert s.fold_blocked is False
     # the conversation moves on, and now the same result is reachable
     s.messages += [_u("thanks"), _a("ok")]
     assert cli.shrink_oversized_results(s.messages, limit_chars=50_000, session_id="s") > 0
@@ -520,3 +539,106 @@ def test_a_web_search_result_is_never_touched():
                  "content": "x" * 400_000}]},
             _a("done"), _u("next"), _a("ok")]
     assert cli.shrink_oversized_results(msgs, limit_chars=50_000, session_id="s1") == 0
+
+
+# ---------------- folding INSIDE a turn ----------------
+# An agentic turn is where the window grows: one prompt, then tool rounds bounded by
+# nothing, every call re-sending all of it. A check that ran only once the turn ended
+# arrived after every call in it had already paid for the full window — and could not act
+# even then, because the whole turn was the working set.
+
+def _fake_summary(monkeypatch, calls=None):
+    class _Blk:
+        type, text = "text", "SUMMARY. " * 50
+    monkeypatch.setattr(cli.client_mod, "create_turn", lambda *a, **k: (
+        (calls.append(k) if calls is not None else None)
+        or type("M", (), {"content": [_Blk()]})()))
+
+
+def _pairs_intact(msgs):
+    for i, m in enumerate(msgs):
+        for b in m.get("content", []) if isinstance(m.get("content"), list) else []:
+            if b.get("type") == "tool_use":
+                nxt = msgs[i + 1]["content"]
+                assert isinstance(nxt, list) and nxt[0].get("tool_use_id") == b["id"]
+
+
+def test_a_fold_inside_a_run_seeds_a_history_the_api_accepts(monkeypatch, tmp_path):
+    """A history must open on a user message, and a tool_use must be followed by its
+    result. When the kept span opens on an assistant step, the seed is the summary alone —
+    an acknowledgement there would put the model's own step after a fabricated reply."""
+    monkeypatch.setattr(cli, "save_session", lambda s: None)
+    monkeypatch.setattr(cli, "chars_per_token", lambda *a, **k: 2.9)
+    monkeypatch.setattr(cli, "standing_tokens", lambda *a, **k: 1_000)
+    monkeypatch.setattr(cli, "FOLD_MIN_TOKENS", 100)
+    monkeypatch.setattr(cli.ui, "print_text", lambda t: None)
+    _fake_summary(monkeypatch)
+    run = [_u("prompt")] + sum(([_call(f"t{i}"), _result(f"t{i}", 3_000)]
+                               for i in range(60)), [])
+    s = cli.Session(model="m", max_tokens=100, auto=True, stream=False, messages=list(run))
+    s.ledger.add(usage_mod.Usage(input_tokens=140_000))
+    assert cli.fold_history(s, object(), _auto(), tmp_path) is True
+    assert s.messages[0]["role"] == "user" and "folded" in s.messages[0]["content"]
+    assert s.messages[1]["role"] == "assistant"
+    assert s.messages[1]["content"][0]["type"] == "tool_use", "the kept span opens on a step"
+    _pairs_intact(s.messages)
+    assert s.messages[-1] == run[-1], "the live exchange is untouched"
+
+
+def test_a_fold_at_a_human_prompt_still_acknowledges(monkeypatch, tmp_path):
+    """Two user messages side by side is the shape to avoid; the acknowledgement exists
+    for exactly the case where the kept span opens on the human."""
+    monkeypatch.setattr(cli, "save_session", lambda s: None)
+    monkeypatch.setattr(cli, "chars_per_token", lambda *a: 2.9)
+    monkeypatch.setattr(cli, "FOLD_MIN_TOKENS", 100)
+    monkeypatch.setattr(cli.ui, "print_text", lambda t: None)
+    _fake_summary(monkeypatch)
+    s = cli.Session(model="m", max_tokens=100, auto=True, stream=False,
+                    messages=_tool_heavy(40))
+    cli.fold_history(s, object(), _auto(), tmp_path)
+    roles = [m["role"] for m in s.messages]
+    assert all(a != b for a, b in zip(roles, roles[1:])), "roles must alternate"
+
+
+def test_the_window_is_bounded_between_tool_calls(monkeypatch, tmp_path):
+    """The invariant this release exists for: across a run of many tool rounds, what the
+    next call sends is never above the trigger for more than the one round that crossed
+    it. Driven the way the turn loop drives it — the hook after each round, fed a measured
+    context derived from what would be on the wire."""
+    standing, ratio, warn = 25_000, 2.9, 150_000
+    monkeypatch.setattr(cli, "save_session", lambda s: None)
+    monkeypatch.setattr(cli, "chars_per_token", lambda *a, **k: ratio)
+    monkeypatch.setattr(cli, "standing_tokens", lambda *a, **k: standing)
+    monkeypatch.setattr(cli.ui, "print_text", lambda t: None)
+    folds = []
+    _fake_summary(monkeypatch, folds)
+    s = cli.Session(model="m", max_tokens=100, auto=True, stream=False,
+                    messages=[_u("do the whole thing")])
+    cfg = config_mod.Config(platform="mac", warn_tokens=warn)
+    between = cli.bound_turn(s, object(), cfg, tmp_path)
+    messages = list(s.messages)
+    over_for = 0
+    for r in range(120):
+        messages += [_call(f"r{r}"), _result(f"r{r}", 9_000)]
+        s.ledger.add(usage_mod.Usage(
+            input_tokens=standing + int(cli._history_chars(messages) / ratio)))
+        messages = between(messages)
+        sends = standing + int(cli._history_chars(messages) / ratio)
+        over_for = over_for + 1 if sends >= warn * cli.FOLD_TRIGGER else 0
+        assert over_for <= 1, f"round {r}: the window stayed over the trigger for {over_for} calls"
+        _pairs_intact(messages)
+    assert folds, "the run must have crossed the trigger and folded"
+    assert messages is s.messages, "the turn continues on the history the session holds"
+
+
+def test_abandoning_a_turn_after_a_fold_leaves_a_sendable_history():
+    """Before folding ran inside a turn the history could only end on the prompt, and
+    popping it was the whole job. After a mid-turn fold it ends on real work."""
+    s = cli.Session(model="m", max_tokens=100, auto=True, stream=False,
+                    messages=[_u("summary"), _call("t1"), _result("t1"), _call("t2")])
+    assert cli.abandon_turn(s) is None
+    assert s.messages[-1]["role"] == "user", "a trailing unanswered tool_use would 400"
+    s = cli.Session(model="m", max_tokens=100, auto=True, stream=False,
+                    messages=[_u("a"), _a("b"), _u("the prompt I typed")])
+    assert cli.abandon_turn(s) == "the prompt I typed"
+    assert s.messages[-1] == _a("b")

@@ -141,6 +141,11 @@ class AgentConfig:
     # Server-side tool-result clearing config (None = off). Derived from
     # warn_tokens by cli; not a knob.
     ctx_mgmt: dict | None = None
+    # Called with the history after every tool round, BEFORE the next model call, and may
+    # hand back a shorter one. The window used to be bounded only between human prompts,
+    # and an agentic turn is where it actually grows: one prompt, a hundred tool calls,
+    # every call re-sending all of it, and nothing able to act until the turn ended.
+    between_calls: object = None
 
 
 def build_system_param(stable: str, volatile: str, cache: bool, model: str = ""):
@@ -441,3 +446,7 @@ def run_turn(client, config: AgentConfig, messages: list[dict], ctx, on_text,
             # returning avoids sending an empty tool_result message in a loop.
             return sanitize_history(messages)
         messages.append({"role": "user", "content": results})
+        if config.between_calls is not None:
+            bounded = config.between_calls(messages)
+            if bounded is not None:
+                messages = bounded

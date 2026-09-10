@@ -134,9 +134,10 @@ def _default_text(plat: str) -> str:
         "# trade gets WORSE the longer the session. It pays off only where the session\n"
         "# keeps making calls for a long time afterwards (a long headless run), where\n"
         "# tool output rather than conversation is the bulk of the context, or where\n"
-        "# caching is off or unsupported and there is no cache to lose. Leave it off for\n"
-        "# interactive work. Watch for '-Nk cleared' in the status line: no such segment\n"
-        "# means it never fired.\n"
+        "# caching is off or unsupported and there is no cache to lose — or where what\n"
+        "# you are measured on is the raw token count rather than cost, since cleared\n"
+        "# tokens never reach the meter. Otherwise leave it off. Watch for '-Nk cleared'\n"
+        "# in the status line: no such segment means it never fired.\n"
         "# context_editing = false\n"
         "\n"
         "# Let the file tools read/write paths OUTSIDE this project (e.g. a sibling\n"
@@ -230,7 +231,7 @@ _MIGRATABLE = [
     ("auto_continue", "# auto_continue = false   # reopen the last session on plain start\n"),
     ("auto_fold", "# auto_fold = true   # fold the oldest turns automatically instead of asking\n"),
     ("warn_tokens", "# warn_tokens = 150000   # when to nudge you to /compact\n"),
-    ("context_editing", "# context_editing = false   # clear stale tool results server-side (saves tokens)\n"),
+    ("context_editing", "# context_editing = false   # clear stale tool results server-side (fewer tokens, less cache)\n"),
     ("allow_out_of_tree_file_edits", "# allow_out_of_tree_file_edits = false\n"),
     ("web_search", "# web_search = false\n"),
     ("web_search_tool_type", '# web_search_tool_type = "web_search_20250305"\n'),

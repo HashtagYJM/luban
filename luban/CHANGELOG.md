@@ -9,9 +9,13 @@ see — it matches `## v<number>`. A release RENAMES that heading to its derived
 it never writes a version heading ahead of the release, and never edits the heading
 below. Only user-facing behaviour earns a line here.
 
-## Unreleased
+## v0.7.4 — folding keeps up with the turn
 
-Nothing yet since v0.7.3.
+### Folding now works inside a turn, and never gives up on a session
+
+Folding ran only after a turn ended, and it could cut the conversation only where you had typed. An agentic turn — one prompt, then a long run of tool calls — is where the window actually grows, and it was untouchable on both counts: nothing could act until the run finished, and when it did, the whole run was the working set with no earlier place to cut. The fold then reported that it could not bring the context down, switched itself off for the rest of the session, and the window carried on growing past the threshold, to double it and beyond, with every call re-sending all of it. The `-Nk cleared` clearing that used to hide this had been turned off on advice that was about cost, not tokens.
+
+The window is now checked after every tool call, not only after every turn, and a fold may open the kept span on any assistant step — a tool call is never separated from its result — so a long run folds like anything else. A fold that fails or cannot reach the bulk is retried once context has grown materially, never on every call and never written off. The turn continues on the shortened history, and the full transcript is on disk before anything folds, as before. The `context_editing` comment now says the one case it was silent on: if you are measured on raw token count rather than cost, turn it on.
 
 ## v0.7.3 — luban stops taking its own word for it
 

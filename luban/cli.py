@@ -118,12 +118,13 @@ class Session:
     thinking_verbose: bool = False
     # Measured token accounting, from what the API reports on every response.
     ledger: object = field(default_factory=lambda: usage_mod.Ledger())
-    # A fold that failed cost a model call, and one that could not get under the trigger
-    # will not do better next turn. Context is still over the threshold either way, so an
-    # automatic fold would try again every turn for the rest of the session — latch it.
-    fold_blocked: bool = False
-    # Context at the last warning. Being over the line is a STATE, not an event: without
-    # this the same four lines print every turn until the reader stops reading them.
+    # Context at the last fold attempt, successful or not. Being over the line is a STATE,
+    # not an event: without this the same warning prints — and the same expensive attempt
+    # is re-bought — on every call until the reader stops reading. Another attempt is
+    # earned only by material growth since this figure; nothing latches off for good,
+    # because a session that ran on for hours at double the threshold is exactly what a
+    # permanent latch produced (a fold blocked once in the first long turn, and nothing
+    # bounded the window again until /compact).
     fold_warned_at: int = 0
 
 
@@ -1080,8 +1081,9 @@ def loaded_skills_line(names: list) -> str:
 FOLD_PROMPT = (
     "Summarize the EARLY part of this conversation so the work can continue without it. "
     "Keep: decisions and their reasoning, files created or changed and why, constraints "
-    "and instructions given, and anything still unresolved. Drop: pleasantries, superseded "
-    "attempts, and detail now visible in the recent turns. Reply with only the summary."
+    "and instructions given, the task in progress and its next step, and anything still "
+    "unresolved. Drop: pleasantries, superseded attempts, and detail now visible in the "
+    "recent turns. Reply with only the summary."
 )
 
 
@@ -1089,14 +1091,8 @@ def _history_chars(messages: list) -> int:
     return sum(len(_message_text(m)) for m in messages)
 
 
-def _starts_a_clean_exchange(msg: dict) -> bool:
-    """True if history may begin at this message.
-
-    The API requires every tool_use to be followed immediately by its tool_result, so a
-    fold must never cut between them. A span that STARTS with tool_result blocks has been
-    orphaned from its tool_use and will 400. Only a user message carrying ordinary text is
-    a safe boundary.
-    """
+def _is_human_turn(msg: dict) -> bool:
+    """A user message the human typed — text, never tool results."""
     if msg.get("role") != "user":
         return False
     content = msg.get("content")
@@ -1108,21 +1104,34 @@ def _starts_a_clean_exchange(msg: dict) -> bool:
                    for b in content)
 
 
+def _starts_a_clean_exchange(msg: dict) -> bool:
+    """True if the kept span may open on this message.
+
+    The API requires every tool_use to be followed immediately by its tool_result, so a
+    fold must never cut between them: a span that STARTS with tool_result blocks has been
+    orphaned from its tool_use and will 400. That is the only constraint. A human prompt
+    is a safe opening, and so is any ASSISTANT message — its tool_use, if it has one, is
+    still followed by its result. Cutting only where the human typed was the rule for two
+    releases, and it made a long agentic turn unfoldable outright: one prompt, then a
+    hundred tool rounds, and no boundary anywhere in the span that held all the bulk.
+    """
+    return msg.get("role") == "assistant" or _is_human_turn(msg)
+
+
 def fold_boundary(messages: list, keep_chars: int) -> int:
     """Index of the first message to KEEP. 0 means there is nothing to fold.
 
     Walks backwards accumulating the working set, then keeps walking BACK to the nearest
-    clean exchange boundary so a tool_use/tool_result pair is never split.
+    message the kept span may open on, so a tool_use/tool_result pair is never split.
 
-    The direction is the whole design. A boundary exists only where the human typed —
-    every intermediate message in an agentic turn is a tool_result — and nothing bounds
-    how far apart those are. Searching FORWARD from the target therefore has two failure
-    modes on the same history: a turn larger than the keep window has no boundary ahead of
-    the target at all, so folding gives up on a history that is almost entirely foldable;
-    and one short turn after a long run puts the only boundary ahead of the target at the
-    very end, so the fold succeeds and summarises away the run still being worked on.
-    Backwards can only ever keep MORE than the target, which is the safe direction for a
-    mechanism whose purpose is preserving the working set.
+    The direction is the whole design. Searching FORWARD from the target has two failure
+    modes on the same history: a span with no boundary ahead of the target means folding
+    gives up on a history that is almost entirely foldable; and one short turn after a
+    long run puts the only boundary ahead of the target at the very end, so the fold
+    succeeds and summarises away the run still being worked on. Backwards can only ever
+    keep MORE than the target, which is the safe direction for a mechanism whose purpose
+    is preserving the working set. With an assistant step as a legal opening, the nearest
+    boundary is never more than one tool round away, so the overshoot is small.
     """
     kept = 0
     start = len(messages)
@@ -1272,6 +1281,23 @@ def oversized_result_pending(messages: list, limit_chars: int, keep_recent: int 
     return False
 
 
+def fold_seed(summary: str, folded: int, where: str, skills: list) -> list:
+    """What replaces the folded span. Valid whichever message the kept span opens on.
+
+    A history must start with a user message, and a tool_use must be followed by its
+    result. The seed is therefore one user message carrying the summary — and an assistant
+    acknowledgement ONLY when the kept span opens on a human prompt, so that two user
+    messages never sit side by side. When the kept span opens on an assistant step (a fold
+    inside an agentic turn) the summary is followed directly by that step, which is exactly
+    what the model would see had it written the summary itself.
+    """
+    return [{"role": "user", "content":
+             f"[earlier conversation folded — {folded} messages summarized to save "
+             f"context. The full verbatim transcript is on disk at "
+             f"~/.luban/sessions/{where}.json and can be read with the sessions and "
+             f"read_file tools.]\n{summary}" + loaded_skills_line(skills)}]
+
+
 def fold_history(session: Session, client, cfg: config_mod.Config,
                  project_root: Path) -> bool:
     """Bound the conversation. Returns True if anything changed.
@@ -1306,12 +1332,14 @@ def fold_history(session: Session, client, cfg: config_mod.Config,
             ui.print_text("  the newest tool result is itself oversized — it leaves the "
                           "window as soon as the conversation moves past it.\n")
             return changed
-        session.fold_blocked = True
+        # Not latched: the working set folding has to keep is what is over the line, and
+        # the next tool round makes some of it foldable. maintain_context tries again once
+        # context has grown materially, and not before.
         ui.print_text(
-            f"  folding cannot bring this down further — ~{projected:,} tokens remain and "
-            f"the turns a fold has to keep are the bulk of it. /compact starts a fresh "
-            f"session from a summary, and nothing on disk is lost. Not offering again "
-            f"this session.\n")
+            f"  folding cannot bring this down further yet — ~{projected:,} tokens remain "
+            f"and the turns a fold has to keep are the bulk of it. It will try again as "
+            f"the work moves on; /compact starts a fresh session from a summary now, and "
+            f"nothing on disk is lost.\n")
         return changed
 
     # 1. Free, and the only lever that reaches an oversized result inside the working set.
@@ -1347,24 +1375,19 @@ def fold_history(session: Session, client, cfg: config_mod.Config,
         session.ledger.add(usage_mod.from_response(msg), session.model, context=False)
         summary = "".join(b.text for b in msg.content if b.type == "text").strip()
     except Exception as exc:
+        # Cost a call. Not retried on the next call — maintain_context waits for material
+        # growth — but not written off for the session either.
         ui.print_text(f"  fold failed ({exc}) — conversation unchanged.\n")
-        session.fold_blocked = True   # cost a call; do not retry every turn
         return changed
     if not summary:
         ui.print_text("  fold failed (empty summary) — conversation unchanged.\n")
-        session.fold_blocked = True
         return changed
     where = session.session_id or "this session's transcript"
-    session.messages = [
-        {"role": "user", "content":
-            f"[earlier conversation folded — {len(old)} messages summarized to save "
-            f"context. The full verbatim transcript is on disk at "
-            f"~/.luban/sessions/{where}.json and can be read with the sessions and "
-            f"read_file tools.]\n{summary}"
-            + loaded_skills_line(session.skills_loaded)},
-        {"role": "assistant", "content":
-            [{"type": "text", "text": "Understood — continuing from the summary."}]},
-    ] + keep
+    seed = fold_seed(summary, len(old), where, session.skills_loaded)
+    if keep and _is_human_turn(keep[0]):
+        seed.append({"role": "assistant", "content":
+                     [{"type": "text", "text": "Understood — continuing from the summary."}]})
+    session.messages = seed + keep
     save_session(session)
     ui.print_text(f"  ✓ folded {len(old)} messages (~{freed:,} tokens freed). "
                   f"Full transcript kept on disk.\n")
@@ -1386,23 +1409,25 @@ def maintain_context(session: Session, client, cfg: config_mod.Config,
     verbatim transcript still is after. Silent context trimming is the one thing this must
     never become. `auto_fold = false` restores the prompt.
 
-    A fold that FAILS is not retried this session. Failure costs a model call, so retrying
-    every turn against a context that is still over the threshold would burn one each time.
+    Runs after every tool call as well as after every turn — see AgentConfig.between_calls.
+    An agentic turn is where the window grows, and a check that ran only once the turn
+    ended arrived after every call in it had already paid for the full window.
 
-    Neither is a fold that ran and could not help. Over the threshold is a STATE, not an
-    event: left alone it is true again on the very next turn, so acting on the level alone
-    repeats an unchanged four-line warning every turn and re-buys the most expensive call
-    in the session each time. What earns another attempt is the situation CHANGING —
-    materially more context than the last attempt saw. Below the trigger the memory of the
-    last warning is dropped, so a later crossing speaks in full.
+    Over the threshold is a STATE, not an event: left alone it is true again on the very
+    next call, so acting on the level alone repeats an unchanged warning every call and
+    re-buys the most expensive call in the session each time. What earns another attempt
+    — after a fold that failed, or one that could not reach the bulk — is the situation
+    CHANGING: materially more context than the last attempt saw. That bounds a failing
+    fold to one call per FOLD_RENOTIFY of growth without ever writing the session off;
+    the permanent latch this replaces left sessions running for hours at double the
+    threshold. Below the trigger the memory of the last warning is dropped, so a later
+    crossing speaks in full.
     """
     if client is None or not session.ledger.context_tokens:
         return
     ctx_now = session.ledger.context_tokens
     if ctx_now < cfg.warn_tokens * FOLD_TRIGGER:
         session.fold_warned_at = 0   # back under; the next crossing is news again
-        return
-    if session.fold_blocked:
         return
     if session.fold_warned_at and (
             ctx_now < session.fold_warned_at + cfg.warn_tokens * FOLD_RENOTIFY):
@@ -1430,6 +1455,37 @@ def maintain_context(session: Session, client, cfg: config_mod.Config,
         ui.print_text("  folding now (auto_fold = true — set it false in config.toml to "
                       "be asked instead)…\n")
     fold_history(session, client, cfg, project_root)
+
+
+def abandon_turn(session: Session):
+    """Leave a valid history behind a turn that did not finish. Returns the prompt if it
+    was still unanswered, else None.
+
+    Before folding ran inside a turn the history could only ever end on the prompt, so
+    popping it was the whole job. A fold mid-turn advances the session to the live
+    history, which then ends on a tool result — real work, already on disk, that the next
+    prompt continues from. Only the tail has to be made sendable.
+    """
+    if session.messages and _is_human_turn(session.messages[-1]):
+        return session.messages.pop()["content"]
+    session.messages = agent.sanitize_history(session.messages)
+    return None
+
+
+def bound_turn(session: Session, client, cfg: config_mod.Config, project_root: Path):
+    """The between-calls hook: keep the window under the trigger INSIDE a turn.
+
+    The turn loop works on its own copy of the history, so a fold that ran in the middle
+    of a turn had nothing to act on. This hands the live history to the session — which is
+    also what puts the turn so far on disk before anything folds — bounds it, and hands it
+    back. The turn continues on the shortened history, and every call after the fold pays
+    for the folded window rather than the full one.
+    """
+    def between(messages: list) -> list:
+        session.messages = messages
+        maintain_context(session, client, cfg, project_root)
+        return session.messages
+    return between
 
 
 def compact_session(session: Session, client, ctx=None, cfg=None) -> None:
@@ -1967,6 +2023,7 @@ def main(argv: list[str] | None = None) -> None:
         # /compact all change which session that is.
         ctx.session_id = ensure_session_id(session)
         agent_config = build_agent_config(session, cfg, project_root)
+        agent_config.between_calls = bound_turn(session, client, cfg, project_root)
         ui.print_text("\nluban> ")
         empty_turn = []
         try:
@@ -1977,13 +2034,12 @@ def main(argv: list[str] | None = None) -> None:
                 on_empty=empty_turn.append,
             )
         except KeyboardInterrupt:
-            session.messages.pop()  # drop the unanswered user turn so history stays valid
+            abandon_turn(session)
             ui.print_text("\n[interrupted]\n")
         except Exception as exc:  # a bad turn must not kill the session (E14)
-            if session.messages and session.messages[-1].get("role") == "user":
-                # Keep the prompt (for /retry) but drop it from history, which must
-                # never end on an unanswered user turn.
-                session.last_failed = session.messages.pop()["content"]
+            # Keep the prompt (for /retry) but drop it from history, which must never
+            # end on an unanswered user turn.
+            session.last_failed = abandon_turn(session)
             ui.print_text(f"\n[turn failed: {exc}]\n{failure_hint(exc)}")
         else:
             if empty_turn:

@@ -108,3 +108,17 @@ def test_slash_config_prints_effective(monkeypatch):
     cli.handle_command("/config", s, cfg=config_mod.Config(platform="mac", subagents=True))
     text = "".join(out)
     assert "effort = xhigh" in text and "subagents = True" in text
+
+
+def test_slash_config_says_when_context_editing_is_inert(monkeypatch):
+    """A setting the user believes is active is the failure class: the flag is Anthropic-
+    only, and on a gpt-* session it read `true` while the adapter dropped it."""
+    def shown(model):
+        out = []
+        monkeypatch.setattr(cli.ui, "print_text", lambda t: out.append(t))
+        s = cli.Session(model=model, max_tokens=100, auto=True, stream=False, messages=[])
+        cli.handle_command("/config", s,
+                           cfg=config_mod.Config(platform="mac", context_editing=True))
+        return next(l for l in "".join(out).splitlines() if "context_editing" in l)
+    assert "no effect" in shown("gpt-6-astra")
+    assert shown("claude-opus-5").strip() == "context_editing = True"

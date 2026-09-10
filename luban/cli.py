@@ -1696,7 +1696,13 @@ def handle_command(line: str, session: Session, client=None, ctx=None, cfg=None)
                 ("auto_continue", cfg.auto_continue),
                 ("auto_fold", cfg.auto_fold),
                 ("warn_tokens", f"{cfg.warn_tokens:,}"),
-                ("context_editing", cfg.context_editing),
+                # A setting the user believes is active is the failure class here: the
+                # flag is Anthropic-only, and on a gpt-* session it reads `true` while the
+                # adapter drops it. Say so where the value is shown.
+                ("context_editing", cfg.context_editing if (
+                    not cfg.context_editing
+                    or client_mod.provider_for(session.model) == "anthropic")
+                 else "true (Anthropic only — no effect on this model)"),
                 ("web_search", cfg.web_search),
                 ("web_search_tool_type", cfg.web_search_tool_type),
                 ("subagents", cfg.subagents),

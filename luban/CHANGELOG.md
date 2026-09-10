@@ -11,7 +11,9 @@ below. Only user-facing behaviour earns a line here.
 
 ## Unreleased
 
-Nothing yet since v0.7.4.
+### `/config` says when `context_editing` is not doing anything
+
+`context_editing` is an Anthropic mechanism; on a `gpt-*` model the adapter drops it, and `/config` showed `true` regardless. It now says `true (Anthropic only — no effect on this model)` on a session where that is the case, so the setting cannot look active while it is not.
 
 ## v0.7.4 — folding keeps up with the turn
 

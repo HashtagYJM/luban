@@ -642,3 +642,15 @@ def test_abandoning_a_turn_after_a_fold_leaves_a_sendable_history():
                     messages=[_u("a"), _a("b"), _u("the prompt I typed")])
     assert cli.abandon_turn(s) == "the prompt I typed"
     assert s.messages[-1] == _a("b")
+
+
+def test_a_backend_that_cannot_count_still_gets_a_standing_prefix(monkeypatch, tmp_path):
+    """The OpenAI adapter has no count_tokens. "Cannot count" was read as zero, so every
+    fold on a gpt-* session was sized against history alone and landed a whole prefix
+    higher than it aimed — on the provider the user had moved to."""
+    monkeypatch.setattr(cli, "count_tokens", lambda *a, **k: None)
+    s = cli.Session(model="gpt-6", max_tokens=100, auto=True, stream=False)
+    standing = cli.standing_tokens(s, object(), config_mod.Config(platform="mac"), tmp_path)
+    assert standing > 1_000, "an estimate, not zero"
+    monkeypatch.setattr(cli, "count_tokens", lambda *a, **k: 12_345)
+    assert cli.standing_tokens(s, object(), config_mod.Config(platform="mac"), tmp_path) == 12_345

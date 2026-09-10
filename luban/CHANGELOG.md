@@ -11,6 +11,10 @@ below. Only user-facing behaviour earns a line here.
 
 ## Unreleased
 
+### A fold on a `gpt-*` model now lands where it aims
+
+The fold target is a share of the whole prompt, so the always-on prefix is subtracted before the kept span is sized. On OpenAI models there is no token-counting call, and "cannot count" was treated as zero — so every fold on a `gpt-*` session was sized against history alone and landed a whole prefix above its target, folding again sooner and re-sending more on every call in between. The prefix is now estimated where it cannot be measured, and the tool schemas — which ride ahead of the prompt on every call — are counted as part of it on both providers.
+
 ### `/config` says when `context_editing` is not doing anything
 
 `context_editing` is an Anthropic mechanism; on a `gpt-*` model the adapter drops it, and `/config` showed `true` regardless. It now says `true (Anthropic only — no effect on this model)` on a session where that is the case, so the setting cannot look active while it is not.

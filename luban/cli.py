@@ -1052,6 +1052,7 @@ FOLD_MIN_TOKENS = 20_000  # folding invalidates the cached prefix; many small fo
                           # clear_at_least in context editing)
 FOLD_RENOTIFY = 0.10  # of warn_tokens — how much more context has to arrive before being
                       # over the line is news again rather than the same standing fact
+FALLBACK_CHARS_PER_TOKEN = 2.9  # the measured density, used only where nothing can measure
 FOLD_BIG_RESULT = 0.10  # of warn_tokens — one tool result this large is not conversation,
                         # it is a document that landed in the window and crowds out the
                         # turns it was meant to serve
@@ -1147,11 +1148,18 @@ def fold_boundary(messages: list, keep_chars: int) -> int:
 
 def standing_tokens(session: Session, client, cfg: config_mod.Config,
                     project_root: Path) -> int:
-    """The always-on prefix: system prompt, memory blocks, skills catalog, guidance.
+    """The always-on prefix: system prompt, memory blocks, skills catalog, guidance, and
+    the tool schemas, which the request carries ahead of all of it.
 
     It rides on EVERY call alongside the history, so it is part of what the trigger
     measures — and therefore part of what the fold target has to leave room for. Sizing a
     fold against history alone lands the total back above the line that fired it.
+
+    Measured where the backend can count, ESTIMATED where it cannot. The OpenAI adapter
+    has no count_tokens, and treating "cannot count" as zero sized every fold on a gpt-*
+    session against history alone — the exact error the docstring above warns of, on the
+    provider the user had moved to. An estimate at the measured fallback ratio is wrong by
+    a few percent; zero was wrong by the whole prefix.
     """
     try:
         stable, volatile = agent.system_blocks(
@@ -1161,7 +1169,11 @@ def standing_tokens(session: Session, client, cfg: config_mod.Config,
             tools.custom_guidance(),
             memory_mod.bootstrap_volatile() if cfg.memory_enabled else "")
         system = "\n\n".join(p for p in (stable, volatile) if p)
-        return count_tokens(client, session.model, system) or 0
+        schemas = tools.active_tools(cfg.memory_enabled)
+        real = count_tokens(client, session.model, system, schemas)
+        if real is not None:
+            return real
+        return int((len(system) + len(json.dumps(schemas))) / FALLBACK_CHARS_PER_TOKEN)
     except Exception:
         return 0
 
@@ -1175,7 +1187,7 @@ def chars_per_token(session: Session, client, cfg: config_mod.Config,
     numbers: real context tokens from the API, real system-prompt tokens from
     count_tokens, and the actual character counts.
     """
-    fallback = 2.9
+    fallback = FALLBACK_CHARS_PER_TOKEN
     # Against the PRE-clearing count when context editing fired. `context_tokens` is what
     # the model read after the server dropped stale tool results, but the local message
     # list still holds them in full — dividing full chars by cleared tokens inflates the

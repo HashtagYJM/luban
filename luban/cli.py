@@ -303,12 +303,17 @@ def empty_turn_notice(session: Session, stop_reason: str) -> None:
     into any resume. What the user saw was a blank reply and then a session that had
     inexplicably died.
     """
-    if session.messages and session.messages[-1].get("role") == "user":
-        session.last_failed = session.messages.pop()["content"]
+    # The prompt is only at the tail if the empty answer came to the prompt itself. An
+    # empty answer MID-TURN — after tool calls — leaves a tool_result there, and popping
+    # that orphans the tool_use before it: the next typed line then sits where the
+    # result had to be, and the API rejects that message index on every later send.
+    session.last_failed = abandon_turn(session)
     why = f" (stop reason: {stop_reason})" if stop_reason else ""
+    kept = ("your prompt was kept; /retry to send it again" if session.last_failed
+            else "the work up to this point is kept; say what to do next")
     ui.print_text(
-        f"\n[the model returned an empty response{why} — nothing was written and your "
-        "prompt was kept; /retry to send it again]\n"
+        f"\n[the model returned an empty response{why} — nothing was written and "
+        f"{kept}]\n"
         "  If this keeps happening: it is usually the request shape, not the prompt. Try "
         "context_editing = false first, then a lower max_tokens, then --no-stream.\n"
     )

@@ -123,3 +123,53 @@ def test_the_typed_prompt_is_kept_for_retry(monkeypatch):
     assert "empty response" in body and "/retry" in body
     # It must point at the request shape — the settings that actually cause this.
     assert "context_editing" in body
+
+
+def test_an_empty_response_mid_turn_keeps_the_tool_pair_intact(monkeypatch):
+    """The empty answer can come AFTER tool calls. Then the last user message is a tool
+    result, not the prompt — and popping it orphans the tool_use before it. The next typed
+    line sat where the result had to be, and the API rejected that index on every send,
+    /retry included; the saved file carried it into every resume (field, 2026-09-21)."""
+    monkeypatch.setattr(cli.ui, "print_text", lambda t: None)
+    session = cli.Session(model="m", max_tokens=10, auto=True, stream=False, messages=[
+        {"role": "user", "content": "do the thing"},
+        {"role": "assistant", "content": [
+            {"type": "tool_use", "id": "t1", "name": "read_file", "input": {}}]},
+        {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "t1", "content": "x"}]},
+    ])
+    cli.empty_turn_notice(session, "end_turn")
+    assert session.last_failed is None, "a tool result is not a prompt to retry"
+    session.messages.append({"role": "user", "content": "continue"})
+    sent = history.sanitize_history(session.messages)
+    for i, m in enumerate(sent):
+        for b in m["content"] if isinstance(m["content"], list) else []:
+            if b.get("type") == "tool_use":
+                nxt = sent[i + 1]["content"]
+                assert any(r.get("tool_use_id") == b["id"] for r in nxt)
+
+
+def test_a_tool_use_orphaned_mid_history_is_repaired_on_load():
+    """Whole-history, not just the tail: a session already poisoned this way must heal
+    when it is loaded, or /resume reopens the same dead thread."""
+    poisoned = [
+        {"role": "user", "content": "do the thing"},
+        {"role": "assistant", "content": [
+            {"type": "text", "text": "reading"},
+            {"type": "tool_use", "id": "t1", "name": "read_file", "input": {}}]},
+        {"role": "user", "content": "continue"},
+        {"role": "assistant", "content": [
+            {"type": "tool_use", "id": "t2", "name": "read_file", "input": {}}]},
+        {"role": "user", "content": "continue again"},
+        {"role": "assistant", "content": [{"type": "text", "text": "ok"}]},
+    ]
+    healed = history.sanitize_history(poisoned)
+    assert not any(b.get("type") == "tool_use" for m in healed
+                   for b in (m["content"] if isinstance(m["content"], list) else []))
+    assert healed[1]["content"] == [{"type": "text", "text": "reading"}], "text survives"
+    assert [m["content"] for m in healed if m["role"] == "user"] == [
+        "do the thing", "continue", "continue again"]
+    # an intact pair is never touched
+    fine = poisoned[:2] + [{"role": "user", "content": [
+        {"type": "tool_result", "tool_use_id": "t1", "content": "x"}]}]
+    assert history.sanitize_history(fine) == fine

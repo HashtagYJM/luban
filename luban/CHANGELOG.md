@@ -11,6 +11,12 @@ below. Only user-facing behaviour earns a line here.
 
 ## Unreleased
 
+### An empty answer in the middle of a turn no longer kills the session
+
+When the model returned nothing at all *after* it had already made tool calls in the turn — a gateway hiccup, an authentication lapse — luban kept "your prompt" for `/retry` by taking the last user message off the history. Mid-turn, that message is a tool result, not the prompt, so the tool call before it was left without its result; the next line you typed sat where the result had to be, and the API rejected that exact message on every later send. `/retry` re-sent it, and the saved file carried it into every resume, so the session was dead for good.
+
+luban now keeps a tool result where it is and only stashes a real prompt, and it repairs an unanswered tool call anywhere in a history — on every send and on every load — so a session already broken this way reopens and works after upgrading.
+
 ### A fold on a `gpt-*` model now lands where it aims
 
 The fold target is a share of the whole prompt, so the always-on prefix is subtracted before the kept span is sized. On OpenAI models there is no token-counting call, and "cannot count" was treated as zero — so every fold on a `gpt-*` session was sized against history alone and landed a whole prefix above its target, folding again sooner and re-sending more on every call in between. The prefix is now estimated where it cannot be measured, and the tool schemas — which ride ahead of the prompt on every call — are counted as part of it on both providers.

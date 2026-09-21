@@ -81,13 +81,58 @@ def drop_empty(messages: list[dict]) -> list[dict]:
     return kept if len(kept) != len(messages) else messages
 
 
+def _answered_ids(message: dict) -> set:
+    content = message.get("content")
+    if not isinstance(content, list):
+        return set()
+    return {b.get("tool_use_id") for b in content
+            if isinstance(b, dict) and b.get("type") == "tool_result"}
+
+
+def strip_orphaned_tool_uses(messages: list[dict]) -> list[dict]:
+    """Drop any tool_use whose result is not in the very next message — anywhere.
+
+    The tail rule below handles a turn that ENDED on a tool_use. This is the other way a
+    tool_use loses its result: something removed the tool_result message from the middle
+    of the history — an empty-turn handler popping "the prompt" when the last user
+    message was actually a tool result — and the next typed line then sat where the
+    result had to be. The API rejects that at the message index, forever: /retry re-sends
+    it, and the saved file carries it into every resume. Whole-history, for the same
+    reason drop_empty is: a session poisoned this way has to heal when loaded.
+    """
+    out = []
+    changed = False
+    for i, m in enumerate(messages):
+        content = m.get("content")
+        if m.get("role") != "assistant" or not isinstance(content, list):
+            out.append(m)
+            continue
+        answered = _answered_ids(messages[i + 1]) if i + 1 < len(messages) else None
+        if answered is None:
+            out.append(m)  # the tail: the rule below owns it
+            continue
+        kept = [b for b in content if not (
+            isinstance(b, dict) and b.get("type") == "tool_use"
+            and b.get("id") not in answered)]
+        if len(kept) == len(content):
+            out.append(m)
+        elif kept:
+            out.append({**m, "content": kept})
+            changed = True
+        else:
+            changed = True  # nothing but the orphaned call — drop the message
+    return out if changed else messages
+
+
 def sanitize_history(messages: list[dict]) -> list[dict]:
-    """Guarantee an API-valid history. Three rules:
+    """Guarantee an API-valid history. Four rules:
 
     1. No server_tool_use may stand without the web_search_tool_result answering it,
        anywhere in the history — see strip_stranded_server_tools.
     2. No message may have empty content — see drop_empty.
-    3. History must never END in an assistant message with unanswered tool_use blocks.
+    3. No tool_use may stand without its tool_result in the next message, anywhere —
+       see strip_orphaned_tool_uses.
+    4. History must never END in an assistant message with unanswered tool_use blocks.
 
     The Anthropic API requires every tool_use to be immediately followed by its
     tool_result. A response truncated at max_tokens mid-tool-call (or any path that
@@ -98,7 +143,7 @@ def sanitize_history(messages: list[dict]) -> list[dict]:
     """
     if not messages:
         return messages
-    out = list(drop_empty(strip_stranded_server_tools(messages)))
+    out = list(drop_empty(strip_orphaned_tool_uses(strip_stranded_server_tools(messages))))
     while out:
         last = out[-1]
         if last.get("role") != "assistant":

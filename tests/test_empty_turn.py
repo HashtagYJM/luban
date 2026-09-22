@@ -36,7 +36,10 @@ class _Messages:
 
     def create(self, **kw):
         self.calls.append(kw)
-        return self.scripted.pop(0)
+        # The last scripted answer repeats: "the model keeps returning this" — a blank
+        # is now re-asked before it is reported, and these tests script the case where
+        # every re-ask comes back the same.
+        return self.scripted.pop(0) if len(self.scripted) > 1 else self.scripted[0]
 
 
 class Client:
@@ -259,3 +262,92 @@ def test_a_blank_claude_turn_records_tokens_surface_and_clearing(monkeypatch, tm
     row = json.loads((tmp_path / "audit.jsonl").read_text().splitlines()[-1])
     assert row["output_tokens"] == 2 and row["beta_surface"] is True
     assert row["cleared_tokens"] == 0 and row["output"] == []
+
+
+# --- a blank is retried before it is reported -------------------------------
+
+
+class _Surface:
+    def __init__(self, owner, name):
+        self._owner, self._name = owner, name
+
+    def create(self, **kw):
+        self._owner.calls.append((self._name, kw))
+        return self._owner.scripted.pop(0)
+
+
+class BetaClient:
+    """A backend with both surfaces, recording which one each call used."""
+
+    def __init__(self, scripted):
+        self.scripted, self.calls = list(scripted), []
+        self.messages = _Surface(self, "plain")
+        self.beta = type("B", (), {})()
+        self.beta.messages = _Surface(self, "beta")
+
+
+def _ladder(tmp_path, scripted, ctx_mgmt):
+    from luban import client as client_mod
+    client_mod.probes("claude-x")["ctx_mgmt"] = None
+    client = BetaClient(scripted)
+    cfg = agent.AgentConfig("claude-x", 100, stream=False, ctx_mgmt=ctx_mgmt)
+    blanks, empties = [], []
+    cfg.on_blank = lambda msg, label: blanks.append(label)
+    msgs = agent.run_turn(client, cfg, [{"role": "user", "content": "hi"}], _ctx(tmp_path),
+                          lambda t: None, on_empty=empties.append)
+    return client, msgs, blanks, empties
+
+
+def test_a_blank_answer_is_asked_again_before_anyone_hears_of_it(tmp_path):
+    """Nothing ran and the request is unchanged, so a re-ask is a pure repeat — the same
+    argument _with_retry makes for a severed stream. A sporadic blank costs one call
+    and no work, instead of the rest of the turn."""
+    ok = Resp([Blk(type="text", text="here")])
+    client, msgs, blanks, empties = _ladder(tmp_path, [Resp([]), ok], ctx_mgmt=None)
+    assert msgs[-1]["content"] == [{"type": "text", "text": "here"}]
+    assert blanks == ["retry"] and empties == []
+    assert [s for s, _ in client.calls] == ["plain", "plain"]
+
+
+def test_a_second_blank_is_asked_without_server_side_clearing(tmp_path):
+    """Every blank in the field came with context_editing on, and before any clearing
+    applies the flag changes exactly one thing — the call goes through the beta
+    surface. So the second re-ask drops it, for this call only, and the record says
+    which step answered: that is the evidence the cause needs, gathered by the fix."""
+    ok = Resp([Blk(type="text", text="here")])
+    edits = {"edits": [{"type": "clear_tool_uses_20250919"}]}
+    client, msgs, blanks, empties = _ladder(tmp_path, [Resp([]), Resp([]), ok], ctx_mgmt=edits)
+    assert msgs[-1]["content"] == [{"type": "text", "text": "here"}]
+    assert blanks == ["retry", "retry-without-clearing"] and empties == []
+    surfaces = [s for s, _ in client.calls]
+    assert surfaces == ["beta", "beta", "plain"]
+    assert "context_management" not in client.calls[-1][1]
+
+
+def test_three_blanks_are_reported_and_the_history_left_intact(tmp_path):
+    edits = {"edits": [{"type": "clear_tool_uses_20250919"}]}
+    client, msgs, blanks, empties = _ladder(
+        tmp_path, [Resp([]), Resp([]), Resp([])], ctx_mgmt=edits)
+    assert msgs == [{"role": "user", "content": "hi"}]
+    assert blanks == ["retry", "retry-without-clearing", "gave-up"]
+    assert len(empties) == 1
+    assert len(client.calls) == 3, "the ladder has two rungs, not a loop"
+
+
+def test_every_blank_is_on_record_even_when_a_retry_absorbs_it(monkeypatch, tmp_path):
+    import json
+    from luban import sessions
+    monkeypatch.setattr(sessions, "SESSIONS_DIR", tmp_path)
+    monkeypatch.setattr(audit, "AUDIT_PATH", tmp_path / "audit.jsonl")
+    printed = []
+    monkeypatch.setattr(cli.ui, "print_text", printed.append)
+    session = cli.Session(model="claude-x", max_tokens=10, auto=True, stream=False,
+                          messages=[{"role": "user", "content": "hi"}], project="p")
+    notice = cli.blank_notice(session)
+    notice(Resp([]), "retry")
+    notice(Resp([]), "retry-without-clearing")
+    rows = [json.loads(l) for l in (tmp_path / "audit.jsonl").read_text().splitlines()]
+    assert [r["decision"] for r in rows] == ["retry", "retry-without-clearing"]
+    assert all(r["tool"] == "model:blank" and r["project"] == "p" for r in rows)
+    body = "".join(printed)
+    assert "asking again" in body and "without server-side clearing" in body

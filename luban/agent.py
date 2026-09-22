@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from luban import client as client_mod
 from luban import history as history_mod
@@ -146,6 +146,9 @@ class AgentConfig:
     # and an agentic turn is where it actually grows: one prompt, a hundred tool calls,
     # every call re-sending all of it, and nothing able to act until the turn ended.
     between_calls: object = None
+    # Called (message, label) for every blank answer — before each re-ask and once more
+    # if the ladder is exhausted — so a blank that a retry absorbed is still on record.
+    on_blank: object = None
 
 
 def build_system_param(stable: str, volatile: str, cache: bool, model: str = ""):
@@ -385,10 +388,31 @@ def run_turn(client, config: AgentConfig, messages: list[dict], ctx, on_text,
         if not blocks:
             # The turn produced nothing usable — either the model returned an empty
             # response, or the only block was unsigned thinking, which cannot be echoed
-            # back. Appending it would put a message with empty content into the history,
-            # which the API rejects on EVERY later send: one blank answer would kill the
-            # session, and the saved file with it. Report it and leave history untouched
-            # so the next prompt still works.
+            # back. No tool has run and the request is unchanged, so a re-ask is a pure
+            # repeat (the argument _with_retry makes for a severed stream). Two rungs:
+            # the same request, then — every blank seen in the field came with
+            # server-side clearing on, which changes only the surface the call goes
+            # through — the same request without it, for this call only. Which rung
+            # answered is reported, so the fix gathers the evidence its cause needs.
+            ladder = [("retry", config)]
+            if config.ctx_mgmt:
+                ladder.append(("retry-without-clearing", replace(config, ctx_mgmt=None)))
+            for label, attempt in ladder:
+                if config.on_blank is not None:
+                    config.on_blank(msg, label)
+                msg = _run_model_turn(client, attempt, messages, on_text, on_thinking,
+                                      on_retry)
+                blocks = client_mod.message_to_blocks(
+                    msg, client_mod.provider_for(config.model))
+                if blocks:
+                    break
+        if not blocks:
+            # Still nothing. Appending it would put a message with empty content into
+            # the history, which the API rejects on EVERY later send: one blank answer
+            # would kill the session, and the saved file with it. Report it and leave
+            # history untouched so the next prompt still works.
+            if config.on_blank is not None:
+                config.on_blank(msg, "gave-up")
             if on_empty is not None:
                 on_empty(msg)  # the whole message: the provider's account of the blank
             return sanitize_history(messages)

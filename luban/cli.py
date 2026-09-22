@@ -313,8 +313,41 @@ def empty_turn_notice(session: Session, msg) -> None:
     why = f" (stop reason: {stop_reason})" if stop_reason else ""
     kept = ("your prompt was kept; /retry to send it again" if session.last_failed
             else "the work up to this point is kept; say what to do next")
+    diag = blank_account(session, msg)
+    audit_mod.log({"project": session.project, "tool": "model:empty",
+                   "target": session.model, "decision": stop_reason, "is_error": True,
+                   **diag})
+    said = ", ".join(f"{k}={v}" for k, v in diag.items() if v not in (None, [], ""))
+    hint = ("  If this keeps happening: it is usually the request shape, not the prompt. Try "
+            "context_editing = false first, then a lower max_tokens, then --no-stream.\n"
+            if client_mod.provider_for(session.model) == "anthropic" else "")
+    ui.print_text(
+        f"\n[the model returned an empty response{why} — nothing was written and "
+        f"{kept}]\n"
+        f"  provider said: {said or 'nothing'} — recorded in audit.jsonl\n" + hint
+    )
+
+
+def blank_notice(session: Session):
+    """The on_blank hook: one audit row per blank answer, and one line on screen saying
+    what is being tried. A blank a retry absorbs must still be on record — the cause is
+    still open, and a retry that hid the evidence would close the inquiry, not the case."""
+    def notice(msg, label: str) -> None:
+        diag = blank_account(session, msg)
+        audit_mod.log({"project": session.project, "tool": "model:blank",
+                       "target": session.model, "decision": label, "is_error": True,
+                       **diag})
+        if label == "retry":
+            ui.print_text("\n[blank answer — asking again]\n")
+        elif label == "retry-without-clearing":
+            ui.print_text("[blank again — asking once more without server-side clearing]\n")
+    return notice
+
+
+def blank_account(session: Session, msg) -> dict:
+    """What the provider said about a response with no usable block in it."""
     # The OpenAI adapter folds every outcome but max_output_tokens into end_turn, so
-    # without this line a content filter, a refusal and a truly empty answer were one
+    # without this a content filter, a refusal and a truly empty answer were one
     # symptom. Anthropic messages carry no such account; the raw block types stand in.
     diag = getattr(msg, "diagnostics", None) or {
         "status": None, "reason": None, "error": None,
@@ -330,18 +363,7 @@ def empty_turn_notice(session: Session, msg) -> None:
         "beta_surface": client_mod.probes(session.model)["ctx_mgmt"],
         "cleared_tokens": session.ledger.cleared_tokens,
     })
-    audit_mod.log({"project": session.project, "tool": "model:empty",
-                   "target": session.model, "decision": stop_reason, "is_error": True,
-                   **diag})
-    said = ", ".join(f"{k}={v}" for k, v in diag.items() if v not in (None, [], ""))
-    hint = ("  If this keeps happening: it is usually the request shape, not the prompt. Try "
-            "context_editing = false first, then a lower max_tokens, then --no-stream.\n"
-            if client_mod.provider_for(session.model) == "anthropic" else "")
-    ui.print_text(
-        f"\n[the model returned an empty response{why} — nothing was written and "
-        f"{kept}]\n"
-        f"  provider said: {said or 'nothing'} — recorded in audit.jsonl\n" + hint
-    )
+    return diag
 
 
 def truncation_notice(cap: int, n: int, total: int) -> None:
@@ -2081,6 +2103,7 @@ def main(argv: list[str] | None = None) -> None:
         ctx.session_id = ensure_session_id(session)
         agent_config = build_agent_config(session, cfg, project_root)
         agent_config.between_calls = bound_turn(session, client, cfg, project_root)
+        agent_config.on_blank = blank_notice(session)
         ui.print_text("\nluban> ")
         empty_turn = []
         try:

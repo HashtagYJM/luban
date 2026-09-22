@@ -15,6 +15,10 @@ below. Only user-facing behaviour earns a line here.
 
 When a turn ended in an empty answer, an authentication lapse, or Ctrl-C, luban kept the work of that turn in memory — every tool call already made — but did not write it to disk. The saved file still ended where the previous turn did, so quitting after the failure, which is the natural thing to do when the gateway has dropped you, lost the whole turn, and `luban -r` reopened a session that knew nothing of it. The history is now saved the moment a turn is abandoned, so what the model did before the failure is in the file, and the resume continues from it.
 
+### A blank answer is asked again before you hear of it
+
+When the model came back with nothing at all, the turn stopped there and you were told to say what to do next. No tool had run and the request was unchanged, so the honest thing was to ask again, and luban now does: the same request once more, and if that is blank too and server-side clearing is on, once more without clearing for that one call, since every blank seen in the field came with clearing on. Only if all of that is blank do you get the notice. Each blank, absorbed or not, is one `model:blank` row in `audit.jsonl` saying which step answered, so the cause can still be found.
+
 ### A blank answer now says what the provider said
 
 On a `gpt-*` model every outcome except hitting the output ceiling was reported as `end_turn`, so a content filter, a refusal, a failed request and a genuinely empty answer all produced the same notice, and nothing wrote the real outcome down. The notice now prints the provider's own account — status, reason, and what each output item was — and appends it to `audit.jsonl` as a `model:empty` row, so a run of blank turns can be diagnosed from the log. The hint to try `context_editing = false` is shown only on an Anthropic model, where it can do something.

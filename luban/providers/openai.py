@@ -217,6 +217,11 @@ def to_message(resp):
     blocks = []
     saw_tool_use = False
     seen = []  # one entry per output item, as the provider sent it
+    if _attr(resp, "output") is None:
+        # Not a Responses result at all — a wrapper that swallowed an error and returned
+        # None, a dict, or an error body. Lenient reads below would call it an empty
+        # answer; say what it actually was.
+        seen.append(f"no output field: {type(resp).__name__} {repr(resp)[:200]}")
     for item in _attr(resp, "output") or []:
         t = _attr(item, "type")
         if t == "reasoning":

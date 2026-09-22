@@ -156,6 +156,18 @@ def test_an_empty_answer_carries_the_provider_s_own_account_of_it():
     assert any("refusal" in o and "cannot help" in o for o in d["output"])
 
 
+def test_a_non_response_from_the_wrapper_is_named_not_called_empty():
+    """The reads are lenient on purpose (objects or dicts), so anything without an
+    `output` field — None, an error body — read as an empty answer with stop reason
+    end_turn. An authentication lapse on the box arrived exactly that way (2026-09-21)."""
+    for bad in (None, {"error": {"code": "unauthorized", "message": "token expired"}}):
+        msg = oa.to_message(bad)
+        assert msg.content == [] and msg.stop_reason == "end_turn"
+        assert any(o.startswith("no output field") for o in msg.diagnostics["output"])
+    assert "unauthorized" in oa.to_message(
+        {"error": {"code": "unauthorized", "message": "x"}}).diagnostics["error"]
+
+
 # ---------------- 2: usage mapping, proved past the names that align ----------------
 
 def test_cached_tokens_are_mapped_and_not_double_counted():

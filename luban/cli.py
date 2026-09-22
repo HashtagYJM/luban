@@ -320,6 +320,16 @@ def empty_turn_notice(session: Session, msg) -> None:
         "status": None, "reason": None, "error": None,
         "output": [b.type + ("" if getattr(b, "signature", None) or b.type != "thinking"
                              else "(unsigned)") for b in getattr(msg, "content", [])]}
+    # The Anthropic side has no status to report, so record the three things that
+    # separate the candidate causes: how many tokens the model actually produced, whether
+    # the call went through the beta surface (the one thing context_editing changes before
+    # any clearing has happened), and whether clearing had applied.
+    last = session.ledger.last
+    diag.update({
+        "output_tokens": last.output_tokens if last else None,
+        "beta_surface": client_mod.probes(session.model)["ctx_mgmt"],
+        "cleared_tokens": session.ledger.cleared_tokens,
+    })
     audit_mod.log({"project": session.project, "tool": "model:empty",
                    "target": session.model, "decision": stop_reason, "is_error": True,
                    **diag})

@@ -239,3 +239,23 @@ def test_the_provider_s_account_of_a_blank_turn_is_recorded_and_shown(monkeypatc
     row = json.loads((tmp_path / "audit.jsonl").read_text().splitlines()[-1])
     assert row["tool"] == "model:empty" and row["reason"] == "content_filter"
     assert row["project"] == "p" and row["target"] == "gpt-6"
+
+
+def test_a_blank_claude_turn_records_tokens_surface_and_clearing(monkeypatch, tmp_path):
+    """Every blank on Claude carried `+2 out` and, in the field, appeared only with
+    context_editing on. Before any clearing applies, that setting changes exactly one
+    thing — the call goes through the beta surface — so the row has to say whether it
+    did, what the model produced, and whether anything had been cleared."""
+    import json
+    from luban import client as client_mod, sessions, usage
+    monkeypatch.setattr(sessions, "SESSIONS_DIR", tmp_path)
+    monkeypatch.setattr(audit, "AUDIT_PATH", tmp_path / "audit.jsonl")
+    monkeypatch.setattr(cli.ui, "print_text", lambda t: None)
+    client_mod.probes("claude-opus-5")["ctx_mgmt"] = True
+    session = cli.Session(model="claude-opus-5", max_tokens=10, auto=True, stream=False,
+                          messages=[{"role": "user", "content": "hi"}])
+    session.ledger.add(usage.Usage(input_tokens=50_000, output_tokens=2), session.model)
+    cli.empty_turn_notice(session, Resp([]))
+    row = json.loads((tmp_path / "audit.jsonl").read_text().splitlines()[-1])
+    assert row["output_tokens"] == 2 and row["beta_surface"] is True
+    assert row["cleared_tokens"] == 0 and row["output"] == []

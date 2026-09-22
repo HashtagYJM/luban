@@ -11,7 +11,7 @@ drops on purpose because an unsigned block fails validation when echoed back.
 """
 from dataclasses import dataclass, field
 
-from luban import agent, cli, history, tools
+from luban import agent, audit, cli, history, tools
 
 
 @dataclass
@@ -104,12 +104,13 @@ def test_a_normal_turn_is_untouched(tmp_path):
 def test_the_human_is_told_rather_than_shown_a_blank_line(tmp_path):
     seen = []
     _run(tmp_path, Resp([], stop_reason="end_turn"), on_empty=seen.append)
-    assert seen == ["end_turn"]
+    assert [m.stop_reason for m in seen] == ["end_turn"]
 
 
 def test_the_typed_prompt_is_kept_for_retry(monkeypatch, tmp_path):
     """Same contract as a turn the network killed: the prompt is not lost, and the
     history does not end on an unanswered user turn."""
+    monkeypatch.setattr(audit, "AUDIT_PATH", tmp_path / "audit.jsonl")
     from luban import sessions
     monkeypatch.setattr(sessions, "SESSIONS_DIR", tmp_path)
     printed = []
@@ -118,7 +119,7 @@ def test_the_typed_prompt_is_kept_for_retry(monkeypatch, tmp_path):
         {"role": "assistant", "content": [{"type": "text", "text": "earlier"}]},
         {"role": "user", "content": "the prompt I typed"},
     ])
-    cli.empty_turn_notice(session, "end_turn")
+    cli.empty_turn_notice(session, Resp([]))
     assert session.last_failed == "the prompt I typed"
     assert session.messages[-1]["role"] == "assistant"
     body = "".join(printed)
@@ -132,6 +133,7 @@ def test_an_empty_response_mid_turn_keeps_the_tool_pair_intact(monkeypatch, tmp_
     result, not the prompt — and popping it orphans the tool_use before it. The next typed
     line sat where the result had to be, and the API rejected that index on every send,
     /retry included; the saved file carried it into every resume (field, 2026-09-21)."""
+    monkeypatch.setattr(audit, "AUDIT_PATH", tmp_path / "audit.jsonl")
     from luban import sessions
     monkeypatch.setattr(sessions, "SESSIONS_DIR", tmp_path)
     monkeypatch.setattr(cli.ui, "print_text", lambda t: None)
@@ -142,7 +144,7 @@ def test_an_empty_response_mid_turn_keeps_the_tool_pair_intact(monkeypatch, tmp_
         {"role": "user", "content": [
             {"type": "tool_result", "tool_use_id": "t1", "content": "x"}]},
     ])
-    cli.empty_turn_notice(session, "end_turn")
+    cli.empty_turn_notice(session, Resp([]))
     assert session.last_failed is None, "a tool result is not a prompt to retry"
     session.messages.append({"role": "user", "content": "continue"})
     sent = history.sanitize_history(session.messages)
@@ -188,6 +190,7 @@ def test_the_work_of_an_abandoned_turn_is_on_disk(monkeypatch, tmp_path):
     left in memory only: the file on disk still ended where the previous turn did, so
     closing luban after the failure (which is when people close it) lost the whole turn,
     and the resume knew nothing of it (field, 2026-09-22)."""
+    monkeypatch.setattr(audit, "AUDIT_PATH", tmp_path / "audit.jsonl")
     from luban import sessions
     monkeypatch.setattr(sessions, "SESSIONS_DIR", tmp_path)
     monkeypatch.setattr(cli.ui, "print_text", lambda t: None)
@@ -198,7 +201,7 @@ def test_the_work_of_an_abandoned_turn_is_on_disk(monkeypatch, tmp_path):
         {"role": "user", "content": [
             {"type": "tool_result", "tool_use_id": "t1", "content": "[exit code: 1]"}]},
     ], session_id="s1")
-    cli.empty_turn_notice(session, "end_turn")
+    cli.empty_turn_notice(session, Resp([]))
     saved = sessions.load("s1", tmp_path)["messages"]
     assert any(b.get("id") == "t1" for m in saved for b in
                (m["content"] if isinstance(m["content"], list) else []))
@@ -208,3 +211,31 @@ def test_the_work_of_an_abandoned_turn_is_on_disk(monkeypatch, tmp_path):
     assert cli.abandon_turn(session) == "typed, then the network died"
     assert sessions.load("s1", tmp_path)["messages"][-1]["role"] == "user"
     assert "typed" not in str(sessions.load("s1", tmp_path)["messages"][-1])
+
+
+# --- and the provider's account of it must be written down --------------------
+
+
+def test_the_provider_s_account_of_a_blank_turn_is_recorded_and_shown(monkeypatch, tmp_path):
+    """Three blank turns in one field session (2026-09-22), all `end_turn`, and nothing to
+    tell a content filter from a refusal from a genuinely empty answer. The notice now
+    prints what the provider said and appends it to audit.jsonl, where the user already
+    looks; and it stops recommending `context_editing` on a model where it does nothing."""
+    import json
+    from luban import sessions
+    monkeypatch.setattr(sessions, "SESSIONS_DIR", tmp_path)
+    monkeypatch.setattr(audit, "AUDIT_PATH", tmp_path / "audit.jsonl")
+    printed = []
+    monkeypatch.setattr(cli.ui, "print_text", printed.append)
+    session = cli.Session(model="gpt-6", max_tokens=10, auto=True, stream=False,
+                          messages=[{"role": "user", "content": "hi"}], project="p")
+    msg = Resp([], stop_reason="end_turn")
+    msg.diagnostics = {"status": "incomplete", "reason": "content_filter",
+                       "error": None, "output": ["message(refusal: no)"]}
+    cli.empty_turn_notice(session, msg)
+    body = "".join(printed)
+    assert "content_filter" in body and "refusal" in body
+    assert "context_editing" not in body
+    row = json.loads((tmp_path / "audit.jsonl").read_text().splitlines()[-1])
+    assert row["tool"] == "model:empty" and row["reason"] == "content_filter"
+    assert row["project"] == "p" and row["target"] == "gpt-6"

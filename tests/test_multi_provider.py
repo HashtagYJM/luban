@@ -137,6 +137,25 @@ def test_hitting_the_output_ceiling_maps_to_max_tokens():
     assert msg.stop_reason == "max_tokens"  # agent.py retries smaller on exactly this
 
 
+def test_an_empty_answer_carries_the_provider_s_own_account_of_it():
+    """Every outcome but max_output_tokens maps to end_turn, so a content filter, a
+    refusal part, a failed status and a genuinely empty answer all looked identical on
+    screen and nothing wrote the raw outcome down. The message now carries what the
+    provider actually said, so a blank turn can be diagnosed rather than collected."""
+    fake = FakeOpenAI(_resp(
+        [SimpleNamespace(type="reasoning", encrypted_content=None, summary=[]),
+         SimpleNamespace(type="message", content=[
+             SimpleNamespace(type="refusal", refusal="I cannot help with that.")])],
+        status="incomplete", incomplete=SimpleNamespace(reason="content_filter")))
+    msg = oa.OpenAIAdapter(fake).messages.create(
+        model="gpt-5.6", max_tokens=10, system="", messages=[], tools=[])
+    assert msg.content == [] and msg.stop_reason == "end_turn"
+    d = msg.diagnostics
+    assert d["status"] == "incomplete" and d["reason"] == "content_filter"
+    assert any("unreplayable" in o for o in d["output"])
+    assert any("refusal" in o and "cannot help" in o for o in d["output"])
+
+
 # ---------------- 2: usage mapping, proved past the names that align ----------------
 
 def test_cached_tokens_are_mapped_and_not_double_counted():

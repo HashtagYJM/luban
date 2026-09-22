@@ -294,8 +294,9 @@ def resolve_max_tokens(flag: int | None, cfg: config_mod.Config, stream: bool) -
     return want
 
 
-def empty_turn_notice(session: Session, stop_reason: str) -> None:
-    """A turn that came back with no content at all — say so, and keep the prompt.
+def empty_turn_notice(session: Session, msg) -> None:
+    """A turn that came back with no content at all — say so, keep the prompt, and write
+    down what the provider actually said.
 
     Before this, an empty response printed nothing and left an empty assistant message in
     the history. The API rejects a message with empty content, so that ONE blank answer
@@ -308,14 +309,28 @@ def empty_turn_notice(session: Session, stop_reason: str) -> None:
     # that orphans the tool_use before it: the next typed line then sits where the
     # result had to be, and the API rejects that message index on every later send.
     session.last_failed = abandon_turn(session)
+    stop_reason = getattr(msg, "stop_reason", "") or ""
     why = f" (stop reason: {stop_reason})" if stop_reason else ""
     kept = ("your prompt was kept; /retry to send it again" if session.last_failed
             else "the work up to this point is kept; say what to do next")
+    # The OpenAI adapter folds every outcome but max_output_tokens into end_turn, so
+    # without this line a content filter, a refusal and a truly empty answer were one
+    # symptom. Anthropic messages carry no such account; the raw block types stand in.
+    diag = getattr(msg, "diagnostics", None) or {
+        "status": None, "reason": None, "error": None,
+        "output": [b.type + ("" if getattr(b, "signature", None) or b.type != "thinking"
+                             else "(unsigned)") for b in getattr(msg, "content", [])]}
+    audit_mod.log({"project": session.project, "tool": "model:empty",
+                   "target": session.model, "decision": stop_reason, "is_error": True,
+                   **diag})
+    said = ", ".join(f"{k}={v}" for k, v in diag.items() if v not in (None, [], ""))
+    hint = ("  If this keeps happening: it is usually the request shape, not the prompt. Try "
+            "context_editing = false first, then a lower max_tokens, then --no-stream.\n"
+            if client_mod.provider_for(session.model) == "anthropic" else "")
     ui.print_text(
         f"\n[the model returned an empty response{why} — nothing was written and "
         f"{kept}]\n"
-        "  If this keeps happening: it is usually the request shape, not the prompt. Try "
-        "context_editing = false first, then a lower max_tokens, then --no-stream.\n"
+        f"  provider said: {said or 'nothing'} — recorded in audit.jsonl\n" + hint
     )
 
 

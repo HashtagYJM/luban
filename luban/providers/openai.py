@@ -199,20 +199,37 @@ def _stop_reason(resp, saw_tool_use: bool) -> str:
     return "end_turn"
 
 
+def _diagnostics(resp, seen: list) -> dict:
+    """What the provider said about this response, for the one case where luban has to
+    explain a blank: every outcome but max_output_tokens maps to end_turn, so a content
+    filter, a refusal, a failed status and a truly empty answer look the same otherwise."""
+    err = _attr(resp, "error")
+    return {
+        "status": _attr(resp, "status"),
+        "reason": _attr(_attr(resp, "incomplete_details"), "reason"),
+        "error": f"{_attr(err, 'code')}: {_attr(err, 'message')}" if err else None,
+        "output": seen,
+    }
+
+
 def to_message(resp):
     """A Responses result -> the Message shape agent.py and usage.py already read."""
     blocks = []
     saw_tool_use = False
+    seen = []  # one entry per output item, as the provider sent it
     for item in _attr(resp, "output") or []:
         t = _attr(item, "type")
         if t == "reasoning":
             encrypted = _attr(item, "encrypted_content")
             if not encrypted:
+                seen.append("reasoning(unreplayable: no encrypted_content)")
                 continue  # unreplayable — drop it, as luban drops unsigned thinking
+            seen.append("reasoning")
             summary = "".join(_attr(p, "text") or "" for p in (_attr(item, "summary") or []))
             blocks.append(SimpleNamespace(type="thinking", thinking=summary,
                                           signature=encrypted, id=_attr(item, "id", "")))
         elif t == "function_call":
+            seen.append(f"function_call:{_attr(item, 'name', '')}")
             saw_tool_use = True
             raw = _attr(item, "arguments") or "{}"
             try:
@@ -222,13 +239,20 @@ def to_message(resp):
             blocks.append(SimpleNamespace(type="tool_use", id=_attr(item, "call_id", ""),
                                           name=_attr(item, "name", ""), input=parsed))
         elif t == "message":
+            parts = _attr(item, "content") or []
             text = "".join(
-                _attr(p, "text") or "" for p in (_attr(item, "content") or [])
+                _attr(p, "text") or "" for p in parts
                 if _attr(p, "type") in ("output_text", "text"))
+            refusals = [_attr(p, "refusal") or "" for p in parts if _attr(p, "type") == "refusal"]
+            seen.append(f"message(refusal: {' '.join(refusals)[:200]})" if refusals
+                        else f"message({len(text)} chars)")
             if text:
                 blocks.append(SimpleNamespace(type="text", text=text))
+        else:
+            seen.append(str(t))
     return SimpleNamespace(content=blocks, stop_reason=_stop_reason(resp, saw_tool_use),
-                           usage=_usage(resp), context_management=None)
+                           usage=_usage(resp), context_management=None,
+                           diagnostics=_diagnostics(resp, seen))
 
 
 # ------------------------------------------------------------------------ surface ----

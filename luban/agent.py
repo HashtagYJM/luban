@@ -390,7 +390,7 @@ def run_turn(client, config: AgentConfig, messages: list[dict], ctx, on_text,
             # session, and the saved file with it. Report it and leave history untouched
             # so the next prompt still works.
             if on_empty is not None:
-                on_empty(getattr(msg, "stop_reason", "") or "")
+                on_empty(msg)  # the whole message: the provider's account of the blank
             return sanitize_history(messages)
         messages.append({"role": "assistant", "content": blocks})
         if msg.stop_reason == "pause_turn":

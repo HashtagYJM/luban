@@ -124,8 +124,8 @@ def test_the_typed_prompt_is_kept_for_retry(monkeypatch, tmp_path):
     assert session.messages[-1]["role"] == "assistant"
     body = "".join(printed)
     assert "empty response" in body and "/retry" in body
-    # It must point at the request shape — the settings that actually cause this.
-    assert "context_editing" in body
+    # No settings hint: the one that pointed at context_editing was wrong for a month.
+    assert "context_editing" not in body and "audit.jsonl" in body
 
 
 def test_an_empty_response_mid_turn_keeps_the_tool_pair_intact(monkeypatch, tmp_path):
@@ -220,7 +220,7 @@ def test_the_provider_s_account_of_a_blank_turn_is_recorded_and_shown(monkeypatc
     """Three blank turns in one field session (2026-09-22), all `end_turn`, and nothing to
     tell a content filter from a refusal from a genuinely empty answer. The notice now
     prints what the provider said and appends it to audit.jsonl, where the user already
-    looks; and it stops recommending `context_editing` on a model where it does nothing."""
+    looks; and it no longer recommends `context_editing = false`, which was never the cause."""
     import json
     from luban import sessions
     monkeypatch.setattr(sessions, "SESSIONS_DIR", tmp_path)

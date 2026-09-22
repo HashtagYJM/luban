@@ -21,7 +21,7 @@ Every blank was the same: on Claude, right after a tool call, two output tokens 
 
 ### A blank answer now says what the provider said
 
-On a `gpt-*` model every outcome except hitting the output ceiling was reported as `end_turn`, so a content filter, a refusal, a failed request and a genuinely empty answer all produced the same notice, and nothing wrote the real outcome down. The notice now prints the provider's own account — status, reason, and what each output item was — and appends it to `audit.jsonl` as a `model:empty` row, so a run of blank turns can be diagnosed from the log. The hint to try `context_editing = false` is shown only on an Anthropic model, where it can do something.
+On a `gpt-*` model every outcome except hitting the output ceiling was reported as `end_turn`, so a content filter, a refusal, a failed request and a genuinely empty answer all produced the same notice, and nothing wrote the real outcome down. The notice now prints the provider's own account — status, reason, and what each output item was — and appends it to `audit.jsonl` as a `model:empty` row, so a run of blank turns can be diagnosed from the log. The old hint to try `context_editing = false` is gone: it pointed at the wrong thing for a month.
 
 ## v0.7.5 — a blank answer mid-turn no longer strands the session
 

@@ -334,13 +334,13 @@ def empty_turn_notice(session: Session, msg) -> None:
                    "target": session.model, "decision": stop_reason, "is_error": True,
                    **diag})
     said = ", ".join(f"{k}={v}" for k, v in diag.items() if v not in (None, [], ""))
-    hint = ("  If this keeps happening: it is usually the request shape, not the prompt. Try "
-            "context_editing = false first, then a lower max_tokens, then --no-stream.\n"
-            if client_mod.provider_for(session.model) == "anthropic" else "")
+    # No settings hint: the one this printed for a month pointed at context_editing, and
+    # the cause was luban's own request shape. The row is what a report needs.
     ui.print_text(
         f"\n[the model returned an empty response{why} — nothing was written and "
         f"{kept}]\n"
-        f"  provider said: {said or 'nothing'} — recorded in audit.jsonl\n" + hint
+        f"  provider said: {said or 'nothing'} — recorded in audit.jsonl; "
+        "if this repeats, that row is the report\n"
     )
 
 

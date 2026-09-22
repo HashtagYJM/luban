@@ -229,16 +229,48 @@ def with_cache_breakpoint(messages: list[dict], model: str = "",
         return messages, False  # nothing markable; leave it alone
     if not isinstance(blocks[-1], dict):
         return messages, False
-    blocks[-1]["cache_control"] = cache_control(model)
     # Only a USER message may carry it: appending to an assistant turn would read as the
     # model having said it. The one case that reaches here with an assistant last message
     # is a pause_turn re-send, where volatile stays in the system prompt for that call.
     placed = bool(volatile) and last.get("role") == "user"
-    if placed:
-        blocks.append({"type": "text", "text": volatile})
+    if placed and blocks[-1].get("type") == "tool_result":
+        # NEVER a text block after a tool result. Anthropic document it as the cause of
+        # a 2-3 token empty end_turn answer: the model learns that the user always
+        # speaks after a tool runs, and ends its turn to let them. Every blank seen in
+        # the field was exactly that — on Claude, `+2 out`, right after a tool call — for
+        # the seven weeks the index rode here as a text block. Inside the result it is
+        # tool output, which the model does not wait on. The breakpoint then moves one
+        # block back: the next call carries this result WITHOUT the index, so a mark on
+        # it would never match again and the conversation would be re-written per call.
+        blocks[-1] = _with_trailing_text(blocks[-1], volatile)
+        if len(blocks) > 1:
+            blocks[-2]["cache_control"] = cache_control(model)
+        elif len(out) > 1 and isinstance(out[-2].get("content"), list) and out[-2]["content"]:
+            prev = dict(out[-2])
+            prev_blocks = [dict(b) if isinstance(b, dict) else b for b in prev["content"]]
+            if isinstance(prev_blocks[-1], dict):
+                prev_blocks[-1]["cache_control"] = cache_control(model)
+            prev["content"] = prev_blocks
+            out[-2] = prev
+    else:
+        blocks[-1]["cache_control"] = cache_control(model)
+        if placed:
+            blocks.append({"type": "text", "text": volatile})
     last["content"] = blocks
     out[-1] = last
     return out, placed
+
+
+def _with_trailing_text(result: dict, text: str) -> dict:
+    """A copy of a tool_result block with `text` appended inside its content, whatever
+    shape the content has. The caller's block is never mutated: it is the transcript's."""
+    result = dict(result)
+    content = result.get("content")
+    if isinstance(content, list):
+        result["content"] = list(content) + [{"type": "text", "text": text}]
+    else:
+        result["content"] = f"{content or ''}\n\n{text}"
+    return result
 
 
 def _run_model_turn(client, config, messages, on_text, on_thinking, on_retry=None):

@@ -15,6 +15,10 @@ below. Only user-facing behaviour earns a line here.
 
 When a turn ended in an empty answer, an authentication lapse, or Ctrl-C, luban kept the work of that turn in memory — every tool call already made — but did not write it to disk. The saved file still ended where the previous turn did, so quitting after the failure, which is the natural thing to do when the gateway has dropped you, lost the whole turn, and `luban -r` reopened a session that knew nothing of it. The history is now saved the moment a turn is abandoned, so what the model did before the failure is in the file, and the resume continues from it.
 
+### The blank answers on Claude: cause found and removed
+
+Every blank was the same: on Claude, right after a tool call, two output tokens and `end_turn`. Anthropic document that shape and its cause — a text block placed after tool results teaches the model that the user always speaks once a tool has run, so it ends its turn to let them. luban had been doing exactly that on every mid-turn call since the memory index moved to the message tail in early August: the index rode behind the tool results as a text block. The index now rides inside the last tool result, where it is tool output the model does not wait on, and the cache breakpoint sits before it so nothing already cached moves. A blank on Claude should no longer happen; if one does, the notice and `audit.jsonl` now say what the provider returned.
+
 ### A blank answer now says what the provider said
 
 On a `gpt-*` model every outcome except hitting the output ceiling was reported as `end_turn`, so a content filter, a refusal, a failed request and a genuinely empty answer all produced the same notice, and nothing wrote the real outcome down. The notice now prints the provider's own account — status, reason, and what each output item was — and appends it to `audit.jsonl` as a `model:empty` row, so a run of blank turns can be diagnosed from the log. The hint to try `context_editing = false` is shown only on an Anthropic model, where it can do something.

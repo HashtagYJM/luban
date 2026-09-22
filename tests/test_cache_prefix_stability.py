@@ -139,15 +139,65 @@ def test_the_tail_never_leaks_into_the_saved_transcript():
     assert "THE INDEX" in str(out)
 
 
-def test_a_tool_result_still_comes_first_in_its_message():
-    """The API requires tool_result blocks at the START of a user message; volatile is
-    appended after them, never in front."""
-    msgs = [{"role": "user", "content": [
-        {"type": "tool_result", "tool_use_id": "t1", "content": "out"}]}]
-    out, _ = agent.with_cache_breakpoint(msgs, "m", "THE INDEX")
+# ---------------- never a text block after a tool result ----------------
+#
+# Anthropic document the cause of a 2-3 token empty `end_turn` answer: text blocks
+# added after tool results teach the model that the user always speaks after a tool
+# runs, so it ends its turn to let them. luban did exactly that on every mid-turn call —
+# the index rode the tail as a text block behind the tool results — from the day volatile
+# moved to the tail (2026-08-03) to the day the blanks were traced (2026-09-22). Every
+# field blank was on Claude, `+2 out`, `end_turn`, right after a tool call.
+
+
+def _tool_tail(*results):
+    return [{"role": "user", "content": "do it"},
+            {"role": "assistant", "content": [
+                {"type": "tool_use", "id": "t1", "name": "read_file", "input": {}}]},
+            {"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": f"t{i + 1}", "content": r}
+                for i, r in enumerate(results)]}]
+
+
+def test_no_text_block_ever_follows_a_tool_result():
+    out, placed = agent.with_cache_breakpoint(_tool_tail("out"), "m", "THE INDEX")
+    assert placed
     blocks = out[-1]["content"]
-    assert blocks[0]["type"] == "tool_result"
-    assert blocks[-1]["text"] == "THE INDEX"
+    assert all(b["type"] == "tool_result" for b in blocks)
+    assert "THE INDEX" in str(blocks[-1]["content"]), "the index rides inside the last result"
+    assert "out" in str(blocks[-1]["content"]), "the result itself is intact"
+
+
+def test_the_index_inside_a_result_stays_behind_the_breakpoint():
+    """Incremental caching needs each call's marked prefix to be a prefix of the next
+    call's request. The next call carries this result WITHOUT the index, so the mark
+    must sit before the block that carries it."""
+    out, _ = agent.with_cache_breakpoint(_tool_tail("a", "b"), "m", "THE INDEX")
+    blocks = out[-1]["content"]
+    assert "cache_control" in blocks[-2] and "cache_control" not in blocks[-1]
+    # A single result: the mark moves to the previous message's last block.
+    out, _ = agent.with_cache_breakpoint(_tool_tail("only"), "m", "THE INDEX")
+    assert "cache_control" not in out[-1]["content"][-1]
+    assert "cache_control" in out[-2]["content"][-1]
+
+
+def test_a_list_shaped_result_takes_the_index_the_same_way():
+    tail = _tool_tail([{"type": "text", "text": "out"}])
+    out, _ = agent.with_cache_breakpoint(tail, "m", "THE INDEX")
+    parts = out[-1]["content"][-1]["content"]
+    assert parts[0] == {"type": "text", "text": "out"} and parts[-1]["text"] == "THE INDEX"
+
+
+def test_changing_the_index_mid_turn_disturbs_nothing_cached(monkeypatch):
+    history = _tool_tail("out")
+    seen = _capture(monkeypatch)
+    agent._run_model_turn(None, _cfg("INDEX v1"), history, lambda t: None, None)
+    first = (seen["system"], _blocks_through_breakpoint(seen["messages"]))
+    client_mod._PROBES.clear()
+    seen = _capture(monkeypatch)
+    agent._run_model_turn(None, _cfg("INDEX v2"), history, lambda t: None, None)
+    second = (seen["system"], _blocks_through_breakpoint(seen["messages"]))
+    assert first == second and "INDEX v2" in str(seen["messages"])
+    assert history[-1]["content"][-1]["content"] == "out", "the transcript is untouched"
 
 
 # ---------------- cache entries that survive thinking time ----------------

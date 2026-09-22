@@ -1482,11 +1482,20 @@ def abandon_turn(session: Session):
     popping it was the whole job. A fold mid-turn advances the session to the live
     history, which then ends on a tool result — real work, already on disk, that the next
     prompt continues from. Only the tail has to be made sendable.
+
+    And written: the in-turn hook has been handing the turn's work to the session call by
+    call, but only a turn that finished was saved, so the file on disk still ended where
+    the previous turn did. Closing luban after a failed turn — the natural thing to do
+    after an authentication lapse — lost every tool call of that turn, and the resume
+    knew nothing of them.
     """
     if session.messages and _is_human_turn(session.messages[-1]):
-        return session.messages.pop()["content"]
-    session.messages = agent.sanitize_history(session.messages)
-    return None
+        prompt = session.messages.pop()["content"]
+    else:
+        prompt = None
+        session.messages = agent.sanitize_history(session.messages)
+    save_session(session)
+    return prompt
 
 
 def bound_turn(session: Session, client, cfg: config_mod.Config, project_root: Path):

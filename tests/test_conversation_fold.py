@@ -631,9 +631,11 @@ def test_the_window_is_bounded_between_tool_calls(monkeypatch, tmp_path):
     assert messages is s.messages, "the turn continues on the history the session holds"
 
 
-def test_abandoning_a_turn_after_a_fold_leaves_a_sendable_history():
+def test_abandoning_a_turn_after_a_fold_leaves_a_sendable_history(monkeypatch, tmp_path):
     """Before folding ran inside a turn the history could only end on the prompt, and
     popping it was the whole job. After a mid-turn fold it ends on real work."""
+    from luban import sessions
+    monkeypatch.setattr(sessions, "SESSIONS_DIR", tmp_path)
     s = cli.Session(model="m", max_tokens=100, auto=True, stream=False,
                     messages=[_u("summary"), _call("t1"), _result("t1"), _call("t2")])
     assert cli.abandon_turn(s) is None

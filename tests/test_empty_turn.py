@@ -107,9 +107,11 @@ def test_the_human_is_told_rather_than_shown_a_blank_line(tmp_path):
     assert seen == ["end_turn"]
 
 
-def test_the_typed_prompt_is_kept_for_retry(monkeypatch):
+def test_the_typed_prompt_is_kept_for_retry(monkeypatch, tmp_path):
     """Same contract as a turn the network killed: the prompt is not lost, and the
     history does not end on an unanswered user turn."""
+    from luban import sessions
+    monkeypatch.setattr(sessions, "SESSIONS_DIR", tmp_path)
     printed = []
     monkeypatch.setattr(cli.ui, "print_text", printed.append)
     session = cli.Session(model="m", max_tokens=10, auto=True, stream=False, messages=[
@@ -125,11 +127,13 @@ def test_the_typed_prompt_is_kept_for_retry(monkeypatch):
     assert "context_editing" in body
 
 
-def test_an_empty_response_mid_turn_keeps_the_tool_pair_intact(monkeypatch):
+def test_an_empty_response_mid_turn_keeps_the_tool_pair_intact(monkeypatch, tmp_path):
     """The empty answer can come AFTER tool calls. Then the last user message is a tool
     result, not the prompt — and popping it orphans the tool_use before it. The next typed
     line sat where the result had to be, and the API rejected that index on every send,
     /retry included; the saved file carried it into every resume (field, 2026-09-21)."""
+    from luban import sessions
+    monkeypatch.setattr(sessions, "SESSIONS_DIR", tmp_path)
     monkeypatch.setattr(cli.ui, "print_text", lambda t: None)
     session = cli.Session(model="m", max_tokens=10, auto=True, stream=False, messages=[
         {"role": "user", "content": "do the thing"},
@@ -173,3 +177,34 @@ def test_a_tool_use_orphaned_mid_history_is_repaired_on_load():
     fine = poisoned[:2] + [{"role": "user", "content": [
         {"type": "tool_result", "tool_use_id": "t1", "content": "x"}]}]
     assert history.sanitize_history(fine) == fine
+
+
+# --- and the work must be on disk ------------------------------------------
+
+
+def test_the_work_of_an_abandoned_turn_is_on_disk(monkeypatch, tmp_path):
+    """A turn that ends in an empty answer, an exception, or Ctrl-C has usually done real
+    work — tool calls the in-turn hook already handed to the session. That history was
+    left in memory only: the file on disk still ended where the previous turn did, so
+    closing luban after the failure (which is when people close it) lost the whole turn,
+    and the resume knew nothing of it (field, 2026-09-22)."""
+    from luban import sessions
+    monkeypatch.setattr(sessions, "SESSIONS_DIR", tmp_path)
+    monkeypatch.setattr(cli.ui, "print_text", lambda t: None)
+    session = cli.Session(model="m", max_tokens=10, auto=True, stream=False, messages=[
+        {"role": "user", "content": "do the thing"},
+        {"role": "assistant", "content": [
+            {"type": "tool_use", "id": "t1", "name": "run_command", "input": {"command": "x"}}]},
+        {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "t1", "content": "[exit code: 1]"}]},
+    ], session_id="s1")
+    cli.empty_turn_notice(session, "end_turn")
+    saved = sessions.load("s1", tmp_path)["messages"]
+    assert any(b.get("id") == "t1" for m in saved for b in
+               (m["content"] if isinstance(m["content"], list) else []))
+    # The same holds when the turn died by exception or interrupt: both go through
+    # abandon_turn, and a pop of the typed prompt must be written too.
+    session.messages.append({"role": "user", "content": "typed, then the network died"})
+    assert cli.abandon_turn(session) == "typed, then the network died"
+    assert sessions.load("s1", tmp_path)["messages"][-1]["role"] == "user"
+    assert "typed" not in str(sessions.load("s1", tmp_path)["messages"][-1])

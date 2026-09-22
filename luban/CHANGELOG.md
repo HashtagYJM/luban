@@ -11,7 +11,9 @@ below. Only user-facing behaviour earns a line here.
 
 ## Unreleased
 
-Nothing yet since v0.7.5.
+### A turn that fails is now saved, not just survived
+
+When a turn ended in an empty answer, an authentication lapse, or Ctrl-C, luban kept the work of that turn in memory — every tool call already made — but did not write it to disk. The saved file still ended where the previous turn did, so quitting after the failure, which is the natural thing to do when the gateway has dropped you, lost the whole turn, and `luban -r` reopened a session that knew nothing of it. The history is now saved the moment a turn is abandoned, so what the model did before the failure is in the file, and the resume continues from it.
 
 ## v0.7.5 — a blank answer mid-turn no longer strands the session
 

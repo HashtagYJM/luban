@@ -9,6 +9,10 @@ see — it matches `## v<number>`. A release RENAMES that heading to its derived
 it never writes a version heading ahead of the release, and never edits the heading
 below. Only user-facing behaviour earns a line here.
 
+## Unreleased
+
+Nothing yet since v0.7.6.
+
 ## v0.7.6 — the blank answers on Claude, found and removed
 
 ### A turn that fails is now saved, not just survived

@@ -7,6 +7,7 @@ loop against an Anthropic-compatible client you provide.
 luban has **no third-party dependencies** — pure standard library — so it
 installs from a single self-contained file, no network required.
 
+- [Quickstart](#quickstart)
 - [Install](#install)
 - [Configure your client](#configure-your-client-once)
 - [Run](#run) · [in-session commands](#in-session-commands)
@@ -19,6 +20,28 @@ installs from a single self-contained file, no network required.
 - [Sync across devices](#sync-across-devices)
 - [Troubleshooting](#troubleshooting)
 
+## Quickstart
+
+Five minutes, offline, ending in one harmless edit you approve.
+
+1. Install the wheel from the [Releases page](https://github.com/HashtagYJM/luban/releases):
+   `pip install --no-index luban-<version>-py3-none-any.whl`
+2. Run `luban` once. It creates `~/.luban/` and stops, saying the client adapter is
+   missing.
+3. Run `luban --doctor`: its `FAIL` line names the example file inside the installed
+   package. Copy it to `~/.luban/client_local.py` and make `build_client()` return your
+   company client.
+4. Run `luban --doctor` again. Every line should say `ok`; each `FAIL` says what to
+   change.
+   `luban --doctor --probe` then sends one short request to prove the connection.
+5. In a scratch folder, run `luban` and type:
+   `create hello.txt containing one line: hello from luban`
+   luban shows the file as a diff and asks. Answer `y`, and the file is there.
+6. Type `/help` for the commands. Ctrl-C stops a turn, `/exit` leaves, and
+   `luban -c` in the same folder picks the thread back up.
+
+Everything below is reference.
+
 ## Install
 
 Requires Python 3.11+. Pick whichever fits your environment.
@@ -30,7 +53,7 @@ Download `luban-<version>-py3-none-any.whl` from the
 file directly — no internet, no build, no dependencies to resolve:
 
 ```bash
-pip install --no-index luban-0.5.22-py3-none-any.whl
+pip install --no-index luban-<version>-py3-none-any.whl
 ```
 
 `--no-index` guarantees pip never contacts a package index. This puts a real
@@ -89,7 +112,8 @@ def build_client():
 ```
 
 This file is yours and is never committed. (You can also point the
-`LUBAN_CLIENT_LOCAL` environment variable at a file instead.)
+`LUBAN_CLIENT_LOCAL` environment variable at a file instead.) `luban --doctor` checks
+that it loads and returns a usable client, without sending anything.
 
 ## Run
 
@@ -101,27 +125,34 @@ luban --auto                # skip confirmations
 luban --no-stream           # if responses come back empty (some reasoning models)
 luban --model <id>          # pick a model
 luban --version             # print the installed version and exit
+luban --doctor              # check the setup, offline; add --probe to test the connection
 ```
+
+A prompt can span lines: paste it, or type `"""` on its own line, write, and close
+with `"""` again. The prompt reads `you (auto)>` while confirmations are off.
 
 ### In-session commands
 
 | Command | What it does |
 |---|---|
+| `/help` | List these commands |
 | `/model [id]` | Show available models, or switch to one |
 | `/thinking [on\|off]` | Extended thinking (on by default) |
 | `/effort [low\|medium\|high\|xhigh\|max]` | How hard the model reasons |
 | `/verbose [on\|off]` | Show or hide the reasoning text |
+| `/auto [on\|off]` | Stop asking before file writes and shell commands, or start again |
 | `/config` | Every setting in effect, plus your always-on context budget |
-| `/context` | What's loaded into the prompt every turn, its token cost, and whether it caches |
-| `/auto [on\|off]` | Stop asking before file writes and shell commands, or start again (the prompt shows `you (auto)>` while it is on) |
-| `/skills`, `/skill <name>` | List skills; load one into context |
+| `/usage` | Tokens used this session, per model |
+| `/context` | What is loaded into the prompt every turn, and its token cost |
+| `/skills` | List skills |
+| `/skill <name>` | Load a skill into context |
 | `/compact` | Summarize a long conversation and keep going |
 | `/reflect` | Tidy long-term memory (dedupe, prune, re-index) |
 | `/sessions [all]` | List saved sessions — this folder, or every folder |
 | `/resume [n\|id\|name]` | Reopen the last session here, or a specific one |
 | `/new [title]` | Save the current thread and start another |
 | `/title [text]` | Show or rename the current session |
-| `/retry` | Resend a prompt whose turn the network killed |
+| `/retry` | Resend a prompt whose turn failed or was interrupted |
 | `/clear` | Start fresh (the old session stays on disk) |
 | `/exit` | Leave (the session is already saved) |
 
@@ -279,9 +310,13 @@ the project, so a cloned repo can't grant itself permissions.
 Want it stricter? Permission rules apply to `~/.luban` paths too, e.g.
 `deny = ["write_file:~/.luban/*"]` stops the agent touching its own files at all.
 
-**Audit log.** Every tool call, including denials, is appended to
-`~/.luban/audit.jsonl` — timestamp, project, tool, target, decision, error flag. A
-compliance-friendly record of everything the agent did.
+**Audit log.** Every tool call, including denials and calls to tools that were not
+offered, is appended to `~/.luban/audit.jsonl`: timestamp, project, session, tool,
+target, decision, error flag, and an `outcome` (`ok`, `declined`, `denied`,
+`nonzero_exit`, `timed_out`, …) with the exit code for commands. It is best-effort
+diagnostics, not a tamper-proof record: if the file cannot be written, luban says so
+once and keeps working. It covers the file tools and what `run_command` was asked to
+run, not what that command then did.
 
 ## Memory
 
@@ -429,9 +464,11 @@ Two caveats:
 
 ## Troubleshooting
 
-- **Blank responses from a reasoning model.** Its internal thinking streams live and
-  dimmed, ahead of the answer, so a reasoning model no longer looks blank. Prefer it
-  all at once? `--no-stream` returns the full response in one go.
+- **Nothing appears for a while, then the answer.** luban thinks silently by default;
+  `/verbose on` streams the reasoning as dim text ahead of the answer. `--no-stream`
+  returns the full response in one go.
+- **Anything else at startup.** `luban --doctor` checks Python, the luban home, the
+  config file and your client adapter one step at a time and says what to fix.
 - **A dropped connection or "overloaded" mid-response.** Corporate gateways cut long
   streaming responses and backends get saturated. luban retries automatically
   (backing off harder on overload, honoring the server's `retry-after`); if retries

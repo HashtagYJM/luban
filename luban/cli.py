@@ -11,6 +11,7 @@ from datetime import datetime
 from pathlib import Path
 
 from luban import __version__, agent, config as config_mod, paths, tools, ui
+from luban import doctor as doctor_mod
 from luban import audit as audit_mod
 from luban import changelog
 from luban import client as client_mod
@@ -160,6 +161,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         "-r <number|id|name> goes straight there.")
     p.add_argument("--all", action="store_true",
                    help="With --resume: list sessions from all folders.")
+    p.add_argument("--doctor", action="store_true",
+                   help="Check Python, the luban home, config and the client adapter, "
+                        "then exit. Offline unless --probe is given.")
+    p.add_argument("--probe", action="store_true",
+                   help="With --doctor: also send one short request through the adapter.")
     p.set_defaults(stream=True)
     return p.parse_args(argv)
 
@@ -1872,12 +1878,55 @@ def pick_session(project: str, all_projects: bool, ref: str = "",
     return resolve_or_report(raw, None if all_projects else project)
 
 
+# The ONE list of in-session commands: /help prints it, an unknown command points at it,
+# and a test holds the README's table to it, so the three cannot drift apart.
+COMMANDS = [
+    ("/help", "List these commands"),
+    ("/model [id]", "Show available models, or switch to one"),
+    ("/thinking [on|off]", "Extended thinking (on by default)"),
+    ("/effort [low|medium|high|xhigh|max]", "How hard the model reasons"),
+    ("/verbose [on|off]", "Show or hide the reasoning text"),
+    ("/auto [on|off]", "Stop asking before file writes and shell commands, or start again"),
+    ("/config", "Every setting in effect, plus your always-on context budget"),
+    ("/usage", "Tokens used this session, per model"),
+    ("/context", "What is loaded into the prompt every turn, and its token cost"),
+    ("/skills", "List skills"),
+    ("/skill <name>", "Load a skill into context"),
+    ("/compact", "Summarize a long conversation and keep going"),
+    ("/reflect", "Tidy long-term memory (dedupe, prune, re-index)"),
+    ("/sessions [all]", "List saved sessions — this folder, or every folder"),
+    ("/resume [n|id|name]", "Reopen the last session here, or a specific one"),
+    ("/new [title]", "Save the current thread and start another"),
+    ("/title [text]", "Show or rename the current session"),
+    ("/retry", "Resend a prompt whose turn failed or was interrupted"),
+    ("/clear", "Start fresh (the old session stays on disk)"),
+    ("/exit", "Leave (the session is already saved)"),
+]
+_COMMAND_NAMES = {usage.split()[0] for usage, _ in COMMANDS}
+
+
+def help_text() -> str:
+    width = max(len(u) for u, _ in COMMANDS)
+    rows = "\n".join(f"  {u.ljust(width)}  {d}" for u, d in COMMANDS)
+    return (f"{rows}\n\n  Type {ui.BLOCK} on its own line to start a multi-line prompt, and "
+            f"again to send it. Ctrl-C stops a turn; the session is kept.\n")
+
+
 def handle_command(line: str, session: Session, client=None, ctx=None, cfg=None) -> str:
     if not line.startswith("/"):
         return "not_command"
     parts = line.split(maxsplit=1)
     cmd = parts[0]
     arg = parts[1] if len(parts) > 1 else ""
+    if "/" in cmd[1:]:
+        return "not_command"  # a path ("/usr/bin is broken…"), not a command
+    if cmd not in _COMMAND_NAMES:
+        # Used to be swallowed without a word, so a typo read as a command that did nothing.
+        ui.print_text(f"unknown command: {cmd} — /help lists them\n")
+        return "handled"
+    if cmd == "/help":
+        ui.print_text(help_text())
+        return "handled"
     if cmd == "/exit":
         return "exit"
     if cmd == "/auto":
@@ -2138,6 +2187,8 @@ def main(argv: list[str] | None = None) -> None:
     if ns.set_home is not None:
         set_home(ns.set_home)
         return
+    if ns.doctor:
+        raise SystemExit(doctor_mod.run(probe=ns.probe, model=ns.model))
     if ns.sync_config:
         added = config_mod.sync_config()
         if added:
@@ -2183,7 +2234,14 @@ def main(argv: list[str] | None = None) -> None:
         memory_mod.ensure_scaffold()  # guarantees enhancements.md exists to reconcile
         if upgraded:
             session.pending_context.append(reconcile_directive(prev, section))
-    client = client_mod.get_client()
+    try:
+        client = client_mod.get_client()
+    except Exception as exc:
+        # A traceback here was the first thing a new user saw. The adapter is the user's
+        # own file, so say which step failed and where the full diagnosis is.
+        ui.print_text(f"could not start: the client adapter failed — {type(exc).__name__}: "
+                      f"{exc}\nRun `luban --doctor` for a step-by-step check.\n")
+        raise SystemExit(1)
     ctx = build_tool_context(session, project_root, cfg, client=client)
     if ns.cont:
         data = sessions_mod.latest(str(project_root))
@@ -2232,10 +2290,11 @@ def main(argv: list[str] | None = None) -> None:
         ui.print_text(warning + "\n")
     if session.auto:
         ui.print_text(auto_line(session) + "\n")  # --auto: say so before the first turn
+    ui.print_text("/help lists commands · Ctrl-C stops a turn\n")
     fire_hooks(session, cfg, ctx, "session_start")
     while True:
         try:
-            line = input(prompt_line(session)).strip()
+            line = ui.read_prompt(prompt_line(session), input_fn=input).strip()
         except (EOFError, KeyboardInterrupt):
             break
         if not line:
@@ -2277,8 +2336,12 @@ def main(argv: list[str] | None = None) -> None:
                     session, variant, msg, answered),
             )
         except KeyboardInterrupt:
-            abandon_turn(session)
-            ui.print_text("\n[interrupted]\n")
+            # A prompt interrupted before any answer was dropped with nothing said; it is
+            # now kept for /retry like a turn the network killed.
+            session.last_failed = abandon_turn(session)
+            ui.print_text("\n[interrupted — the work so far is saved"
+                          + ("; /retry resends your prompt" if session.last_failed else "")
+                          + "]\n")
         except Exception as exc:  # a bad turn must not kill the session (E14)
             # Keep the prompt (for /retry) but drop it from history, which must never
             # end on an unanswered user turn.

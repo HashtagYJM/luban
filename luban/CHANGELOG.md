@@ -19,6 +19,18 @@ below. Only user-facing behaviour earns a line here.
 
 Three ways around the `~/.luban/*.py` and audit-log guards are closed: a project folder that contains `~/.luban` (or is it), a relative spelling of the path, and a symlink inside the project pointing at the protected file. `grep` and `glob` now judge each file by where it really is, skip links that leave the project unless `allow_out_of_tree_file_edits` is on, and say how many they skipped. And a permission rule such as `deny = ["write_file:~/.luban/*"]` now matches the absolute and relative spellings of the same file, not only the exact text the model typed.
 
+### `luban --doctor` checks the setup
+
+`luban --doctor` checks Python, the luban home, `config.toml` and your `client_local.py` one step at a time, and each failure says what to change, including where the example adapter file is. It sends nothing; `luban --doctor --probe` adds one short request to prove the connection. A missing or broken adapter at normal startup is now one sentence pointing at `--doctor`, not a traceback.
+
+### `/help`, and a typo is no longer silent
+
+`/help` lists every command. An unknown command used to be swallowed without a word; it now says so and points at `/help`. A prompt that starts with a path, such as `/usr/bin/python fails`, goes to the model instead of being taken for a command.
+
+### A pasted prompt is one prompt
+
+Pasting several lines sent each line as its own turn. Lines that arrive together are now one prompt, and a line of three double quotes opens a block you can type by hand, closed by another. Ctrl-C before an answer keeps your prompt for `/retry` instead of dropping it.
+
 ### A write survives the process dying mid-turn
 
 A turn's work was saved when the turn ended. If the terminal closed or the machine went down after a write or a command had run but before the turn finished, the file on disk had changed and the session knew nothing of it. The session is now saved after every tool round that wrote, edited or ran something, so a resume sees what was done. Rounds that only read are not saved this way, which keeps the writes to a synced home to one per change.

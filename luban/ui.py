@@ -77,6 +77,45 @@ def ask_confirm(prompt: str, input_fn=input) -> str:
     return "no"
 
 
+def input_pending() -> bool:
+    """Whether more typed or pasted input is already waiting. A paste arrives as many
+    lines at once; without this each line was submitted as its own turn."""
+    try:
+        if sys.platform == "win32":
+            import msvcrt
+            return bool(msvcrt.kbhit())
+        import select
+        return bool(select.select([sys.stdin], [], [], 0.03)[0])
+    except Exception:
+        return False
+
+
+BLOCK = '"""'
+
+
+def read_prompt(prompt: str, input_fn=input, pending=input_pending) -> str:
+    """One prompt, however many lines it has.
+
+    Two ways in. A paste: lines already waiting when the first is read belong to it. And
+    deliberate composition: a line that is exactly three double quotes opens a block that
+    the same line closes — the only way to type a multi-line prompt by hand."""
+    first = input_fn(prompt)
+    if first.strip() == BLOCK:
+        lines = []
+        while True:
+            line = input_fn("... ")
+            if line.strip() == BLOCK:
+                return "\n".join(lines)
+            lines.append(line)
+    lines = [first]
+    while pending():
+        try:
+            lines.append(input_fn(""))
+        except EOFError:
+            break
+    return "\n".join(lines)
+
+
 def print_text(text: str) -> None:
     _emit(text)
 

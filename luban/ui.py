@@ -79,8 +79,12 @@ def ask_confirm(prompt: str, input_fn=input) -> str:
 
 def input_pending() -> bool:
     """Whether more typed or pasted input is already waiting. A paste arrives as many
-    lines at once; without this each line was submitted as its own turn."""
+    lines at once; without this each line was submitted as its own turn. A terminal
+    only: piped input (`luban < script`) is one line per entry by construction, and
+    joining it would swallow a confirmation answer into the prompt before it."""
     try:
+        if not sys.stdin.isatty():
+            return False
         if sys.platform == "win32":
             import msvcrt
             return bool(msvcrt.kbhit())

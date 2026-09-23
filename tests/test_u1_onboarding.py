@@ -158,3 +158,11 @@ def test_ctrl_c_before_an_answer_keeps_the_prompt_for_retry(tmp_path, monkeypatc
     assert "/retry resends your prompt" in out
     assert sent[1][-1] == {"role": "user", "content": "do the thing"}
     assert sum(m["content"] == "do the thing" for m in sent[1]) == 1
+
+
+def test_piped_input_is_never_joined(monkeypatch):
+    class Pipe:
+        def isatty(self):
+            return False
+    monkeypatch.setattr(ui.sys, "stdin", Pipe())
+    assert ui.input_pending() is False

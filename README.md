@@ -113,7 +113,7 @@ luban --version             # print the installed version and exit
 | `/verbose [on\|off]` | Show or hide the reasoning text |
 | `/config` | Every setting in effect, plus your always-on context budget |
 | `/context` | What's loaded into the prompt every turn, its token cost, and whether it caches |
-| `/auto` | Stop asking before file writes and shell commands |
+| `/auto [on\|off]` | Stop asking before file writes and shell commands, or start again (the prompt shows `you (auto)>` while it is on) |
 | `/skills`, `/skill <name>` | List skills; load one into context |
 | `/compact` | Summarize a long conversation and keep going |
 | `/reflect` | Tidy long-term memory (dedupe, prune, re-index) |
@@ -259,7 +259,9 @@ deny  = ["run_command:del *", "write_file:*.env"]
 ```
 
 A rule is `"<tool>"` (every call) or `"<tool>:<pattern>"` (a glob against the command
-for `run_command`, the path for file tools). Precedence is **deny > allow > ask**,
+for `run_command`, the path for file tools). A file rule is matched against every spelling
+of the same file — as typed, absolute, project-relative, and the `~/.luban/…` alias — so
+`write_file:~/.luban/*` holds however the path is written. Precedence is **deny > allow > ask**,
 and **deny holds even under `--auto`**. Allowed actions still show their diff or
 command — they just skip the prompt. Rules live only in your home config, never in
 the project, so a cloned repo can't grant itself permissions.
@@ -270,7 +272,8 @@ the project, so a cloned repo can't grant itself permissions.
 |---|---|---|
 | File tools outside the project | Off | `allow_out_of_tree_file_edits = true` opts in — then out-of-project paths use the same show-diff-and-confirm flow as `run_command` |
 | `~/.luban` (memory, skills, config) | Reachable | So luban maintains its own files with visible diffs instead of blind shell one-liners |
-| `~/.luban/*.py` (`client_local.py`, `tools_local.py`) | Off-limits | Never read or written by file tools — one holds credentials, the other runs at startup (matched case-insensitively) |
+| `~/.luban/*.py` (`client_local.py`, `tools_local.py`) | Off-limits | Never read, written, listed by `glob`, or searched by `grep` — one holds credentials, the other runs at startup. Matched case-insensitively on the real file, so a symlink or a project folder that contains `~/.luban` does not get around it |
+| Symlinks out of the project | Skipped | `grep` and `glob` follow a link only to a file inside the project (or `~/.luban`); links elsewhere are skipped and counted in the result, until you opt in above |
 | `~/.luban/audit.jsonl` | Read-only | Can be read but never written through file tools, so the trail can't be edited away |
 
 Want it stricter? Permission rules apply to `~/.luban` paths too, e.g.

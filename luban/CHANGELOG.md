@@ -11,7 +11,17 @@ below. Only user-facing behaviour earns a line here.
 
 ## Unreleased
 
-Nothing yet since v0.7.7.
+### `/auto off` turns confirmation back on
+
+`/auto off` used to turn auto mode ON: the argument was ignored, so the one command you would type to get the prompts back did the opposite. `/auto on` and `/auto off` now do what they say, bare `/auto` still turns it on, anything else prints the usage and changes nothing. The prompt reads `you (auto)>` while it is on, answering `a`ll to a confirmation says how to undo it, and `--auto` announces itself at startup. Deny rules apply in both modes, as before.
+
+### The file guards hold however a file is reached
+
+Three ways around the `~/.luban/*.py` and audit-log guards are closed: a project folder that contains `~/.luban` (or is it), a relative spelling of the path, and a symlink inside the project pointing at the protected file. `grep` and `glob` now judge each file by where it really is, skip links that leave the project unless `allow_out_of_tree_file_edits` is on, and say how many they skipped. And a permission rule such as `deny = ["write_file:~/.luban/*"]` now matches the absolute and relative spellings of the same file, not only the exact text the model typed.
+
+### Two archives in one second are two files
+
+A large tool result stubbed and a fold in the same second wrote the same archive file twice, so the stub's "full result is at…" pointed at a file holding the stub. Each archive under `sessions/archive/` now gets its own name. And if the archive cannot be written at all, nothing is stubbed or folded and luban says so, rather than reporting a file that does not exist.
 
 ## v0.7.7 — a blank investigates itself, and the fold keeps its promise
 

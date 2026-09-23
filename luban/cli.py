@@ -180,6 +180,20 @@ def _final_text(messages: list[dict]) -> str:
     return "(sub-agent produced no text)"
 
 
+def auto_line(session: Session) -> str:
+    if session.auto:
+        return ("auto: on — file writes and commands run without asking; deny rules "
+                "still apply. /auto off restores the prompts.")
+    return "auto: off — writes and commands ask first, unless an allow rule covers them."
+
+
+def prompt_line(session: Session) -> str:
+    # The mode is in the prompt because it is the one thing that decides whether the
+    # next tool call will stop and ask; a state that is only visible in /config is one
+    # the user discovers from an unattended write.
+    return "\nyou (auto)> " if session.auto else "\nyou> "
+
+
 def build_tool_context(
     session: Session, project_root: Path, cfg: config_mod.Config | None = None,
     client=None,
@@ -190,6 +204,7 @@ def build_tool_context(
         decision = ui.ask_confirm(prompt)
         if decision == "all":
             session.auto = True
+            ui.print_text(auto_line(session) + "\n")
             return True
         return decision == "yes"
 
@@ -197,9 +212,14 @@ def build_tool_context(
     audit_cb = None
     if cfg is not None:
         def decide(tool_name: str, tool_input: dict) -> permissions_mod.Decision:
+            # A rule is matched against every spelling of the same file — raw, absolute,
+            # project-relative, ~/.luban alias — so `deny = ["write_file:~/.luban/*"]`
+            # holds when the model spells the path out in full.
             return permissions_mod.evaluate(
                 tool_name, tool_input, cfg.allow, cfg.deny,
                 read_only=tool_name in tools.READ_ONLY_TOOLS,
+                targets=tools.equivalent_targets(
+                    tool_name, tool_input, project_root, cfg.allow_out_of_tree_file_edits),
             )
 
         def audit_cb(entry: dict) -> None:
@@ -1458,9 +1478,22 @@ def fold_history(session: Session, client, cfg: config_mod.Config,
             f"nothing on disk is lost.\n")
         return changed
 
+    def archive_or_stop() -> str:
+        """The verbatim history in its own file, or "" — and then nothing is rewritten.
+        A stub or a summary that names an archive which was never written is the data
+        loss E51 was meant to end, arriving with a success message."""
+        try:
+            return archive_session(session)
+        except OSError as exc:
+            ui.print_text(f"  could not write the transcript archive ({exc}) — nothing "
+                          f"dropped or folded; conversation unchanged.\n")
+            return ""
+
     # 1. Free, and the only lever that reaches an oversized result inside the working set.
     if _has_oversized_result(session.messages[:-2], big):
-        archived = archive_session(session)  # the verbatim history, in its own file
+        archived = archive_or_stop()
+        if not archived:
+            return changed
         freed_chars = shrink_oversized_results(session.messages, big, archived)
     else:
         archived, freed_chars = "", 0
@@ -1484,7 +1517,9 @@ def fold_history(session: Session, client, cfg: config_mod.Config,
         # the bulk sitting in the recent span is the diagnosis, not a non-event.
         return settle(f"nothing more to fold — the older span is only ~{freed:,} tokens; "
                       f"the bulk is in the recent turns a fold has to keep.")
-    archived = archive_session(session)  # the verbatim history, in its own file
+    archived = archive_or_stop()
+    if not archived:
+        return changed
     try:
         msg = client_mod.create_turn(
             client, model=session.model, max_tokens=session.max_tokens,
@@ -1786,7 +1821,14 @@ def handle_command(line: str, session: Session, client=None, ctx=None, cfg=None)
     if cmd == "/exit":
         return "exit"
     if cmd == "/auto":
-        session.auto = True
+        # Bare /auto turns it on (the original command). The argument used to be ignored,
+        # so "/auto off" silently turned it ON — the one control the user reaches for to
+        # get prompting back did the opposite.
+        if arg in ("", "on", "off"):
+            session.auto = arg != "off"
+            ui.print_text(auto_line(session) + "\n")
+        else:
+            ui.print_text("usage: /auto [on|off]\n")
         return "handled"
     if cmd == "/thinking":
         if arg in ("on", "off"):
@@ -2128,10 +2170,12 @@ def main(argv: list[str] | None = None) -> None:
     # (swallowed by a [table] header) looks exactly like luban disobeying you.
     for warning in config_mod.config_warnings():
         ui.print_text(warning + "\n")
+    if session.auto:
+        ui.print_text(auto_line(session) + "\n")  # --auto: say so before the first turn
     fire_hooks(session, cfg, ctx, "session_start")
     while True:
         try:
-            line = input("\nyou> ").strip()
+            line = input(prompt_line(session)).strip()
         except (EOFError, KeyboardInterrupt):
             break
         if not line:

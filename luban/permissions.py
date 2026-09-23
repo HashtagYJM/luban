@@ -60,12 +60,20 @@ def evaluate(
     allow: list[str],
     deny: list[str],
     read_only: bool,
+    targets: list[str] | None = None,
 ) -> Decision:
-    target = target_of(tool_name, tool_input)
+    """`targets`, when given, is every equivalent spelling of the call's target (raw,
+    resolved absolute, project-relative, ~/.luban alias — see tools.equivalent_targets).
+    A rule matches if it matches ANY of them, so a deny rule written against the alias
+    still blocks the absolute spelling of the same file, and an allow rule written
+    against a relative pattern still allows the absolute spelling. `targets=None` keeps
+    today's behavior exactly: match only the raw string from tool_input.
+    """
+    candidates = targets if targets is not None else [target_of(tool_name, tool_input)]
     for rule in deny:
-        if _matches(rule, tool_name, target):
+        if any(_matches(rule, tool_name, t) for t in candidates):
             return Decision("deny", f"blocked by deny rule: {rule}")
     for rule in allow:
-        if _matches(rule, tool_name, target):
+        if any(_matches(rule, tool_name, t) for t in candidates):
             return Decision("allow", f"allowed by rule: {rule}")
     return Decision("allow" if read_only else "ask")

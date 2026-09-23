@@ -89,6 +89,10 @@ def resolve_tool_path(
     4. Absolute anywhere else (out of tree) → refused by default; permitted only
        when allow_out_of_tree is set (config), in which case the caller's normal
        diff-and-confirm flow applies — the same safety `run_command` already has.
+
+    The Tier 3 guards are checked by RESOLVED location, not by which tier's return
+    fires: a project root that is the home, or an ancestor of it, still resolves the
+    target under Tier 2, so the guards run first and apply regardless.
     """
     home = LUBAN_HOME.resolve()
     root_resolved = Path(root).resolve()
@@ -104,16 +108,41 @@ def resolve_tool_path(
         expanded = home / rest if rest else home
     else:
         expanded = Path(path).expanduser()
-    if not expanded.is_absolute():
-        return resolve_in_root(root, path)
-    target = expanded.resolve()
-    # Tier 2: absolute path inside the project root is fine (no ~/.luban guards).
+    if expanded.is_absolute():
+        target = expanded.resolve()
+    else:
+        # Relative paths used to return straight from resolve_in_root, before the
+        # home guards below ever ran — so a relative spelling of a home .py file
+        # (reachable whenever the project root contains the home) skipped them
+        # entirely. Resolve to the same `target` and fall through the same checks;
+        # resolve_in_root still raises if this escapes the project root.
+        target = resolve_in_root(root, path)
+    under_home = target == home or home in target.parents
+    # The home guards key off whether the RESOLVED target is under LUBAN_HOME, not
+    # off which tier resolves it. A project root that IS the home, or a parent of
+    # it, would otherwise let Tier 2's "inside the project root" return skip these
+    # checks entirely — the bug this block closes. Applied before Tier 2 so a
+    # project-root-contains-home layout gets exactly the same guards as the plain
+    # ~/.luban tier below; ordinary project .py files (not under home) are untouched.
+    if under_home:
+        # Windows strips trailing dots/spaces from the final component at open time,
+        # so "client_local.py " and "tools_local.py." reach the real .py file while
+        # pathlib keeps the tail lexically. Normalize before classifying. Case-folded:
+        # NTFS/macOS resolve TOOLS_LOCAL.PY to tools_local.py. Only ".py" is blocked
+        # because nothing adds ~/.luban to sys.path.
+        stem_name = target.name.rstrip(" .").lower()
+        if stem_name.endswith(".py"):
+            raise ValueError(f"Python files under ~/.luban are off-limits to file tools: {path}")
+        if writing and stem_name == "audit.jsonl":
+            raise ValueError(f"The audit log is not writable via file tools: {path}")
+    # Tier 2: absolute path inside the project root is fine (guards above still apply
+    # if it is also under the home).
     if target == root_resolved or root_resolved in target.parents:
         return target
-    # Tier 4 (checked before the ~/.luban guards so a sibling project's data.py
-    # stays editable): out-of-tree paths are gated by config, then fall through to
-    # the caller's confirm flow. The .py/audit guards below are ~/.luban-only.
-    if not (target == home or home in target.parents):
+    # Tier 4 (checked before Tier 3 so a sibling project's data.py stays editable):
+    # out-of-tree paths are gated by config, then fall through to the caller's
+    # confirm flow.
+    if not under_home:
         if allow_out_of_tree:
             return target
         # Say WHERE the alias actually points. On a relocated home the model's guess
@@ -129,17 +158,54 @@ def resolve_tool_path(
             "— it maps to the path above. Do NOT expand '~' yourself, and do not reach "
             "it through run_command: a shell '~' resolves to the OS home, not here."
         )
-    # Windows strips trailing dots/spaces from the final component at open time,
-    # so "client_local.py " and "tools_local.py." reach the real .py file while
-    # pathlib keeps the tail lexically. Normalize before classifying. Case-folded:
-    # NTFS/macOS resolve TOOLS_LOCAL.PY to tools_local.py. Only ".py" is blocked
-    # because nothing adds ~/.luban to sys.path.
-    stem_name = target.name.rstrip(" .").lower()
-    if stem_name.endswith(".py"):
-        raise ValueError(f"Python files under ~/.luban are off-limits to file tools: {path}")
-    if writing and stem_name == "audit.jsonl":
-        raise ValueError(f"The audit log is not writable via file tools: {path}")
+    # Tier 3: absolute path under ~/.luban, guards already checked above.
     return target
+
+
+# Tools whose permission target (see permissions._TARGET_KEY) is a filesystem path
+# resolved the same way the tool itself resolves it. glob's target is a pattern, not
+# a path, and run_command's is a shell command — neither goes through resolve_tool_path.
+_PATH_TARGET_TOOLS = {"write_file", "edit_file", "read_file", "list_dir", "grep"}
+
+
+def equivalent_targets(
+    tool_name: str, tool_input: dict, root: Path, allow_out_of_tree: bool = False
+) -> list[str]:
+    """Every distinct spelling of a file-tool call's target, for permission matching.
+
+    permissions.evaluate matches a rule's pattern against a single string. A rule
+    written against one spelling of a path — the documented `~/.luban/*` alias, a
+    project-relative pattern — must still match a call spelled a different but
+    equivalent way (the absolute path to that same file), or a deny rule is a false
+    sense of safety and an allow rule is a nuisance the model routes around by
+    accident. Returns [raw] for run_command, glob, and any non-path tool.
+
+    Never raises: a path the tool itself would refuse just yields [raw] — the
+    refusal happens in the tool, this helper only widens what a rule can match.
+    """
+    raw = permissions_mod.target_of(tool_name, tool_input)
+    if tool_name not in _PATH_TARGET_TOOLS or not raw:
+        return [raw]
+    try:
+        target = resolve_tool_path(root, raw, allow_out_of_tree=allow_out_of_tree)
+    except Exception:
+        return [raw]
+    spellings = [raw]
+
+    def add(spelling: str) -> None:
+        if spelling not in spellings:
+            spellings.append(spelling)
+
+    add(target.as_posix())
+    add(str(target))  # native spelling (drive letters/backslashes on Windows)
+    root_resolved = Path(root).resolve()
+    if target == root_resolved or root_resolved in target.parents:
+        add(target.relative_to(root_resolved).as_posix())
+    home = LUBAN_HOME.resolve()
+    if target == home or home in target.parents:
+        rest = target.relative_to(home).as_posix() if target != home else ""
+        add(f"~/.luban/{rest}" if rest else "~/.luban")
+    return spellings
 
 
 def _list_dir(inp: dict, ctx: ToolContext) -> ToolResult:
@@ -181,13 +247,19 @@ def _read_file(inp: dict, ctx: ToolContext) -> ToolResult:
 
 def _glob(inp: dict, ctx: ToolContext) -> ToolResult:
     root = Path(ctx.project_root).resolve()
+    home = LUBAN_HOME.resolve()
     matches = []
     for p in root.glob(inp["pattern"]):
         if not p.is_file():
             continue
         rp = p.resolve()
         if rp != root and root not in rp.parents:
-            continue  # drop matches that escape the project root
+            continue  # drop matches that escape the project root (e.g. a symlink)
+        # Same rule as grep: never list protected home Python, even when the
+        # project root contains (or is) the luban home and a lexical match lands
+        # inside it — resolve_tool_path's read/write guards would refuse it anyway.
+        if (rp == home or home in rp.parents) and rp.name.rstrip(" .").lower().endswith(".py"):
+            continue
         matches.append(str(rp.relative_to(root)))
     return ToolResult(_truncate("\n".join(sorted(matches)) or "(no matches)"))
 
@@ -213,12 +285,26 @@ def _grep(inp: dict, ctx: ToolContext) -> ToolResult:
     home = LUBAN_HOME.resolve()
     files = [base] if base.is_file() else [p for p in base.rglob("*") if p.is_file()]
     hits = []
-    skipped = 0
+    skipped_py = 0
+    skipped_linked = 0
     for f in files:
+        # Classify by the RESOLVED path, not the lexical one from rglob(): a symlink
+        # sitting inside the project can point at a protected home .py file, or
+        # anywhere else on disk, and checking the lexical path lets both guards be
+        # walked around by a link rather than a real path (the grep analogue of the
+        # resolve_tool_path bypass).
+        rf = f.resolve()
+        under_home = rf == home or home in rf.parents
         # Never expose the contents of ~/.luban Python (client_local.py holds
-        # credentials) even though grep can now reach the home area.
-        if (f == home or home in f.parents) and f.name.rstrip(" .").lower().endswith(".py"):
-            skipped += 1
+        # credentials) — this guard is absolute and NOT lifted by allow_out_of_tree.
+        if under_home and rf.name.rstrip(" .").lower().endswith(".py"):
+            skipped_py += 1
+            continue
+        under_root = rf == root or root in rf.parents
+        if not under_root and not under_home and not ctx.allow_out_of_tree:
+            # A symlink resolving outside both the project and the home is an
+            # out-of-tree read same as a raw path would be — gate it the same way.
+            skipped_linked += 1
             continue
         try:
             for n, line in enumerate(
@@ -233,11 +319,14 @@ def _grep(inp: dict, ctx: ToolContext) -> ToolResult:
         except (UnicodeDecodeError, OSError, ValueError):
             continue
     out = "\n".join(hits) or "(no matches)"
-    if skipped:
+    if skipped_py:
         # Exclusion must not read as absence: a search that silently skipped the file
         # holding the answer is a wrong answer, not an empty one (E53).
-        out += (f"\n(not searched: {skipped} Python file(s) under ~/.luban — luban never "
+        out += (f"\n(not searched: {skipped_py} Python file(s) under ~/.luban — luban never "
                 f"exposes their contents; read_file refuses them too)")
+    if skipped_linked:
+        out += (f"\n(not searched: {skipped_linked} file(s) linked outside the project — set "
+                f"allow_out_of_tree_file_edits to search them)")
     return ToolResult(_truncate(out))
 
 

@@ -37,3 +37,30 @@ def test_allow_rule_end_to_end_writes_audit(tmp_path, monkeypatch):
     assert (tmp_path / "a.txt").read_text() == "hi"
     logged = (tmp_path / "audit.jsonl").read_text(encoding="utf-8")
     assert '"write_file"' in logged and str(tmp_path) in logged
+
+
+def test_a_deny_rule_on_the_alias_blocks_the_absolute_spelling(tmp_path, monkeypatch):
+    """The documented `write_file:~/.luban/*` deny matched only the raw string the model
+    typed, so the absolute spelling of the same file walked past it (R1b)."""
+    home = tmp_path / "home"
+    (home / "memory").mkdir(parents=True)
+    monkeypatch.setattr(tools, "LUBAN_HOME", home)
+    project = tmp_path / "proj"
+    project.mkdir()
+    cfg = config.Config(platform="mac", allow=[], deny=["write_file:~/.luban/*"])
+    s = _session(project=str(project))  # auto=True: only the rule can stop this
+    ctx = cli.build_tool_context(s, project, cfg)
+    for spelling in (str(home / "memory" / "x.md"), "~/.luban/memory/x.md"):
+        out = tools.run_tool("write_file", {"path": spelling, "content": "no"}, ctx)
+        assert out.is_error and "deny rule" in out.content, spelling
+    assert not (home / "memory" / "x.md").exists()
+    # and a relative allow still covers the absolute spelling of a project file
+    cfg = config.Config(platform="mac", allow=["write_file:notes/*"], deny=[])
+    s = _session(project=str(project))
+    s.auto = False
+    ctx = cli.build_tool_context(s, project, cfg)
+    ctx = dataclasses.replace(ctx, confirm=lambda p: (_ for _ in ()).throw(AssertionError(p)))
+    (project / "notes").mkdir()
+    out = tools.run_tool("write_file", {"path": str(project / "notes" / "n.md"),
+                                        "content": "ok"}, ctx)
+    assert not out.is_error and (project / "notes" / "n.md").read_text() == "ok"

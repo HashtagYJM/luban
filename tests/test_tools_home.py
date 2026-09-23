@@ -165,3 +165,131 @@ def test_trailing_dot_space_audit_write_blocked(env, bad):
     home, proj, ctx = env
     out = tools.run_tool("write_file", {"path": str(home / bad), "content": "x"}, ctx)
     assert out.is_error
+
+
+# --- Defect 1: home guards must apply whenever the root CONTAINS the home, not just
+# when the home tier resolves the path (Tier 2's "inside project root" return used to
+# skip the .py/audit.jsonl guards entirely in this layout). ---
+
+def _root_contains_home_env(tmp_path, monkeypatch, root_is_home=False, sibling=False):
+    if sibling:
+        base = tmp_path / "workspace"
+        base.mkdir()
+        home = base / "dot-luban"
+        proj = base / "otherproject"
+        home.mkdir()
+        proj.mkdir()
+    elif root_is_home:
+        home = tmp_path / "home" / ".luban"
+        home.mkdir(parents=True)
+        proj = home
+    else:
+        # project root is a PARENT of the home (e.g. the home lives inside a
+        # workspace the agent is also pointed at as its project).
+        proj = tmp_path / "workspace"
+        home = proj / ".luban"
+        home.mkdir(parents=True)
+    monkeypatch.setattr(tools, "LUBAN_HOME", home)
+    monkeypatch.setenv("HOME", str(tmp_path / "unused_os_home"))
+    ctx = tools.ToolContext(
+        project_root=proj,
+        confirm=lambda p: True,
+        render_diff=lambda p, o, n: None,
+        render_command=lambda c: None,
+    )
+    return home, proj, ctx
+
+
+@pytest.mark.parametrize("path_kind", ["relative", "absolute", "alias"])
+def test_home_py_guard_when_root_is_parent_of_home(tmp_path, monkeypatch, path_kind):
+    home, proj, ctx = _root_contains_home_env(tmp_path, monkeypatch)
+    (home / "client_local.py").write_text("SECRET-CREDS", encoding="utf-8")
+    if path_kind == "relative":
+        p = str((home / "client_local.py").relative_to(proj))
+    elif path_kind == "absolute":
+        p = str(home / "client_local.py")
+    else:
+        p = "~/.luban/client_local.py"
+    out = tools.run_tool("read_file", {"path": p}, ctx)
+    assert out.is_error and "SECRET-CREDS" not in out.content
+
+
+def test_home_audit_guard_when_root_is_parent_of_home(tmp_path, monkeypatch):
+    home, proj, ctx = _root_contains_home_env(tmp_path, monkeypatch)
+    (home / "audit.jsonl").write_text('{"a":1}\n', encoding="utf-8")
+    # reading stays allowed
+    out = tools.run_tool("read_file", {"path": str(home / "audit.jsonl")}, ctx)
+    assert not out.is_error
+    out = tools.run_tool("write_file", {"path": str(home / "audit.jsonl"), "content": ""}, ctx)
+    assert out.is_error and (home / "audit.jsonl").read_text(encoding="utf-8") == '{"a":1}\n'
+
+
+def test_home_py_guard_when_root_equals_home(tmp_path, monkeypatch):
+    home, proj, ctx = _root_contains_home_env(tmp_path, monkeypatch, root_is_home=True)
+    (home / "tools_local.py").write_text("import evil", encoding="utf-8")
+    out = tools.run_tool("read_file", {"path": "tools_local.py"}, ctx)
+    assert out.is_error and "import evil" not in out.content
+    out = tools.run_tool("write_file", {"path": "tools_local.py", "content": "x"}, ctx)
+    assert out.is_error
+
+
+def test_home_guards_when_root_is_sibling_of_home(tmp_path, monkeypatch):
+    # Sibling layout: the home is not reachable through Tier 2 at all, only through
+    # the alias/absolute-home tier — guards must still hold there (today's behavior,
+    # unaffected by the Defect 1 fix, kept here as a regression check).
+    home, proj, ctx = _root_contains_home_env(tmp_path, monkeypatch, sibling=True)
+    (home / "client_local.py").write_text("SECRET-CREDS", encoding="utf-8")
+    out = tools.run_tool("read_file", {"path": str(home / "client_local.py")}, ctx)
+    assert out.is_error and "SECRET-CREDS" not in out.content
+    # an ordinary project .py file outside the home stays usable
+    (proj / "app.py").write_text("print('hi')", encoding="utf-8")
+    out = tools.run_tool("read_file", {"path": "app.py"}, ctx)
+    assert not out.is_error and "print('hi')" in out.content
+
+
+def test_ordinary_project_py_file_stays_usable_when_root_contains_home(tmp_path, monkeypatch):
+    home, proj, ctx = _root_contains_home_env(tmp_path, monkeypatch)
+    (proj / "app.py").write_text("print('ok')", encoding="utf-8")
+    out = tools.run_tool("read_file", {"path": "app.py"}, ctx)
+    assert not out.is_error and "print('ok')" in out.content
+
+
+def test_symlink_in_project_to_protected_home_py_refused_by_read_file(tmp_path, monkeypatch):
+    home, proj, ctx = _root_contains_home_env(tmp_path, monkeypatch)
+    (home / "client_local.py").write_text("SECRET-CREDS", encoding="utf-8")
+    link = proj / "link.py"
+    try:
+        link.symlink_to(home / "client_local.py")
+    except OSError:
+        pytest.skip("symlinks unavailable on this platform")
+    out = tools.run_tool("read_file", {"path": "link.py"}, ctx)
+    assert out.is_error and "SECRET-CREDS" not in out.content
+
+
+def test_symlink_in_project_to_protected_home_py_refused_by_edit_file(tmp_path, monkeypatch):
+    home, proj, ctx = _root_contains_home_env(tmp_path, monkeypatch)
+    (home / "client_local.py").write_text("SECRET-CREDS", encoding="utf-8")
+    link = proj / "link.py"
+    try:
+        link.symlink_to(home / "client_local.py")
+    except OSError:
+        pytest.skip("symlinks unavailable on this platform")
+    out = tools.run_tool(
+        "edit_file", {"path": "link.py", "old_string": "SECRET", "new_string": "x"}, ctx
+    )
+    assert out.is_error
+
+
+def test_symlink_in_project_to_outside_file_refused_by_read_file_without_opt_in(
+    tmp_path, monkeypatch
+):
+    home, proj, ctx = _root_contains_home_env(tmp_path, monkeypatch)
+    outside = tmp_path / "elsewhere.txt"
+    outside.write_text("OUTSIDE-CONTENTS", encoding="utf-8")
+    link = proj / "link.txt"
+    try:
+        link.symlink_to(outside)
+    except OSError:
+        pytest.skip("symlinks unavailable on this platform")
+    out = tools.run_tool("read_file", {"path": "link.txt"}, ctx)
+    assert out.is_error and "OUTSIDE-CONTENTS" not in out.content

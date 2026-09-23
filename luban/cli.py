@@ -337,7 +337,7 @@ def blank_probe_notice(session: Session, variant: str, msg, answered) -> None:
     audit_mod.log({"project": session.project, "session": session.session_id,
                    "tool": "model:empty:probe", "target": session.model, "decision": variant,
                    "is_error": not answered, **account})
-    ui.print_text(f"[without {variant}: {outcome} — recorded in audit.jsonl]\n")
+    ui.print_text(f"\n[without {variant}: {outcome} — recorded in audit.jsonl]\n")
 
 
 def empty_turn_notice(session: Session, msg) -> None:

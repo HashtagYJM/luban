@@ -9,7 +9,7 @@ see — it matches `## v<number>`. A release RENAMES that heading to its derived
 it never writes a version heading ahead of the release, and never edits the heading
 below. Only user-facing behaviour earns a line here.
 
-## Unreleased
+## v0.7.7 — a blank investigates itself, and the fold keeps its promise
 
 ### A blank answer now investigates itself (E54)
 

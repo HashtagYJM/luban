@@ -155,7 +155,7 @@ def test_ctrl_c_before_an_answer_keeps_the_prompt_for_retry(tmp_path, monkeypatc
     monkeypatch.setattr(cli.agent, "run_turn", run_turn)
     cli.main(["--dir", str(tmp_path)])
     out = "".join(printed)
-    assert "/retry resends your prompt" in out
+    assert "your prompt is kept; /retry resends it" in out
     assert sent[1][-1] == {"role": "user", "content": "do the thing"}
     assert sum(m["content"] == "do the thing" for m in sent[1]) == 1
 

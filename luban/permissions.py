@@ -61,6 +61,7 @@ def evaluate(
     deny: list[str],
     read_only: bool,
     targets: list[str] | None = None,
+    allow_targets: list[str] | None = None,
 ) -> Decision:
     """`targets`, when given, is every equivalent spelling of the call's target (raw,
     resolved absolute, project-relative, ~/.luban alias — see tools.equivalent_targets).
@@ -70,10 +71,13 @@ def evaluate(
     today's behavior exactly: match only the raw string from tool_input.
     """
     candidates = targets if targets is not None else [target_of(tool_name, tool_input)]
+    # Deny may match any spelling; allow only the ones that name the destination itself.
+    # Widening allow to a raw spelling containing `..` granted consent the user never gave.
+    granting = allow_targets if allow_targets is not None else candidates
     for rule in deny:
         if any(_matches(rule, tool_name, t) for t in candidates):
             return Decision("deny", f"blocked by deny rule: {rule}")
     for rule in allow:
-        if any(_matches(rule, tool_name, t) for t in candidates):
+        if any(_matches(rule, tool_name, t) for t in granting):
             return Decision("allow", f"allowed by rule: {rule}")
     return Decision("allow" if read_only else "ask")

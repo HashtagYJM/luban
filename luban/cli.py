@@ -221,11 +221,12 @@ def build_tool_context(
             # A rule is matched against every spelling of the same file — raw, absolute,
             # project-relative, ~/.luban alias — so `deny = ["write_file:~/.luban/*"]`
             # holds when the model spells the path out in full.
+            spellings = tools.equivalent_targets(
+                tool_name, tool_input, project_root, cfg.allow_out_of_tree_file_edits)
             return permissions_mod.evaluate(
                 tool_name, tool_input, cfg.allow, cfg.deny,
                 read_only=tool_name in tools.READ_ONLY_TOOLS,
-                targets=tools.equivalent_targets(
-                    tool_name, tool_input, project_root, cfg.allow_out_of_tree_file_edits),
+                targets=spellings, allow_targets=spellings[1:] or spellings,
             )
 
         audit_warned = []
@@ -1569,7 +1570,7 @@ def fold_history(session: Session, client, cfg: config_mod.Config,
                       f"the bulk is in the recent turns a fold has to keep.")
     archived = archive_or_stop()
     if not archived:
-        return changed
+        return settle() if changed else changed  # a stub may already have landed
     try:
         msg = client_mod.create_turn(
             client, model=session.model, max_tokens=session.max_tokens,
@@ -1711,12 +1712,20 @@ def bound_turn(session: Session, client, cfg: config_mod.Config, project_root: P
     return between
 
 
+def _changes_something(name: str, tool_input: dict) -> bool:
+    if name in tools.READ_ONLY_TOOLS or name == "spawn_subagent":  # the child is read-only
+        return False
+    if name == "read_output":
+        return tool_input.get("kill") is True  # polling a job changes nothing
+    return True
+
+
 def round_mutated(messages: list) -> bool:
-    """Whether the tool round that just completed ran anything but a read-only tool."""
+    """Whether the tool round that just completed ran anything with a side effect."""
     if len(messages) < 2 or not isinstance(messages[-2].get("content"), list):
         return False
     return any(isinstance(b, dict) and b.get("type") == "tool_use"
-               and b.get("name") not in tools.READ_ONLY_TOOLS
+               and _changes_something(b.get("name", ""), b.get("input") or {})
                for b in messages[-2]["content"])
 
 
@@ -2335,13 +2344,17 @@ def main(argv: list[str] | None = None) -> None:
                 on_probe=lambda variant, msg, answered: blank_probe_notice(
                     session, variant, msg, answered),
             )
-        except KeyboardInterrupt:
-            # A prompt interrupted before any answer was dropped with nothing said; it is
-            # now kept for /retry like a turn the network killed.
+        except KeyboardInterrupt as exc:
+            # Tools that finished before the interrupt are in the turn's own history, not
+            # yet in the session's; take it, so the record matches what was done.
+            partial = getattr(exc, "luban_messages", None)
+            if partial is not None:
+                session.messages = partial
+            # A prompt interrupted before any answer is kept for /retry.
             session.last_failed = abandon_turn(session)
-            ui.print_text("\n[interrupted — the work so far is saved"
-                          + ("; /retry resends your prompt" if session.last_failed else "")
-                          + "]\n")
+            ui.print_text("\n[interrupted — " + (
+                "your prompt is kept; /retry resends it" if session.last_failed
+                else "what ran before the interrupt is saved") + "]\n")
         except Exception as exc:  # a bad turn must not kill the session (E14)
             # Keep the prompt (for /retry) but drop it from history, which must never
             # end on an unanswered user turn.

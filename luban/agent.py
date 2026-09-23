@@ -522,22 +522,35 @@ def run_turn(client, config: AgentConfig, messages: list[dict], ctx, on_text,
             t["name"] for t in (config.tools if config.tools is not None else tools_mod.TOOLS)
         }
         results = []
-        for block in msg.content:
-            if block.type != "tool_use":
-                continue
-            if block.name not in offered:
-                out = tools_mod.ToolResult(
-                    f"Tool not available in this turn: {block.name}", is_error=True
-                )
-                tools_mod.audit_unavailable(ctx, block.name, block.input, out)
-            else:
-                out = tools_mod.run_tool(block.name, block.input, ctx)
-            results.append({
-                "type": "tool_result",
-                "tool_use_id": block.id,
-                "content": out.content,
-                "is_error": out.is_error,
-            })
+        try:
+            for block in msg.content:
+                if block.type != "tool_use":
+                    continue
+                if block.name not in offered:
+                    out = tools_mod.ToolResult(
+                        f"Tool not available in this turn: {block.name}", is_error=True
+                    )
+                    tools_mod.audit_unavailable(ctx, block.name, block.input, out)
+                else:
+                    out = tools_mod.run_tool(block.name, block.input, ctx)
+                results.append({
+                    "type": "tool_result",
+                    "tool_use_id": block.id,
+                    "content": out.content,
+                    "is_error": out.is_error,
+                })
+        except KeyboardInterrupt as exc:
+            # A round interrupted part-way has already done what it did: a write before
+            # the interrupted command is on disk. Answer every call in the round — the
+            # finished ones with their results — and hand the history to the caller on
+            # the exception, or the record of the finished work dies with this frame.
+            done = {r["tool_use_id"] for r in results}
+            results += [{"type": "tool_result", "tool_use_id": b.id, "is_error": True,
+                         "content": "Interrupted by the user; this call may have partly run."}
+                        for b in msg.content if b.type == "tool_use" and b.id not in done]
+            messages.append({"role": "user", "content": results})
+            exc.luban_messages = messages
+            raise
         if not results:
             # stop_reason was tool_use but no tool_use blocks were present;
             # returning avoids sending an empty tool_result message in a loop.

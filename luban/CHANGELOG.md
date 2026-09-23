@@ -17,7 +17,7 @@ below. Only user-facing behaviour earns a line here.
 
 ### The file guards hold however a file is reached
 
-Three ways around the `~/.luban/*.py` and audit-log guards are closed: a project folder that contains `~/.luban` (or is it), a relative spelling of the path, and a symlink inside the project pointing at the protected file. `grep` and `glob` now judge each file by where it really is, skip links that leave the project unless `allow_out_of_tree_file_edits` is on, and say how many they skipped. And a permission rule such as `deny = ["write_file:~/.luban/*"]` now matches the absolute and relative spellings of the same file, not only the exact text the model typed.
+Four ways around the `~/.luban/*.py` and audit-log guards are closed: a project folder that contains `~/.luban` (or is it), a relative spelling of the path, a symlink inside the project pointing at the protected file, and on a Mac a differently-cased spelling such as `.LUBAN`. The guard now applies to every Python file under `~/.luban`, including in a project you open inside it. `grep` and `glob` judge each file by where it really is, skip links that leave the project unless `allow_out_of_tree_file_edits` is on, skip files a deny rule covers even when you search a parent folder, and say how many they skipped. A deny rule such as `write_file:~/.luban/*` now matches the absolute and relative spellings of the same file. An allow rule matches only the file's real location, so `docs/../src/main.py` no longer counts as inside `docs/`.
 
 ### `luban --doctor` checks the setup
 
@@ -29,7 +29,7 @@ Three ways around the `~/.luban/*.py` and audit-log guards are closed: a project
 
 ### A pasted prompt is one prompt
 
-Pasting several lines sent each line as its own turn. Lines that arrive together are now one prompt, and a line of three double quotes opens a block you can type by hand, closed by another. Ctrl-C before an answer keeps your prompt for `/retry` instead of dropping it.
+Pasting several lines sent each line as its own turn. Lines that arrive together are now one prompt, and a line of three double quotes opens a block you can type by hand, closed by another. Ctrl-C before an answer keeps your prompt for `/retry` instead of dropping it. Ctrl-C in the middle of a round of tool calls keeps the record of the ones that had finished, so a resume knows about a write that happened just before it.
 
 ### A write survives the process dying mid-turn
 

@@ -41,12 +41,13 @@ def _load_from_path(path: Path) -> types.ModuleType:
 
 
 def _in_package_local() -> types.ModuleType | None:
-    try:
-        from luban import client_local  # noqa: PLC0415  (lazy dev fallback)
-    except ModuleNotFoundError as exc:
-        if exc.name == "luban.client_local":
-            return None
-        raise  # a DIFFERENT missing module (e.g. inside client_local) — surface it
+    # Asked by spec, not by catching the import: `from luban import client_local` with no
+    # such file raises a bare ImportError naming `luban`, which the old ModuleNotFoundError
+    # check never caught — so an installed wheel with no adapter showed an import error
+    # instead of the setup hint. An error INSIDE an existing file still surfaces.
+    if importlib.util.find_spec("luban.client_local") is None:
+        return None
+    from luban import client_local  # noqa: PLC0415  (lazy dev fallback)
     return client_local
 
 

@@ -166,3 +166,26 @@ def test_piped_input_is_never_joined(monkeypatch):
             return False
     monkeypatch.setattr(ui.sys, "stdin", Pipe())
     assert ui.input_pending() is False
+
+
+def test_an_installed_package_without_an_adapter_says_so(tmp_path):
+    """The dev tree has a local adapter file, so the fallback's 'none here' branch never
+    ran in tests. In an installed wheel it raised ImportError, not ModuleNotFoundError,
+    and startup and --doctor both showed an import error instead of the setup hint."""
+    import shutil, subprocess, sys, os
+    pkg = Path(cli.__file__).parent
+    shutil.copytree(pkg, tmp_path / "luban",
+                    ignore=shutil.ignore_patterns("client_local.py", "tools_local.py",
+                                                  "__pycache__"))
+    code = ("from luban import client, doctor\n"
+            "print(client._in_package_local())\n"
+            "try:\n    client.get_client()\nexcept RuntimeError as e:\n    print('HINT', e)\n"
+            "doctor.run()\n")
+    env = {**os.environ, "PYTHONPATH": str(tmp_path), "LUBAN_HOME": str(tmp_path / "home")}
+    env.pop("LUBAN_CLIENT_LOCAL", None)
+    run = subprocess.run([sys.executable, "-S", "-c", code], capture_output=True, text=True,
+                         env=env, cwd=tmp_path, timeout=60)
+    assert run.returncode == 0, run.stderr
+    assert run.stdout.splitlines()[0] == "None"
+    assert "HINT No client_local.py found" in run.stdout
+    assert "client adapter: none found" in run.stdout

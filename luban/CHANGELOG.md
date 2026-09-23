@@ -21,7 +21,7 @@ Three ways around the `~/.luban/*.py` and audit-log guards are closed: a project
 
 ### `luban --doctor` checks the setup
 
-`luban --doctor` checks Python, the luban home, `config.toml` and your `client_local.py` one step at a time, and each failure says what to change, including where the example adapter file is. It sends nothing; `luban --doctor --probe` adds one short request to prove the connection. A missing or broken adapter at normal startup is now one sentence pointing at `--doctor`, not a traceback.
+`luban --doctor` checks Python, the luban home, `config.toml` and your `client_local.py` one step at a time, and each failure says what to change, including where the example adapter file is. It sends nothing; `luban --doctor --probe` adds one short request to prove the connection. A missing or broken adapter at normal startup is now one sentence pointing at `--doctor`, not a traceback. With no adapter at all, an installed luban used to report a confusing import error about its own package instead of saying where `client_local.py` goes; it now says so.
 
 ### `/help`, and a typo is no longer silent
 

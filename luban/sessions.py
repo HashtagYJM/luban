@@ -50,6 +50,21 @@ def save(data: dict, sessions_dir: Path | None = None) -> Path:
     return path
 
 
+def archive(data: dict, sessions_dir: Path | None = None) -> Path:
+    """The verbatim history at this moment, in its own file, before a fold or a stub
+    rewrites the session's. `sessions/archive/` is not scanned by list_sessions (its glob
+    is one level deep), so an archive is never mistaken for a thread. One file per
+    rewrite: the first fold's archive holds what the second fold's summary elides."""
+    d = _dir(sessions_dir) / "archive"
+    d.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    path = d / f"{data['id']}-{stamp}.json"
+    data = dict(data)
+    data["updated"] = datetime.now().isoformat(timespec="seconds")
+    _atomic_write_text(path, json.dumps(data, indent=1, ensure_ascii=False))
+    return path
+
+
 def load(session_id: str, sessions_dir: Path | None = None) -> dict:
     path = _dir(sessions_dir) / f"{session_id}.json"
     if not path.exists():

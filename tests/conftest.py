@@ -3,7 +3,15 @@ from types import SimpleNamespace
 
 import pytest
 
-from luban import client as client_mod
+from luban import audit as audit_mod, client as client_mod, sessions as sessions_mod
+
+
+@pytest.fixture(autouse=True)
+def _no_writes_into_the_real_home(tmp_path, monkeypatch):
+    """Every session save and audit row a test provokes lands under tmp_path. Without
+    this the fold and flush tests wrote real files into ~/.luban/sessions on every run."""
+    monkeypatch.setattr(sessions_mod, "SESSIONS_DIR", tmp_path / "sessions")
+    monkeypatch.setattr(audit_mod, "AUDIT_PATH", tmp_path / "audit.jsonl")
 
 
 @pytest.fixture(autouse=True)

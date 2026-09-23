@@ -111,7 +111,11 @@ class Session:
     # dies with it; this is the record that the skill is still in force, so a fold or a
     # compact can restate it from code instead of hoping the summarizer kept it (E46).
     skills_loaded: list = field(default_factory=list)
-    journaled: bool = False
+    journaled: bool = False  # the flush turn itself wrote a journal entry this segment
+    # memory._journal_writes when this segment began. A journal entry written in
+    # CONVERSATION counts too: the flush used to see only its own turn's writes and add a
+    # near-duplicate at /compact and at exit, each evicting a day of history (E55).
+    journal_baseline: int = field(default_factory=lambda: memory_mod._journal_writes)
     last_failed: object = None  # the prompt from a turn the network killed (/retry)
     thinking: bool = True
     effort: str = "medium"
@@ -199,7 +203,10 @@ def build_tool_context(
             )
 
         def audit_cb(entry: dict) -> None:
-            audit_mod.log({"project": session.project, **entry})
+            # The session id is read at call time: the context is built once, and the
+            # thread it serves changes on /new, /compact and resume (E50).
+            audit_mod.log({"project": session.project, "session": session.session_id,
+                           **entry})
 
     subagent = None
     if client is not None and cfg is not None and cfg.subagents:
@@ -327,8 +334,8 @@ def blank_probe_notice(session: Session, variant: str, msg, answered) -> None:
     else:
         outcome = "answered — that is the cause" if answered else "blank again"
         account = blank_account(session, msg)
-    audit_mod.log({"project": session.project, "tool": "model:empty:probe",
-                   "target": session.model, "decision": variant,
+    audit_mod.log({"project": session.project, "session": session.session_id,
+                   "tool": "model:empty:probe", "target": session.model, "decision": variant,
                    "is_error": not answered, **account})
     ui.print_text(f"[without {variant}: {outcome} — recorded in audit.jsonl]\n")
 
@@ -353,8 +360,9 @@ def empty_turn_notice(session: Session, msg) -> None:
     kept = ("your prompt was kept; /retry to send it again" if session.last_failed
             else "the work up to this point is kept; say what to do next")
     diag = blank_account(session, msg)
-    audit_mod.log({"project": session.project, "tool": "model:empty",
-                   "target": session.model, "decision": stop_reason, "is_error": True,
+    audit_mod.log({"project": session.project, "session": session.session_id,
+                   "tool": "model:empty", "target": session.model,
+                   "decision": stop_reason, "is_error": True,
                    **diag})
     said = ", ".join(f"{k}={v}" for k, v in diag.items() if v not in (None, [], ""))
     # No settings hint: the one this printed for a month pointed at context_editing, and
@@ -656,6 +664,21 @@ def ensure_session_id(session: Session) -> str:
     return session.session_id
 
 
+def archive_session(session: Session) -> str:
+    """Write the verbatim history to its own file and return the alias path a message
+    can point at. Called BEFORE a fold or a stub rewrites `session.messages`: the
+    session's own file always holds the CURRENT window, so "kept on disk" was only true
+    until the next save overwrote it (E51)."""
+    ensure_session_id(session)
+    path = sessions_mod.archive({
+        "id": session.session_id, "project": session.project, "created": session.created,
+        "model": session.model, "title": session.title,
+        "messages": agent.sanitize_history(session.messages),
+        "skills_loaded": list(session.skills_loaded),
+    })
+    return f"~/.luban/sessions/archive/{path.name}"
+
+
 def save_session(session: Session) -> None:
     if not session.messages:
         return
@@ -869,6 +892,18 @@ def reconcile_directive(prev: str, section: str) -> str:
     )
 
 
+def stray_memory_notice() -> str:
+    """One line naming files in ~/.luban/memory that are not facts and are ignored —
+    OneDrive conflict copies, mostly. Silent exclusion would hide them forever; loading
+    them made a conflict twin of the index a "fact" the model repeated (E48)."""
+    stray = memory_mod.stray_files()
+    if not stray:
+        return ""
+    names = ", ".join(stray[:5]) + (f" and {len(stray) - 5} more" if len(stray) > 5 else "")
+    return (f"note: {len(stray)} file(s) in ~/.luban/memory are not facts and are ignored "
+            f"— {names}. Move or delete them.")
+
+
 def home_notice() -> str:
     """One line when $LUBAN_HOME has relocated the home dir, plus a warning if a
     legacy ~/.luban still holds data that is now being ignored. Never raises.
@@ -958,6 +993,17 @@ def build_agent_config(session: Session, cfg: config_mod.Config, project_root: P
     )
 
 
+def segment_journaled(session: Session) -> bool:
+    """Whether ANY journal entry was written since this segment began — by the flush
+    turn or in conversation."""
+    return session.journaled or memory_mod._journal_writes > session.journal_baseline
+
+
+def new_journal_segment(session: Session) -> None:
+    session.journaled = False
+    session.journal_baseline = memory_mod._journal_writes
+
+
 def flush_memory(session: Session, client, ctx, cfg: config_mod.Config) -> None:
     """Best-effort: checkpoint and journal before compaction destroys context.
 
@@ -975,7 +1021,7 @@ def flush_memory(session: Session, client, ctx, cfg: config_mod.Config) -> None:
     if not cfg.memory_enabled or not session.messages:
         return
     memory_mod.checkpoint(Path(ctx.project_root).name, "", session.session_id)
-    if session.journaled:
+    if segment_journaled(session):
         return
     ui.print_text("(memory flush…)\n")
     allowed = frozenset({"journal", "checkpoint"})
@@ -1033,7 +1079,7 @@ def exit_journal(session: Session, cfg: config_mod.Config, project_root: Path) -
         return
     project = Path(project_root).name
     memory_mod.checkpoint(project, "", session.session_id)
-    if session.journaled:
+    if segment_journaled(session):
         return
     memory_mod.journal_append(
         f"'{session.title or 'untitled'}' — {len(session.messages)} messages "
@@ -1274,7 +1320,7 @@ def fold_keep_chars(session: Session, client, cfg: config_mod.Config,
     return int(max(room, cfg.warn_tokens * FOLD_FLOOR) * ratio)
 
 
-def shrink_oversized_results(messages: list, limit_chars: int, session_id: str,
+def shrink_oversized_results(messages: list, limit_chars: int, where: str,
                              keep_recent: int = 2) -> int:
     """Replace the BODY of any single oversized tool result. Returns characters freed.
 
@@ -1293,7 +1339,6 @@ def shrink_oversized_results(messages: list, limit_chars: int, session_id: str,
     API rejects a search whose result does not follow it, and the strand is unrecoverable.
     Web search output therefore stays unbounded here by design; `/compact` is its lever.
     """
-    where = session_id or "this session's transcript"
     freed = 0
     for msg in messages[:max(0, len(messages) - keep_recent)]:
         content = msg.get("content")
@@ -1319,11 +1364,18 @@ def shrink_oversized_results(messages: list, limit_chars: int, session_id: str,
                 block["content"] = (
                     f"[{len(body):,} characters of tool output dropped from the context "
                     f"window — one result this size crowds out the conversation it was "
-                    f"meant to serve. The full result is verbatim in this session's "
-                    f"transcript at ~/.luban/sessions/{where}.json and can be read with "
-                    f"the sessions and read_file tools.]")
+                    f"meant to serve. The full result is verbatim in the archived "
+                    f"transcript at {where}, which read_file can open.]")
             freed += len(body) - len(block["content"])
     return freed
+
+
+def _has_oversized_result(messages: list, limit_chars: int) -> bool:
+    """Whether shrink_oversized_results would change anything in `messages`."""
+    return any(
+        isinstance(b, dict) and b.get("type") == "tool_result"
+        and isinstance(b.get("content"), str) and len(b["content"]) > limit_chars
+        for m in messages if isinstance(m.get("content"), list) for b in m["content"])
 
 
 def oversized_result_pending(messages: list, limit_chars: int, keep_recent: int = 2) -> bool:
@@ -1358,9 +1410,8 @@ def fold_seed(summary: str, folded: int, where: str, skills: list) -> list:
     """
     return [{"role": "user", "content":
              f"[earlier conversation folded — {folded} messages summarized to save "
-             f"context. The full verbatim transcript is on disk at "
-             f"~/.luban/sessions/{where}.json and can be read with the sessions and "
-             f"read_file tools.]\n{summary}" + loaded_skills_line(skills)}]
+             f"context. The full verbatim transcript is on disk at {where}, which "
+             f"read_file can open.]\n{summary}" + loaded_skills_line(skills)}]
 
 
 def fold_history(session: Session, client, cfg: config_mod.Config,
@@ -1408,12 +1459,16 @@ def fold_history(session: Session, client, cfg: config_mod.Config,
         return changed
 
     # 1. Free, and the only lever that reaches an oversized result inside the working set.
-    freed_chars = shrink_oversized_results(session.messages, big, session.session_id)
+    if _has_oversized_result(session.messages[:-2], big):
+        archived = archive_session(session)  # the verbatim history, in its own file
+        freed_chars = shrink_oversized_results(session.messages, big, archived)
+    else:
+        archived, freed_chars = "", 0
     if freed_chars:
-        save_session(session)  # the FULL transcript is on disk before anything is dropped
+        save_session(session)
         changed = True
         ui.print_text(f"  ✓ dropped ~{int(freed_chars / ratio):,} tokens of oversized tool "
-                      f"output from the window. Full results kept on disk.\n")
+                      f"output from the window. Full results kept at {archived}.\n")
         if standing + int(_history_chars(session.messages) / ratio) < (
                 cfg.warn_tokens * FOLD_TRIGGER):
             return settle()  # under the line already — no model call needed as well
@@ -1429,7 +1484,7 @@ def fold_history(session: Session, client, cfg: config_mod.Config,
         # the bulk sitting in the recent span is the diagnosis, not a non-event.
         return settle(f"nothing more to fold — the older span is only ~{freed:,} tokens; "
                       f"the bulk is in the recent turns a fold has to keep.")
-    save_session(session)  # the FULL transcript is on disk before anything is folded
+    archived = archive_session(session)  # the verbatim history, in its own file
     try:
         msg = client_mod.create_turn(
             client, model=session.model, max_tokens=session.max_tokens,
@@ -1447,15 +1502,17 @@ def fold_history(session: Session, client, cfg: config_mod.Config,
     if not summary:
         ui.print_text("  fold failed (empty summary) — conversation unchanged.\n")
         return changed
-    where = session.session_id or "this session's transcript"
-    seed = fold_seed(summary, len(old), where, session.skills_loaded)
+    seed = fold_seed(summary, len(old), archived, session.skills_loaded)
     if keep and _is_human_turn(keep[0]):
         seed.append({"role": "assistant", "content":
                      [{"type": "text", "text": "Understood — continuing from the summary."}]})
     session.messages = seed + keep
     save_session(session)
-    ui.print_text(f"  ✓ folded {len(old)} messages (~{freed:,} tokens freed). "
-                  f"Full transcript kept on disk.\n")
+    # Net of the summary that replaced the span: the gross figure overstated the saving
+    # by the size of the seed (E52).
+    net = freed - int(_history_chars(seed) / ratio)
+    ui.print_text(f"  ✓ folded {len(old)} messages into a summary (~{net:,} tokens freed "
+                  f"net). Full transcript kept at {archived}.\n")
     changed = True
     settle()
     return True
@@ -1596,7 +1653,7 @@ def compact_session(session: Session, client, ctx=None, cfg=None) -> None:
     session.session_id = ""
     session.created = ""
     session.title = f"compacted: {old_title}"[:60] if old_title else ""
-    session.journaled = False  # the post-compaction segment can journal again
+    new_journal_segment(session)  # the post-compaction segment can journal again
     save_session(session)  # mint the new file now so the seed survives a crash
     ui.print_text(f"✓ compacted — new session started (previous saved as {old_id})\n")
     if ctx is not None:
@@ -1657,7 +1714,7 @@ def restore_session(session: Session, data: dict) -> None:
     session.skills_loaded = list(skills_back) if isinstance(skills_back, list) else []
     # Switching threads starts a new journal segment. Otherwise a `journaled` flag
     # set by the thread you just left would suppress the journal entry for this one.
-    session.journaled = False
+    new_journal_segment(session)
     # Lead with the PROJECT, not the session id: resuming the wrong thread (a
     # session from another folder) is the failure that actually bites, and it's
     # only obvious if the project name is the first thing you read (E21).
@@ -1848,7 +1905,7 @@ def handle_command(line: str, session: Session, client=None, ctx=None, cfg=None)
         session.session_id = ""
         session.title = arg.strip()[:60] if cmd == "/new" else ""
         session.created = ""
-        session.journaled = False
+        new_journal_segment(session)
         # A different thread, not a shorter one. /compact keeps the loaded skills because
         # the work continues; here the window is empty and nothing is in force (E46).
         session.skills_loaded.clear()
@@ -1994,9 +2051,9 @@ def main(argv: list[str] | None = None) -> None:
         return
     project_root = Path(ns.dir).resolve()
     memory_mod.set_project(project_root.name)  # tags journal writes, filters the window
-    notice = home_notice()
-    if notice:
-        ui.print_text(notice + "\n")
+    for notice in (home_notice(), stray_memory_notice()):
+        if notice:
+            ui.print_text(notice + "\n")
     cfg = config_mod.load_config()
     session = Session(
         model=resolve_model(ns.model, cfg),

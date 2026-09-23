@@ -313,3 +313,22 @@ def test_index_with_entries_kept(tmp_path, monkeypatch):
     )
     block = memory.bootstrap_block()
     assert "Long-term memory index" in block and "[prefs]" in block
+
+
+def test_a_onedrive_conflict_copy_is_not_a_fact(mem):
+    """The store on the corporate box lives on OneDrive, which drops conflict copies
+    beside the originals: `MEMORY-XXXX.md`, `some-fact-XXXX.md`. Every loader globbed
+    `*.md`, so a twin of the INDEX was read as a fact and repeated by the model, and
+    `forget` could not remove it because its name is not a slug (E48). Now nothing that is
+    not a slug is a fact, the index rebuild agrees, and the strays are named."""
+    memory.remember("real-fact", "a real one", "body")
+    store = mem / "memory"
+    (store / "MEMORY-SPHD250099.md").write_text("# Long-term memory index\n- [x] y\n", encoding="utf-8")
+    (store / "real-fact-SPHD250099.md").write_text("description: twin\n\nbody\n", encoding="utf-8")
+    assert [p.name for p in memory.fact_files()] == ["real-fact.md"]
+    assert memory.stray_files() == ["MEMORY-SPHD250099.md", "real-fact-SPHD250099.md"]
+    memory._rebuild_index()
+    index = (store / "MEMORY.md").read_text(encoding="utf-8")
+    assert "real-fact" in index and "SPHD250099" not in index
+    assert "SPHD250099" not in memory.recall("index")
+    assert all("SPHD250099" not in slug for slug, _ in memory.description_index())

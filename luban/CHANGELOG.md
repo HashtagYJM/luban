@@ -11,9 +11,37 @@ below. Only user-facing behaviour earns a line here.
 
 ## Unreleased
 
-### A blank answer now investigates itself
+### A blank answer now investigates itself (E54)
 
-v0.7.6 removed the one trigger Anthropic document for a 2-token empty answer, and the next day the field produced another one on it. Waiting for a report is over: when the model returns nothing, luban re-sends the same transcript at once with one of its own additions left out at a time — the memory index, then context editing, then thinking — and stops at the first that answers. That answer carries the turn on, so a blank costs the `continue` you would have typed anyway, plus one full window for each variant that also blanks. Every probe is a `model:empty:probe` row in `audit.jsonl` naming what was left out and whether the model then answered; the one that answers names the cause.
+v0.7.6 removed the one trigger Anthropic document for a 2-token empty answer, and the next day the field produced another one on it. Waiting for a report is over: when the model returns nothing, luban re-sends the same transcript at once with one of its own additions left out at a time — the memory index, then context editing, then thinking — and stops at the first that answers. That answer carries the turn on, so a blank costs the `continue` you would have typed anyway, plus one full window for each variant that also blanks. Every probe is a `model:empty:probe` row in `audit.jsonl` naming what was left out and whether the model then answered; the one that answers names the cause. The tracker asked for one identical retry; Anthropic say the identical request blanks again, and the field agreed, so the probes differ instead.
+
+### A fold no longer overwrites the transcript it promises to keep (E51)
+
+Folding saved the full transcript to the session's own file, then saved the shortened window to that same file, while the summary's marker pointed at it as the verbatim record. The record was gone one save later. The verbatim history now goes to its own file under `~/.luban/sessions/archive/` before anything is folded, the marker names that file, and the same rule applies when an oversized tool result is stubbed.
+
+### The fold reports its net saving (E52)
+
+The success line reported the removed span's size as tokens freed, before the summary that replaced it was counted. It now reports the net figure.
+
+### OneDrive conflict copies are no longer facts (E48)
+
+A memory store on OneDrive collects conflict copies beside the originals — `MEMORY-XXXX.md`, `some-fact-XXXX.md`. Every loader read them as facts, so a twin of the index was repeated to the model as one, and `forget` could not remove it because its name is not a valid slug. Only a `<slug>.md` is a fact now, in every loader and in the index rebuild; luban names the files it is ignoring at startup so you can move or delete them.
+
+### `grep` says when the credential guard skipped a file (E53)
+
+`grep` never exposes a Python file under `~/.luban`, which is right, but it reported a search that skipped one as an ordinary no-match, so an agent read exclusion as absence. The result now ends with how many files were not searched and why.
+
+### A skill folder points at a tool every caller has (E49)
+
+The folder preamble told the reader to open supporting files with `run_command`. A read-only sub-agent has no `run_command` and stalled on the instruction. It now names `read_file` with the `~/.luban/...` path the file tools accept.
+
+### Every audit row carries its session (E50)
+
+Two sessions in one project write the same `audit.jsonl`, and a row said only which project it came from, so a hook filtering by project attributed the other session's tool calls to itself. Every row — tool calls, `model:empty`, probes — now carries the session id.
+
+### A journal entry written in conversation counts (E55)
+
+The close-out flush checked only whether its own turn had journaled, so a session that had already written an entry in conversation got a near-duplicate at `/compact` and again at exit, each evicting a day from the capped journal window. Any entry written since the segment began now counts.
 
 ## v0.7.6 — the blank answers on Claude, found and removed
 

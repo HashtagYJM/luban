@@ -174,12 +174,18 @@ def test_folding_changes_what_is_sent_never_what_is_stored(monkeypatch, tmp_path
     cfg = config_mod.Config(platform="mac", warn_tokens=10_000)
     before = list(s.messages)
     assert cli.fold_history(s, object(), cfg, tmp_path) is True
-    # the FULL transcript was written to disk before anything was folded
-    assert saved[0] == before
-    # and what is now SENT is shorter, with the fold stated
+    # the FULL transcript went to its OWN file before anything was folded — the session's
+    # file is saved again with the folded window, so it cannot be where the record lives
+    import json
+    archives = list((tmp_path / "sessions" / "archive").glob("*.json"))
+    assert len(archives) == 1
+    assert json.loads(archives[0].read_text(encoding="utf-8"))["messages"] == before
+    assert saved[-1] == s.messages and saved[-1] != before
+    # and what is now SENT is shorter, with the fold stated and the archive named
     assert len(s.messages) < len(before)
     marker = s.messages[0]["content"]
     assert "folded" in marker and "transcript" in marker
+    assert f"~/.luban/sessions/archive/{archives[0].name}" in marker
     assert "SUMMARY OF EARLY WORK" in marker
     assert cli._starts_a_clean_exchange(s.messages[0])
 
@@ -197,7 +203,29 @@ def test_the_marker_points_at_where_the_record_still_lives(monkeypatch, tmp_path
                     messages=_tool_heavy(40), session_id="abc123")
     cli.fold_history(s, object(), config_mod.Config(platform="mac", warn_tokens=10_000),
                      tmp_path)
-    assert "abc123" in s.messages[0]["content"]
+    assert "~/.luban/sessions/archive/abc123-" in s.messages[0]["content"]
+
+
+def test_the_fold_reports_the_net_saving_not_the_span_s_size(monkeypatch, tmp_path):
+    """The message said the removed span's size was freed, before the summary that
+    replaced it was counted (E52)."""
+    printed = []
+    monkeypatch.setattr(cli, "save_session", lambda s: None)
+    monkeypatch.setattr(cli, "chars_per_token", lambda *a: 1.0)
+    class FB:
+        type, text = "text", "S" * 2_000
+    monkeypatch.setattr(cli.client_mod, "create_turn",
+                        lambda *a, **k: type("M", (), {"content": [FB()]})())
+    monkeypatch.setattr(cli.ui, "print_text", printed.append)
+    monkeypatch.setattr(cli, "FOLD_MIN_TOKENS", 100)
+    s = cli.Session(model="m", max_tokens=100, auto=True, stream=False,
+                    messages=_tool_heavy(40), session_id="abc123")
+    cli.fold_history(s, object(), config_mod.Config(platform="mac", warn_tokens=10_000),
+                     tmp_path)
+    line = next(t for t in printed if "folded" in t)
+    net = int(line.split("(~")[1].split(" tokens")[0].replace(",", ""))
+    gross = int(cli._history_chars(_tool_heavy(40)[:len(_tool_heavy(40)) - (len(s.messages) - 1)]))
+    assert 0 < net < gross and "net" in line and "archive/abc123-" in line
 
 
 # ---------------- driven by measurement, and never silent ----------------
@@ -473,7 +501,7 @@ def _huge(tid, n=400_000):
 def test_an_oversized_tool_result_is_bounded_rather_than_left_alone():
     msgs = [_u("read the pdf"), _call("t1"), _huge("t1"), _a("done"),
             _u("now what?"), _a("thinking")]
-    freed = cli.shrink_oversized_results(msgs, limit_chars=50_000, session_id="s1")
+    freed = cli.shrink_oversized_results(msgs, limit_chars=50_000, where="~/.luban/sessions/archive/s1-x.json")
     assert freed > 300_000
     assert cli._history_chars(msgs) < 60_000
 
@@ -482,18 +510,18 @@ def test_shrinking_keeps_the_pair_and_says_what_it_dropped():
     """Stated, never silent — and the record is still on disk, so the marker must say so."""
     msgs = [_u("read the pdf"), _call("t1"), _huge("t1"), _a("done"),
             _u("next"), _a("ok")]
-    cli.shrink_oversized_results(msgs, limit_chars=50_000, session_id="s1")
+    cli.shrink_oversized_results(msgs, limit_chars=50_000, where="~/.luban/sessions/archive/s1-x.json")
     block = msgs[2]["content"][0]
     assert block["type"] == "tool_result" and block["tool_use_id"] == "t1", (
         "the tool_use/tool_result pair must survive structurally or the next send 400s")
-    assert "s1" in block["content"] and "transcript" in block["content"]
+    assert "~/.luban/sessions/archive/s1-x.json" in block["content"]
 
 
 def test_the_live_exchange_is_never_shrunk():
     """Summarising away the result the model is working on right now is the failure mode
     folding already learned once."""
     msgs = [_u("a"), _a("b"), _u("read it"), _call("t1"), _huge("t1")]
-    assert cli.shrink_oversized_results(msgs, limit_chars=50_000, session_id="s1") == 0
+    assert cli.shrink_oversized_results(msgs, limit_chars=50_000, where="~/.luban/sessions/archive/s1-x.json") == 0
 
 
 def test_a_pending_oversized_result_does_not_latch_folding_off(monkeypatch, tmp_path):
@@ -512,7 +540,7 @@ def test_a_pending_oversized_result_does_not_latch_folding_off(monkeypatch, tmp_
     cli.fold_history(s, object(), config_mod.Config(platform="mac"), tmp_path)
     # the conversation moves on, and now the same result is reachable
     s.messages += [_u("thanks"), _a("ok")]
-    assert cli.shrink_oversized_results(s.messages, limit_chars=50_000, session_id="s") > 0
+    assert cli.shrink_oversized_results(s.messages, limit_chars=50_000, where="~/.luban/sessions/archive/s-x.json") > 0
 
 
 def test_a_projection_never_feeds_the_ratio_that_produced_it(monkeypatch):
@@ -538,7 +566,7 @@ def test_a_web_search_result_is_never_touched():
                 {"type": "web_search_tool_result", "tool_use_id": "w1",
                  "content": "x" * 400_000}]},
             _a("done"), _u("next"), _a("ok")]
-    assert cli.shrink_oversized_results(msgs, limit_chars=50_000, session_id="s1") == 0
+    assert cli.shrink_oversized_results(msgs, limit_chars=50_000, where="~/.luban/sessions/archive/s1-x.json") == 0
 
 
 # ---------------- folding INSIDE a turn ----------------

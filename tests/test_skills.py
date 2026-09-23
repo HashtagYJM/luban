@@ -156,3 +156,16 @@ def test_descriptions_are_never_truncated(tmp_path):
     front = "d" * 900
     desc2, _ = skills._parse(f"---\nname: n\ndescription: {front}\n---\nbody")
     assert desc2 == front
+
+
+def test_a_folder_skill_names_a_tool_every_caller_has(tmp_path, monkeypatch):
+    """The preamble told the reader to use run_command; a read-only subagent has none
+    and stalled on it (E49). read_file reaches the global store through the ~/.luban
+    alias, and every caller has read_file."""
+    from luban import paths
+    monkeypatch.setattr(paths, "luban_home", lambda: tmp_path / "home")
+    monkeypatch.setattr(skills, "GLOBAL_SKILLS_DIR", tmp_path / "home" / "skills")
+    _mk_folder(tmp_path / "home" / "skills", "quant_research", FRONT)
+    body = skills.load_skill("quant_research", tmp_path / "proj")
+    assert body.startswith("(Skill folder: ~/.luban/skills/quant_research")
+    assert "read_file" in body and "run_command" not in body

@@ -125,6 +125,14 @@ def list_skills(project_root: Path | str) -> list[dict]:
     return sorted(skills.values(), key=lambda s: s["name"])
 
 
+def _alias(folder: Path) -> str:
+    """The path as the file tools accept it: `~/.luban/...` for the global store."""
+    try:
+        return "~/.luban/" + folder.resolve().relative_to(paths.luban_home().resolve()).as_posix()
+    except ValueError:
+        return str(folder)
+
+
 def load_skill(name: str, project_root: Path | str) -> str | None:
     # Reject separators, "..", and ":" — a drive-letter prefix like "d:foo"
     # makes pathlib discard the join base on Windows; ":" also blocks NTFS
@@ -140,11 +148,13 @@ def load_skill(name: str, project_root: Path | str) -> str | None:
             except Exception:
                 return None
             if path.name == "SKILL.md":
-                # Global skill folders sit outside the project-root jail, so
-                # point the model at run_command (not read_file) for assets.
+                # A global skill folder is outside the project root, but read_file
+                # reaches it through the ~/.luban alias — and read_file is the one tool
+                # every caller has. A read-only subagent has no run_command, and telling
+                # it to use one stalled it (E49).
                 return (
-                    f"(Skill folder: {path.parent} — supporting files referenced "
-                    f"by this skill live there; read them with run_command.)\n\n{body}"
+                    f"(Skill folder: {_alias(path.parent)} — supporting files referenced "
+                    f"by this skill live there; read them with read_file.)\n\n{body}"
                 )
             return body
     return None

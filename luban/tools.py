@@ -213,10 +213,12 @@ def _grep(inp: dict, ctx: ToolContext) -> ToolResult:
     home = LUBAN_HOME.resolve()
     files = [base] if base.is_file() else [p for p in base.rglob("*") if p.is_file()]
     hits = []
+    skipped = 0
     for f in files:
         # Never expose the contents of ~/.luban Python (client_local.py holds
         # credentials) even though grep can now reach the home area.
         if (f == home or home in f.parents) and f.name.rstrip(" .").lower().endswith(".py"):
+            skipped += 1
             continue
         try:
             for n, line in enumerate(
@@ -230,7 +232,13 @@ def _grep(inp: dict, ctx: ToolContext) -> ToolResult:
                     hits.append(f"{disp}:{n}: {line.strip()}")
         except (UnicodeDecodeError, OSError, ValueError):
             continue
-    return ToolResult(_truncate("\n".join(hits) or "(no matches)"))
+    out = "\n".join(hits) or "(no matches)"
+    if skipped:
+        # Exclusion must not read as absence: a search that silently skipped the file
+        # holding the answer is a wrong answer, not an empty one (E53).
+        out += (f"\n(not searched: {skipped} Python file(s) under ~/.luban — luban never "
+                f"exposes their contents; read_file refuses them too)")
+    return ToolResult(_truncate(out))
 
 
 # One implementation for the whole codebase — see paths.atomic_write_text for why the
@@ -972,6 +980,7 @@ def _audit_call(ctx: ToolContext, name: str, tool_input: dict, decision: str, ou
         return
     try:
         ctx.audit({
+            "session": ctx.session_id,
             "tool": name,
             "target": permissions_mod.target_of(name, tool_input),
             "decision": decision,

@@ -200,3 +200,23 @@ def test_compact_resets_journaled_flag():
                 stop_reason="end_turn")
     cli.compact_session(sess, _C())  # 2-arg form: no flush, just summarize+reseed
     assert sess.journaled is False
+
+
+def test_a_journal_entry_written_in_conversation_counts_for_the_segment(tmp_path):
+    """The flush gate saw only its own turn's writes, so a session that had already
+    journaled in conversation got a near-duplicate at /compact and at exit — and the
+    journal window is capped, so each duplicate evicted a day of history (E55)."""
+    sess = _session([{"role": "user", "content": "hi"}])
+    memory.journal_append("decided X in conversation", project="proj")  # the journal TOOL
+    assert cli.segment_journaled(sess)
+    cli.exit_journal(sess, _cfg(), tmp_path)
+    files = list((tmp_path / "memory" / "journal").glob("*.md"))
+    text = files[0].read_text(encoding="utf-8")
+    assert text.count("\n") == 1 and "decided X" in text  # no second entry
+
+
+def test_a_new_segment_forgets_the_old_one_s_writes(tmp_path):
+    sess = _session([{"role": "user", "content": "hi"}])
+    memory.journal_append("earlier thread", project="proj")
+    cli.new_journal_segment(sess)  # what /new, /compact and resume call
+    assert not cli.segment_journaled(sess)

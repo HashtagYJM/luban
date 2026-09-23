@@ -206,6 +206,26 @@ def read_user() -> str:
     return _read_whole(USER_PATH, "USER.md")
 
 
+def fact_files() -> list:
+    """Every fact on disk, and nothing else. A fact is `<slug>.md` with a valid slug:
+    the index, continuity pointers included, and — the case that bit — a OneDrive
+    conflict copy such as `MEMORY-XXXX.md` or `some-fact-XXXX.md`, whose uppercase
+    suffix fails the slug rule, are not facts and never load (E48). One enumerator, so
+    every reader and the index rebuild agree on what the store contains."""
+    if not MEMORY_DIR.is_dir():
+        return []
+    return sorted(p for p in MEMORY_DIR.glob("*.md")
+                  if p.name != "MEMORY.md" and valid_slug(p.stem))
+
+
+def stray_files() -> list[str]:
+    """Names of `.md` files in the store that fact_files() leaves out."""
+    if not MEMORY_DIR.is_dir():
+        return []
+    return sorted(p.name for p in MEMORY_DIR.glob("*.md")
+                  if p.name != "MEMORY.md" and not valid_slug(p.stem))
+
+
 def read_index() -> str:
     """The whole fact index. No per-file cap: the TOTAL always-on budget is what is
     watched, and going over is reported rather than quietly trimmed."""
@@ -575,14 +595,13 @@ def duplicate_candidates(threshold: float = DUPLICATE_THRESHOLD
     duplicate that lives forever.
     """
     facts = []
-    if MEMORY_DIR.is_dir():
-        for p in sorted(MEMORY_DIR.glob("*.md")):
-            if p.name == "MEMORY.md" or is_checkpoint(p.stem):
-                continue  # one pointer per project; they are meant to look alike
-            try:
-                facts.append((p.stem, p.read_text(encoding="utf-8", errors="replace")))
-            except OSError:
-                continue
+    for p in fact_files():
+        if is_checkpoint(p.stem):
+            continue  # one pointer per project; they are meant to look alike
+        try:
+            facts.append((p.stem, p.read_text(encoding="utf-8", errors="replace")))
+        except OSError:
+            continue
     pairs = []
     for i, (sa, ta) in enumerate(facts):
         for sb, tb in facts[i + 1:]:
@@ -603,10 +622,8 @@ def description_index() -> list[tuple[str, str]]:
     real semantic overlaps survived a pass that had read every one of them (E39).
     """
     out: list[tuple[str, str]] = []
-    if not MEMORY_DIR.is_dir():
-        return out
-    for path in sorted(MEMORY_DIR.glob("*.md")):
-        if path.name == "MEMORY.md" or is_checkpoint(path.stem):
+    for path in fact_files():
+        if is_checkpoint(path.stem):
             continue
         try:
             text = path.read_text(encoding="utf-8", errors="replace")
@@ -644,15 +661,12 @@ def audit(extra: list[tuple[str, int]] | None = None) -> str:
     so an ordinary turn never carries it.
     """
     facts, maintained = [], []
-    if MEMORY_DIR.is_dir():
-        for p in sorted(MEMORY_DIR.glob("*.md")):
-            if p.name == "MEMORY.md":
-                continue
-            try:
-                entry = f"[{p.stem}]\n{p.read_text(encoding='utf-8', errors='replace').strip()}"
-            except OSError:
-                continue
-            (maintained if is_checkpoint(p.stem) else facts).append(entry)
+    for p in fact_files():
+        try:
+            entry = f"[{p.stem}]\n{p.read_text(encoding='utf-8', errors='replace').strip()}"
+        except OSError:
+            continue
+        (maintained if is_checkpoint(p.stem) else facts).append(entry)
     if not facts and not maintained:
         return always_on_budget(extra) + "\n\n(the fact store is empty)"
     body = "\n\n".join(facts)
@@ -724,8 +738,7 @@ def _fact_description(text: str) -> str:
 def _rebuild_index() -> None:
     lines = ["# Long-term memory index"]
     try:
-        facts = sorted(p for p in MEMORY_DIR.glob("*.md") if p.name != "MEMORY.md")
-        for p in facts:
+        for p in fact_files():
             text = p.read_text(encoding="utf-8", errors="replace")
             lines.append(f"- [{p.stem}] {_fact_description(text)}")
         paths.atomic_write_text(MEMORY_DIR / "MEMORY.md", "\n".join(lines) + "\n")
@@ -1009,9 +1022,7 @@ def recall(query: str) -> str:
     # --- facts lane: score, rank, take the best few -------------------------------
     if MEMORY_DIR.is_dir():
         scored: list[tuple[int, str, str]] = []
-        for p in sorted(MEMORY_DIR.glob("*.md")):
-            if p.name == "MEMORY.md":
-                continue
+        for p in fact_files():
             try:
                 text = p.read_text(encoding="utf-8", errors="replace")
             except OSError:

@@ -152,8 +152,8 @@ def test_an_ordinary_oversized_result_still_points_at_the_transcript():
         {"role": "user", "content": "a"},
         {"role": "assistant", "content": "b"},
     ]
-    cli.shrink_oversized_results(messages, 100, "sess-1")
-    assert "sess-1.json" in messages[0]["content"][0]["content"]
+    cli.shrink_oversized_results(messages, 100, "~/.luban/sessions/archive/sess-1-x.json")
+    assert "~/.luban/sessions/archive/sess-1-x.json" in messages[0]["content"][0]["content"]
 
 
 def test_the_skill_header_is_parsed_by_the_module_that_writes_it():

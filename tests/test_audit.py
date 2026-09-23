@@ -40,3 +40,15 @@ def test_default_path_resolves_at_call_time(tmp_path, monkeypatch):
     monkeypatch.setattr(audit, "AUDIT_PATH", p)
     audit.log({"tool": "x"})  # no path arg -> must use the patched AUDIT_PATH
     assert p.exists()
+
+
+def test_every_tool_row_carries_the_session_that_made_it(tmp_path):
+    """Two sessions in one project write the same audit file; a hook filtering by
+    project attributed the other session's skill loads to itself (E50)."""
+    from luban import tools
+    rows = []
+    ctx = tools.ToolContext(tmp_path, lambda p: True, lambda a, b, c: None, lambda c: None,
+                            audit=rows.append, session_id="2026-09-23-0900-ab12")
+    (tmp_path / "f.txt").write_text("x", encoding="utf-8")
+    tools.run_tool("read_file", {"path": "f.txt"}, ctx)
+    assert rows and rows[0]["session"] == "2026-09-23-0900-ab12"

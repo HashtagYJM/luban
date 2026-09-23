@@ -35,9 +35,9 @@ Pasting several lines sent each line as its own turn. Lines that arrive together
 
 A turn's work was saved when the turn ended. If the terminal closed or the machine went down after a write or a command had run but before the turn finished, the file on disk had changed and the session knew nothing of it. The session is now saved after every tool round that wrote, edited or ran something, so a resume sees what was done. Rounds that only read are not saved this way, which keeps the writes to a synced home to one per change.
 
-### Sub-agents are counted and bounded
+### Sub-agents are counted
 
-A sub-agent's model calls never reached `/usage`, and nothing limited how long it ran. Every call it makes now counts toward the session and per-model totals without replacing your own context figure. It gets 25 tool rounds, then is told to answer with what it has and say what is unverified; its oldest tool output is dropped once its own window passes a fixed size.
+A sub-agent's model calls never reached `/usage`. Every call it makes now counts toward the session and per-model totals without replacing your own context figure. Its oldest tool output is dropped once its own window passes a fixed size; there is no limit on how many tool calls it makes.
 
 ### The audit log says what actually happened
 

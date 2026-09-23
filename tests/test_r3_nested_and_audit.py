@@ -58,37 +58,6 @@ def test_a_failed_child_call_still_counts_what_it_spent(tmp_path):
     assert s.ledger.calls == 1 and s.ledger.input_tokens == 700
 
 
-def test_a_child_run_ends_with_an_answer_at_its_round_budget(tmp_path):
-    (tmp_path / "a.txt").write_text("hello")
-    script = [_msg([_read(f"t{i}")], "tool_use") for i in range(3)]
-    script.append(_msg([FakeBlock("text", text="partial: read a.txt three times")], "end_turn"))
-    fc = FakeClient(script)
-    cfg = agent.AgentConfig("m", 100, stream=False, max_tool_rounds=3,
-                            tools=[t for t in tools.TOOLS if t["name"] == "read_file"])
-    ctx = tools.ToolContext(tmp_path, lambda p: False, lambda *a: None, lambda c: None)
-    msgs = agent.run_turn(fc, cfg, [{"role": "user", "content": "go"}], ctx, lambda t: None)
-    assert cli._final_text(msgs).startswith("partial")
-    last_call = fc.messages.calls[-1]
-    assert not last_call.get("tools")  # the answering call offers nothing
-    notice = msgs[-2]["content"][-1]["content"]
-    assert "tool budget reached" in notice
-    assert all(m["role"] != "user" or not isinstance(m["content"], str)
-               or m["content"] == "go" for m in msgs)  # no text block after a result
-
-
-def test_a_child_that_calls_a_tool_after_the_budget_is_stopped_cleanly(tmp_path):
-    (tmp_path / "a.txt").write_text("hello")
-    fc = FakeClient([_msg([_read("t0")], "tool_use"),
-                     _msg([FakeBlock("text", text="one more"), _read("t1")], "tool_use")])
-    cfg = agent.AgentConfig("m", 100, stream=False, max_tool_rounds=1,
-                            tools=[t for t in tools.TOOLS if t["name"] == "read_file"])
-    ctx = tools.ToolContext(tmp_path, lambda p: False, lambda *a: None, lambda c: None)
-    msgs = agent.run_turn(fc, cfg, [{"role": "user", "content": "go"}], ctx, lambda t: None)
-    assert len(fc.messages.calls) == 2
-    assert not any(b.get("type") == "tool_use" and b.get("id") == "t1"
-                   for m in msgs if isinstance(m["content"], list) for b in m["content"])
-
-
 def test_the_child_window_is_bounded_between_calls():
     big = lambda tid: {"role": "user", "content": [
         {"type": "tool_result", "tool_use_id": tid, "content": "x" * 50_000}]}

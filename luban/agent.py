@@ -146,15 +146,6 @@ class AgentConfig:
     # and an agentic turn is where it actually grows: one prompt, a hundred tool calls,
     # every call re-sending all of it, and nothing able to act until the turn ended.
     between_calls: object = None
-    # How many tool rounds a run may make before it is told to answer with what it has.
-    # None means unbounded — the main agent's work is the user's to bound. A nested run
-    # has no human watching it, so it gets a number.
-    max_tool_rounds: int | None = None
-
-
-BUDGET_NOTICE = ("\n\n[tool budget reached: this run has used its {n} tool rounds. Answer now "
-                 "with what you have, and say what is left unverified; no further tool "
-                 "call will run.]")
 
 
 def build_system_param(stable: str, volatile: str, cache: bool, model: str = ""):
@@ -459,8 +450,6 @@ def run_turn(client, config: AgentConfig, messages: list[dict], ctx, on_text,
     messages = list(messages)
     pauses = 0
     truncations = 0
-    rounds = 0
-    budget_spent = False
     while True:
         msg = _run_model_turn(client, config, messages, on_text, on_thinking, on_retry)
         # The provider stamp says WHOSE reasoning state this is, so a later /model
@@ -514,10 +503,6 @@ def run_turn(client, config: AgentConfig, messages: list[dict], ctx, on_text,
             # Any other non-tool_use stop can still carry a trailing tool_use — never
             # return it unanswered, or the next send/resume 400s.
             return sanitize_history(messages)
-        if budget_spent:
-            # Told to answer, it called a tool anyway. The call is stripped (an
-            # unanswered tool_use 400s the next send) and the run ends on its last text.
-            return sanitize_history(messages)
         offered = {
             t["name"] for t in (config.tools if config.tools is not None else tools_mod.TOOLS)
         }
@@ -555,14 +540,6 @@ def run_turn(client, config: AgentConfig, messages: list[dict], ctx, on_text,
             # stop_reason was tool_use but no tool_use blocks were present;
             # returning avoids sending an empty tool_result message in a loop.
             return sanitize_history(messages)
-        rounds += 1
-        if config.max_tool_rounds is not None and rounds >= config.max_tool_rounds:
-            # Inside the last result, never as a text block after it (rule 6 of the
-            # empty-turn spec), and the next call offers no tools at all.
-            results[-1]["content"] = (results[-1]["content"]
-                                      + BUDGET_NOTICE.format(n=config.max_tool_rounds))
-            config = replace(config, tools=[])
-            budget_spent = True
         messages.append({"role": "user", "content": results})
         if config.between_calls is not None:
             bounded = config.between_calls(messages)

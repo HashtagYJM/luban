@@ -262,7 +262,6 @@ def build_tool_context(
                 # totals and per-model figures, never as the session's context size,
                 # which is the parent's last request and not the child's.
                 on_usage=lambda u: session.ledger.add(u, session.model, context=False),
-                max_tool_rounds=SUBAGENT_MAX_ROUNDS,
                 between_calls=bound_subagent,
             )
             sub_ctx = tools.ToolContext(
@@ -1008,12 +1007,11 @@ def set_home(path: str) -> None:
         )
 
 
-# A nested run has no human watching it and no fold: it is bounded by count and by size.
-# The count ends it with an answer; the size keeps the calls before that from growing
-# without limit by dropping the oldest tool output once the child's window is past the
-# budget. Sub-agent output is never archived — the parent gets the child's answer, not
-# its transcript, so a dropped body is gone and the stub says so.
-SUBAGENT_MAX_ROUNDS = 25
+# A nested run has no fold, so its window is bounded by size: the oldest tool output is
+# dropped once the child's window passes the budget. There is deliberately no cap on its
+# number of tool rounds (the user's call, 2026-09-23). Sub-agent output is never archived
+# — the parent gets the child's answer, not its transcript, so a dropped body is gone and
+# the stub says so.
 SUBAGENT_BUDGET_CHARS = 200_000
 
 

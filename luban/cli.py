@@ -222,11 +222,17 @@ def build_tool_context(
                     tool_name, tool_input, project_root, cfg.allow_out_of_tree_file_edits),
             )
 
+        audit_warned = []
+
         def audit_cb(entry: dict) -> None:
             # The session id is read at call time: the context is built once, and the
             # thread it serves changes on /new, /compact and resume (E50).
-            audit_mod.log({"project": session.project, "session": session.session_id,
-                           **entry})
+            ok = audit_mod.log({"project": session.project, "session": session.session_id,
+                                **entry})
+            if not ok and not audit_warned:
+                audit_warned.append(True)
+                ui.print_text(f"(audit log unavailable — {audit_mod.last_error}; the work "
+                              f"continues, the trail does not)\n")
 
     subagent = None
     if client is not None and cfg is not None and cfg.subagents:
@@ -245,6 +251,12 @@ def build_tool_context(
                 # untestable through sub-agents, which is the cheapest place to test it.
                 skills=skills_mod.list_skills(str(project_root)),
                 subagent=True,
+                # Every child call reaches the ledger as a SIDE call: counted in the
+                # totals and per-model figures, never as the session's context size,
+                # which is the parent's last request and not the child's.
+                on_usage=lambda u: session.ledger.add(u, session.model, context=False),
+                max_tool_rounds=SUBAGENT_MAX_ROUNDS,
+                between_calls=bound_subagent,
             )
             sub_ctx = tools.ToolContext(
                 project_root=Path(project_root),
@@ -352,7 +364,10 @@ def blank_probe_notice(session: Session, variant: str, msg, answered) -> None:
     if isinstance(msg, BaseException):
         outcome, account = f"failed: {msg}", {}
     else:
-        outcome = "answered — that is the cause" if answered else "blank again"
+        # An answer after one removal is a recovery and a suspect, not a proof: the
+        # blank may be intermittent, and the re-send differs in timing as well as content.
+        outcome = (f"answered — recovered; {variant} is the suspected trigger, not proven"
+                   if answered else "blank again")
         account = blank_account(session, msg)
     audit_mod.log({"project": session.project, "session": session.session_id,
                    "tool": "model:empty:probe", "target": session.model, "decision": variant,
@@ -984,6 +999,35 @@ def set_home(path: str) -> None:
             f"✓ created {target}. Add this to your shell profile to make it stick:\n"
             f'  export LUBAN_HOME="{target}"\n'
         )
+
+
+# A nested run has no human watching it and no fold: it is bounded by count and by size.
+# The count ends it with an answer; the size keeps the calls before that from growing
+# without limit by dropping the oldest tool output once the child's window is past the
+# budget. Sub-agent output is never archived — the parent gets the child's answer, not
+# its transcript, so a dropped body is gone and the stub says so.
+SUBAGENT_MAX_ROUNDS = 25
+SUBAGENT_BUDGET_CHARS = 200_000
+
+
+def bound_subagent(messages: list, budget_chars: int = SUBAGENT_BUDGET_CHARS,
+                   keep_recent: int = 2) -> list:
+    """The child's between-calls hook: oldest tool results are stubbed first, the live
+    exchange is never touched, and nothing is summarised (no model call)."""
+    if _history_chars(messages) <= budget_chars:
+        return messages
+    for msg in messages[:max(0, len(messages) - keep_recent)]:
+        if not isinstance(msg.get("content"), list):
+            continue
+        for block in msg["content"]:
+            if (isinstance(block, dict) and block.get("type") == "tool_result"
+                    and isinstance(block.get("content"), str) and len(block["content"]) > 200):
+                block["content"] = (f"[{len(block['content']):,} characters of tool output "
+                                    f"dropped: this sub-agent's window is over its budget. "
+                                    f"Re-run the call if you still need it.]")
+                if _history_chars(messages) <= budget_chars:
+                    return messages
+    return messages
 
 
 def build_agent_config(session: Session, cfg: config_mod.Config, project_root: Path) -> agent.AgentConfig:
@@ -1649,9 +1693,25 @@ def bound_turn(session: Session, client, cfg: config_mod.Config, project_root: P
     """
     def between(messages: list) -> list:
         session.messages = messages
+        if round_mutated(messages):
+            # The side effect is done; the record of it must not wait for the turn to
+            # end. A process that dies here (power, a closed terminal, kill) used to
+            # leave the file without the write it had made, and the resume knew nothing
+            # of it. Reads are not saved this way: losing their record costs tokens,
+            # not truth, and one write per mutating round keeps a synced home quiet.
+            save_session(session)
         maintain_context(session, client, cfg, project_root)
         return session.messages
     return between
+
+
+def round_mutated(messages: list) -> bool:
+    """Whether the tool round that just completed ran anything but a read-only tool."""
+    if len(messages) < 2 or not isinstance(messages[-2].get("content"), list):
+        return False
+    return any(isinstance(b, dict) and b.get("type") == "tool_use"
+               and b.get("name") not in tools.READ_ONLY_TOOLS
+               for b in messages[-2]["content"])
 
 
 def compact_session(session: Session, client, ctx=None, cfg=None) -> None:

@@ -359,4 +359,6 @@ def test_each_probe_is_a_row_the_user_can_read(monkeypatch, tmp_path):
         ("model:empty:probe", "context editing", False)]
     body = "".join(printed)
     assert "re-sending without the memory index" in body
-    assert "without context editing: answered" in body and "cause" in body
+    assert "without context editing: answered" in body
+    # a recovery names a suspect; it does not claim a proof (R2)
+    assert "suspected trigger" in body and "not proven" in body and "the cause" not in body

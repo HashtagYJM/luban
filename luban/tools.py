@@ -26,6 +26,12 @@ READ_ONLY_TOOLS = {"list_dir", "glob", "grep", "read_file", "load_skill", "recal
 class ToolResult:
     content: str
     is_error: bool = False
+    # What actually happened, for the audit row: "declined", "launch_failed",
+    # "timed_out", "nonzero_exit"... Empty means derive it from is_error. `is_error` is
+    # what the MODEL is told and stays as it was; the trail needs the finer answer,
+    # because "the user said no" and "it ran and failed" were one flag.
+    outcome: str = ""
+    exit_code: int | None = None
 
 
 @dataclass
@@ -373,7 +379,7 @@ def _write_file(inp: dict, ctx: ToolContext) -> ToolResult:
     new = inp["content"]
     ctx.render_diff(inp["path"], old, new)
     if not ctx.confirm(f"Write {inp['path']}?"):
-        return ToolResult("User declined the write.")
+        return ToolResult("User declined the write.", outcome="declined")
     try:
         _atomic_write_text(target, new)
     except (OSError, ValueError, UnicodeError) as exc:
@@ -404,7 +410,7 @@ def _edit_file(inp: dict, ctx: ToolContext) -> ToolResult:
     new = old.replace(inp["old_string"], inp["new_string"])
     ctx.render_diff(inp["path"], old, new)
     if not ctx.confirm(f"Edit {inp['path']}?"):
-        return ToolResult("User declined the edit.")
+        return ToolResult("User declined the edit.", outcome="declined")
     try:
         _atomic_write_text(target, new)
     except (OSError, ValueError, UnicodeError) as exc:
@@ -525,13 +531,15 @@ def _read_output(inp: dict, ctx: ToolContext) -> ToolResult:
     job.read_to = len(text)
     code = job.proc.poll()
     if code is None:
-        status = "still running"
+        status, outcome = "still running", "running"
     else:
         status = f"finished, exit code {code}"
+        outcome = "ok" if code == 0 else "nonzero_exit"
         # Keep the record so a later read can still report the exit code, but the
         # buffer has been fully handed over.
     body = fresh or "(no new output)"
-    return ToolResult(_truncate(f"[{handle}: {status}]\n{body}"))
+    return ToolResult(_truncate(f"[{handle}: {status}]\n{body}"), outcome=outcome,
+                      exit_code=code)
 
 
 def kill_all_jobs() -> list[str]:
@@ -555,10 +563,14 @@ def _run_command(inp: dict, ctx: ToolContext) -> ToolResult:
     timeout = min(int(inp.get("timeout", 120)), MAX_COMMAND_TIMEOUT)
     ctx.render_command(command)
     if not ctx.confirm(f"Run: {command}"):
-        return ToolResult("User declined the command.")
+        return ToolResult("User declined the command.", outcome="declined")
     if inp.get("background") is True:
         return _start_background(command, ctx)
-    proc = _spawn(command, ctx.project_root)
+    try:
+        proc = _spawn(command, ctx.project_root)
+    except OSError as exc:
+        return ToolResult(f"Could not start the command: {exc}", is_error=True,
+                          outcome="launch_failed")
     try:
         out, err = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
@@ -570,10 +582,12 @@ def _run_command(inp: dict, ctx: ToolContext) -> ToolResult:
         partial = _truncate((out or "") + (err or ""))
         return ToolResult(
             f"Command timed out after {timeout}s (process tree killed).\n{partial}",
-            is_error=True,
+            is_error=True, outcome="timed_out",
         )
     body = (out or "") + (err or "")
-    return ToolResult(_truncate(f"{body}\n[exit code: {proc.returncode}]"))
+    return ToolResult(_truncate(f"{body}\n[exit code: {proc.returncode}]"),
+                      outcome="ok" if proc.returncode == 0 else "nonzero_exit",
+                      exit_code=proc.returncode)
 
 
 def _load_skill(inp: dict, ctx: ToolContext) -> ToolResult:
@@ -1064,25 +1078,43 @@ def reset_custom() -> None:
     _CUSTOM_NAMES.clear()
 
 
+# decision → outcome, for the rows where the tool never ran. A refused call and an
+# executed one that failed were both `is_error: true`; the trail has to tell them apart.
+_REFUSED = {"deny_rule": "denied", "not_offered": "not_offered", "unknown": "unknown"}
+
+
 def _audit_call(ctx: ToolContext, name: str, tool_input: dict, decision: str, out: ToolResult) -> None:
     if ctx.audit is None:
         return
     try:
-        ctx.audit({
+        entry = {
             "session": ctx.session_id,
             "tool": name,
             "target": permissions_mod.target_of(name, tool_input),
             "decision": decision,
             "is_error": out.is_error,
-        })
+            "outcome": out.outcome or _REFUSED.get(decision)
+            or ("error" if out.is_error else "ok"),
+        }
+        if out.exit_code is not None:
+            entry["exit_code"] = out.exit_code
+        ctx.audit(entry)
     except Exception:
         pass  # auditing must never break the loop
+
+
+def audit_unavailable(ctx: ToolContext, name: str, tool_input: dict, out: ToolResult) -> None:
+    """The turn loop's own refusal — a tool the model named that this turn never offered —
+    recorded like every other outcome. It used to return before any row was written."""
+    _audit_call(ctx, name, tool_input, "not_offered", out)
 
 
 def run_tool(name: str, tool_input: dict, ctx: ToolContext) -> ToolResult:
     fn = _DISPATCH.get(name)
     if fn is None:
-        return ToolResult(f"Unknown tool: {name}", is_error=True)
+        out = ToolResult(f"Unknown tool: {name}", is_error=True)
+        _audit_call(ctx, name, tool_input, "unknown", out)
+        return out
     if ctx.only is not None and name not in ctx.only:
         # Not a permission decision — the tool was never on offer here. Reported to the
         # model and the audit trail both, because no tool call is silently dropped.

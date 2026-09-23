@@ -13,8 +13,14 @@ from luban import paths
 
 AUDIT_PATH = paths.luban_home() / "audit.jsonl"
 
+# Why the last write failed, for the caller to say so ONCE. The log is best-effort
+# diagnostics: a full disk or a locked file must not stop the work, but a trail that
+# silently stopped is worse than none, because it reads as "nothing happened".
+last_error = ""
 
-def log(entry: dict, path: Path | None = None) -> None:
+
+def log(entry: dict, path: Path | None = None) -> bool:
+    global last_error
     p = path if path is not None else AUDIT_PATH
     try:
         p.parent.mkdir(parents=True, exist_ok=True)
@@ -24,5 +30,7 @@ def log(entry: dict, path: Path | None = None) -> None:
         )
         with p.open("a", encoding="utf-8") as f:
             f.write(line + "\n")
-    except Exception:
-        pass  # auditing is a side channel — it must never raise into the agent loop
+        return True
+    except Exception as exc:  # auditing must never raise into the agent loop
+        last_error = f"{type(exc).__name__}: {exc}"
+        return False

@@ -19,6 +19,22 @@ below. Only user-facing behaviour earns a line here.
 
 Three ways around the `~/.luban/*.py` and audit-log guards are closed: a project folder that contains `~/.luban` (or is it), a relative spelling of the path, and a symlink inside the project pointing at the protected file. `grep` and `glob` now judge each file by where it really is, skip links that leave the project unless `allow_out_of_tree_file_edits` is on, and say how many they skipped. And a permission rule such as `deny = ["write_file:~/.luban/*"]` now matches the absolute and relative spellings of the same file, not only the exact text the model typed.
 
+### A write survives the process dying mid-turn
+
+A turn's work was saved when the turn ended. If the terminal closed or the machine went down after a write or a command had run but before the turn finished, the file on disk had changed and the session knew nothing of it. The session is now saved after every tool round that wrote, edited or ran something, so a resume sees what was done. Rounds that only read are not saved this way, which keeps the writes to a synced home to one per change.
+
+### Sub-agents are counted and bounded
+
+A sub-agent's model calls never reached `/usage`, and nothing limited how long it ran. Every call it makes now counts toward the session and per-model totals without replacing your own context figure. It gets 25 tool rounds, then is told to answer with what it has and say what is unverified; its oldest tool output is dropped once its own window passes a fixed size.
+
+### The audit log says what actually happened
+
+A declined write, a denied command, a command that exited non-zero and one that timed out all looked alike in `audit.jsonl`. Each row now carries an `outcome` (`ok`, `declined`, `denied`, `nonzero_exit`, `timed_out`, `launch_failed`, `not_offered`, `unknown`) and, for commands, the `exit_code`, including a background job's when you read its output. A tool the model names but was never offered, or that does not exist, is now recorded too. If the log itself cannot be written, luban says so once and carries on. The existing fields are unchanged.
+
+### A blank answer's probe reports a suspect, not a cause
+
+When a re-send without one of luban's additions answers, the line now says the turn recovered and names that addition as the suspected trigger. It used to say "that is the cause", which one recovery cannot show.
+
 ### Two archives in one second are two files
 
 A large tool result stubbed and a fold in the same second wrote the same archive file twice, so the stub's "full result is at…" pointed at a file holding the stub. Each archive under `sessions/archive/` now gets its own name. And if the archive cannot be written at all, nothing is stubbed or folded and luban says so, rather than reporting a file that does not exist.

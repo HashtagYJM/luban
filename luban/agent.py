@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from luban import client as client_mod
 from luban import history as history_mod
@@ -403,8 +403,50 @@ def _has_tool_use(content) -> bool:
     )
 
 
+def _blank_variants(config: AgentConfig) -> list[tuple[str, AgentConfig]]:
+    """The request minus one thing luban adds, cheapest hypothesis first. Only the parts
+    this call actually carried: a variant that changes nothing is not a probe."""
+    out = []
+    if config.volatile_fn or config.global_volatile:
+        out.append(("the memory index", replace(config, volatile_fn=lambda: "", global_volatile="")))
+    if config.ctx_mgmt:
+        out.append(("context editing", replace(config, ctx_mgmt=None)))
+    if config.thinking:
+        out.append(("thinking", replace(config, thinking=False)))
+    return out
+
+
+def _probe_blank(client, config, messages, on_text, on_thinking, on_retry, on_probe):
+    """A blank answer, investigated on the spot: the same transcript re-sent with one of
+    luban's own additions removed at a time, until one answers or all have blanked.
+
+    Anthropic say re-sending the SAME request blanks again, and the field agreed with
+    them; a request that differs in one thing is a different question. Whichever
+    variant answers names the cause, and its answer is the turn's answer, so the
+    investigation costs the user the `continue` they would have typed anyway — plus one
+    full window per variant that also blanks. Returns (message, blocks); blocks empty if
+    nothing answered. A probe that errors counts as blank and never ends the turn."""
+    provider = client_mod.provider_for(config.model)
+    for variant, cfg in _blank_variants(config):
+        if on_probe is not None:
+            on_probe(variant, None, None)
+        try:
+            got = _run_model_turn(client, cfg, messages, on_text, on_thinking, on_retry)
+        except Exception as exc:
+            if on_probe is not None:
+                on_probe(variant, exc, False)
+            continue
+        blocks = client_mod.message_to_blocks(got, provider)
+        if on_probe is not None:
+            on_probe(variant, got, bool(blocks))
+        if blocks:
+            return got, blocks
+    return None, []
+
+
 def run_turn(client, config: AgentConfig, messages: list[dict], ctx, on_text,
-             on_thinking=None, on_retry=None, on_truncated=None, on_empty=None) -> list[dict]:
+             on_thinking=None, on_retry=None, on_truncated=None, on_empty=None,
+             on_probe=None) -> list[dict]:
     messages = list(messages)
     pauses = 0
     truncations = 0
@@ -414,6 +456,13 @@ def run_turn(client, config: AgentConfig, messages: list[dict], ctx, on_text,
         # switch can drop what the new provider cannot replay (E41).
         blocks = client_mod.message_to_blocks(
             msg, client_mod.provider_for(config.model))
+        if not blocks:
+            # Find out why, right now, while the request that blanked is still in hand:
+            # see _probe_blank. A variant that answers carries the turn on.
+            probed, blocks = _probe_blank(
+                client, config, messages, on_text, on_thinking, on_retry, on_probe)
+            if blocks:
+                msg = probed
         if not blocks:
             # The turn produced nothing usable — either the model returned an empty
             # response, or the only block was unsigned thinking, which cannot be echoed

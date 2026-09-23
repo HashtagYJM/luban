@@ -294,6 +294,45 @@ def resolve_max_tokens(flag: int | None, cfg: config_mod.Config, stream: bool) -
     return want
 
 
+def blank_account(session: Session, msg) -> dict:
+    """What the provider said about an answer with no usable block, as an audit row.
+
+    The OpenAI adapter folds every outcome but max_output_tokens into end_turn, so without
+    this a content filter, a refusal and a truly empty answer were one symptom. Anthropic
+    messages carry no such account; the raw block types stand in, plus the three things
+    that separate the candidate causes: how many tokens the model actually produced,
+    whether the call went through the beta surface, and whether clearing had applied."""
+    diag = dict(getattr(msg, "diagnostics", None) or {
+        "status": None, "reason": None, "error": None,
+        "output": [b.type + ("" if getattr(b, "signature", None) or b.type != "thinking"
+                             else "(unsigned)") for b in getattr(msg, "content", [])]})
+    last = session.ledger.last
+    diag.update({
+        "output_tokens": last.output_tokens if last else None,
+        "beta_surface": client_mod.probes(session.model)["ctx_mgmt"],
+        "cleared_tokens": session.ledger.cleared_tokens,
+    })
+    return diag
+
+
+def blank_probe_notice(session: Session, variant: str, msg, answered) -> None:
+    """One line per probe of a blank answer, and one audit row: which of luban's own
+    additions was left out, and whether the model then answered. `msg` is None when the
+    probe is about to be sent, an exception if it failed, else the response."""
+    if msg is None:
+        ui.print_text(f"\n[empty answer — re-sending without {variant}]\n")
+        return
+    if isinstance(msg, BaseException):
+        outcome, account = f"failed: {msg}", {}
+    else:
+        outcome = "answered — that is the cause" if answered else "blank again"
+        account = blank_account(session, msg)
+    audit_mod.log({"project": session.project, "tool": "model:empty:probe",
+                   "target": session.model, "decision": variant,
+                   "is_error": not answered, **account})
+    ui.print_text(f"[without {variant}: {outcome} — recorded in audit.jsonl]\n")
+
+
 def empty_turn_notice(session: Session, msg) -> None:
     """A turn that came back with no content at all — say so, keep the prompt, and write
     down what the provider actually said.
@@ -313,23 +352,7 @@ def empty_turn_notice(session: Session, msg) -> None:
     why = f" (stop reason: {stop_reason})" if stop_reason else ""
     kept = ("your prompt was kept; /retry to send it again" if session.last_failed
             else "the work up to this point is kept; say what to do next")
-    # The OpenAI adapter folds every outcome but max_output_tokens into end_turn, so
-    # without this line a content filter, a refusal and a truly empty answer were one
-    # symptom. Anthropic messages carry no such account; the raw block types stand in.
-    diag = getattr(msg, "diagnostics", None) or {
-        "status": None, "reason": None, "error": None,
-        "output": [b.type + ("" if getattr(b, "signature", None) or b.type != "thinking"
-                             else "(unsigned)") for b in getattr(msg, "content", [])]}
-    # The Anthropic side has no status to report, so record the three things that
-    # separate the candidate causes: how many tokens the model actually produced, whether
-    # the call went through the beta surface (the one thing context_editing changes before
-    # any clearing has happened), and whether clearing had applied.
-    last = session.ledger.last
-    diag.update({
-        "output_tokens": last.output_tokens if last else None,
-        "beta_surface": client_mod.probes(session.model)["ctx_mgmt"],
-        "cleared_tokens": session.ledger.cleared_tokens,
-    })
+    diag = blank_account(session, msg)
     audit_mod.log({"project": session.project, "tool": "model:empty",
                    "target": session.model, "decision": stop_reason, "is_error": True,
                    **diag})
@@ -2089,6 +2112,8 @@ def main(argv: list[str] | None = None) -> None:
                 ui.print_thinking, on_retry=stream_retry_notice,
                 on_truncated=truncation_notice,
                 on_empty=empty_turn.append,
+                on_probe=lambda variant, msg, answered: blank_probe_notice(
+                    session, variant, msg, answered),
             )
         except KeyboardInterrupt:
             abandon_turn(session)

@@ -11,7 +11,9 @@ below. Only user-facing behaviour earns a line here.
 
 ## Unreleased
 
-Nothing yet since v0.7.6.
+### A blank answer now investigates itself
+
+v0.7.6 removed the one trigger Anthropic document for a 2-token empty answer, and the next day the field produced another one on it. Waiting for a report is over: when the model returns nothing, luban re-sends the same transcript at once with one of its own additions left out at a time — the memory index, then context editing, then thinking — and stops at the first that answers. That answer carries the turn on, so a blank costs the `continue` you would have typed anyway, plus one full window for each variant that also blanks. Every probe is a `model:empty:probe` row in `audit.jsonl` naming what was left out and whether the model then answered; the one that answers names the cause.
 
 ## v0.7.6 — the blank answers on Claude, found and removed
 

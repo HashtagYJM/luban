@@ -259,3 +259,104 @@ def test_a_blank_claude_turn_records_tokens_surface_and_clearing(monkeypatch, tm
     row = json.loads((tmp_path / "audit.jsonl").read_text().splitlines()[-1])
     assert row["output_tokens"] == 2 and row["beta_surface"] is True
     assert row["cleared_tokens"] == 0 and row["output"] == []
+
+
+# --- the investigation ---------------------------------------------------------
+
+
+class _Recording(_Messages):
+    """A client whose answers depend on the request: blank while the memory index is in
+    the tail, content once it is gone."""
+
+    def __init__(self, answer_when):
+        super().__init__([])
+        self.answer_when = answer_when
+
+    def create(self, **kw):
+        self.calls.append(kw)
+        if self.answer_when(kw):
+            return Resp([Blk("text", text="done")])
+        return Resp([])
+
+
+def _index_in_tail(kw):
+    last = kw["messages"][-1]["content"]
+    return "Long-term memory index" in (last if isinstance(last, str) else str(last))
+
+
+def _probing_config(**over):
+    base = dict(model="claude-opus-5", max_tokens=100, stream=False, cache_prompt=True,
+                volatile_fn=lambda: "Long-term memory index (use recall for details):\n- [a](b)",
+                thinking=True, ctx_mgmt={"edits": []})
+    base.update(over)
+    return agent.AgentConfig(**base)
+
+
+def test_a_blank_is_re_sent_without_one_addition_at_a_time_until_one_answers(tmp_path):
+    """v0.7.6 removed the trigger Anthropic document and the field blanked again on it
+    the next day. The next evidence has to come from the request itself: the same
+    transcript minus one of luban's own additions, until one answers. Here the index is
+    the cause, so the first probe answers and that answer is the turn's."""
+    client = Client([])
+    client.messages = _Recording(lambda kw: not _index_in_tail(kw))
+    probes, empties = [], []
+    out = agent.run_turn(client, _probing_config(), [{"role": "user", "content": "hi"}],
+                         _ctx(tmp_path), lambda t: None,
+                         on_empty=empties.append,
+                         on_probe=lambda v, m, a: probes.append((v, a)))
+    assert _index_in_tail(client.messages.calls[0])
+    assert not _index_in_tail(client.messages.calls[1])
+    assert probes == [("the memory index", None), ("the memory index", True)]
+    assert empties == []
+    assert out[-1] == {"role": "assistant", "content": [{"type": "text", "text": "done"}]}
+
+
+def test_every_addition_is_tried_before_the_blank_is_reported(tmp_path):
+    """Nothing answers: each of the three additions was left out once, the notice still
+    fires, and the history is untouched — the same guarantee as before, plus the rows."""
+    client = Client([])
+    client.messages = _Recording(lambda kw: False)
+    probes, empties = [], []
+    out = agent.run_turn(client, _probing_config(), [{"role": "user", "content": "hi"}],
+                         _ctx(tmp_path), lambda t: None,
+                         on_empty=empties.append,
+                         on_probe=lambda v, m, a: probes.append((v, a)))
+    calls = client.messages.calls
+    assert len(calls) == 4
+    assert [v for v, a in probes if a is not None] == ["the memory index", "context editing", "thinking"]
+    assert all(a is False for v, a in probes if a is not None)
+    assert "thinking" not in calls[3] and "thinking" in calls[2]
+    assert len(empties) == 1 and out == [{"role": "user", "content": "hi"}]
+
+
+def test_only_additions_the_call_carried_are_probed(tmp_path):
+    """A plain call — no index, no context editing, no thinking — has nothing to leave
+    out; re-sending it unchanged is the retry Anthropic say does not work."""
+    client = Client([])
+    client.messages = _Recording(lambda kw: False)
+    probes = []
+    agent.run_turn(client, _probing_config(volatile_fn=None, thinking=False, ctx_mgmt=None),
+                   [{"role": "user", "content": "hi"}], _ctx(tmp_path), lambda t: None,
+                   on_probe=lambda v, m, a: probes.append(v))
+    assert len(client.messages.calls) == 1 and probes == []
+
+
+def test_each_probe_is_a_row_the_user_can_read(monkeypatch, tmp_path):
+    import json
+    from luban import sessions
+    monkeypatch.setattr(sessions, "SESSIONS_DIR", tmp_path)
+    monkeypatch.setattr(audit, "AUDIT_PATH", tmp_path / "audit.jsonl")
+    printed = []
+    monkeypatch.setattr(cli.ui, "print_text", printed.append)
+    session = cli.Session(model="claude-opus-5", max_tokens=10, auto=True, stream=False,
+                          messages=[{"role": "user", "content": "hi"}], project="p")
+    cli.blank_probe_notice(session, "the memory index", None, None)
+    cli.blank_probe_notice(session, "the memory index", Resp([]), False)
+    cli.blank_probe_notice(session, "context editing", Resp([Blk("text", text="x")]), True)
+    rows = [json.loads(l) for l in (tmp_path / "audit.jsonl").read_text().splitlines()]
+    assert [(r["tool"], r["decision"], r["is_error"]) for r in rows] == [
+        ("model:empty:probe", "the memory index", True),
+        ("model:empty:probe", "context editing", False)]
+    body = "".join(printed)
+    assert "re-sending without the memory index" in body
+    assert "without context editing: answered" in body and "cause" in body

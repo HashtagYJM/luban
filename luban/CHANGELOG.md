@@ -15,6 +15,10 @@ below. Only user-facing behaviour earns a line here.
 
 `auto = true` in `config.toml` starts every session in auto mode, as `--auto` does. Deny rules still apply, the prompt reads `you (auto)>`, and `/auto off` turns the prompts back on for that session. `luban --sync-config` adds the key, commented out.
 
+### A write is recorded before the next tool in the same step runs
+
+v0.8.0 saved the session after each step that changed something. One model step can ask for several tools, and if luban was killed after the first had written a file but before the step finished, the file was changed and the session had no record of it. The session is now saved right after each tool that writes, edits or runs something. A tool that had not started is left out of the record, so a resumed session knows about the write and repeats nothing. What can still go unrecorded is a tool that was running when luban died.
+
 ## v0.8.0 — nothing lost, controls that mean what they say, and a setup check
 
 ### `/auto off` turns confirmation back on

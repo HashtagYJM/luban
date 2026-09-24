@@ -1698,16 +1698,30 @@ def bound_turn(session: Session, client, cfg: config_mod.Config, project_root: P
     """
     def between(messages: list) -> list:
         session.messages = messages
-        if round_mutated(messages):
-            # The side effect is done; the record of it must not wait for the turn to
-            # end. A process that dies here (power, a closed terminal, kill) used to
-            # leave the file without the write it had made, and the resume knew nothing
-            # of it. Reads are not saved this way: losing their record costs tokens,
-            # not truth, and one write per mutating round keeps a synced home quiet.
-            save_session(session)
         maintain_context(session, client, cfg, project_root)
         return session.messages
     return between
+
+
+def checkpoint_tool(session: Session):
+    """The after-each-tool hook: save the session as soon as a tool with a side effect
+    has returned, before the next tool in the same response runs.
+
+    Saving once per round left a gap: a response asking for a write and then a command
+    that killed the process kept the write on disk and no record of it. The partial
+    round is saved as it stands; `sanitize_history` drops the tool calls that have not
+    run yet, so a resume sees what happened and replays nothing. Reads are never saved
+    this way — losing their record costs tokens, not truth — which keeps the writes to
+    a synced home to one per change.
+
+    What remains: a process killed WHILE a tool runs (its effect may be partial, and it
+    is not recorded), or while this save is being written (the atomic write keeps the
+    previous file, which lacks this tool)."""
+    def after(name: str, tool_input: dict, messages: list) -> None:
+        if _changes_something(name, tool_input or {}):
+            session.messages = messages
+            save_session(session)
+    return after
 
 
 def _changes_something(name: str, tool_input: dict) -> bool:
@@ -1718,13 +1732,6 @@ def _changes_something(name: str, tool_input: dict) -> bool:
     return True
 
 
-def round_mutated(messages: list) -> bool:
-    """Whether the tool round that just completed ran anything with a side effect."""
-    if len(messages) < 2 or not isinstance(messages[-2].get("content"), list):
-        return False
-    return any(isinstance(b, dict) and b.get("type") == "tool_use"
-               and _changes_something(b.get("name", ""), b.get("input") or {})
-               for b in messages[-2]["content"])
 
 
 def compact_session(session: Session, client, ctx=None, cfg=None) -> None:
@@ -2331,6 +2338,7 @@ def main(argv: list[str] | None = None) -> None:
         ctx.session_id = ensure_session_id(session)
         agent_config = build_agent_config(session, cfg, project_root)
         agent_config.between_calls = bound_turn(session, client, cfg, project_root)
+        agent_config.after_tool = checkpoint_tool(session)
         ui.print_text("\nluban> ")
         empty_turn = []
         try:

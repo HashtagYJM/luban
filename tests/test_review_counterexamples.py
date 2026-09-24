@@ -103,16 +103,12 @@ def test_a_deny_rule_holds_when_a_parent_folder_is_searched(tmp_path, monkeypatc
 
 
 def test_polling_a_job_or_asking_a_sub_agent_is_not_a_change():
-    def round_of(name, inp=None):
-        return [{"role": "assistant", "content": [
-                    {"type": "tool_use", "id": "t", "name": name, "input": inp or {}}]},
-                {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t", "content": ""}]}]
-    assert not cli.round_mutated(round_of("read_output", {"handle": "bg1"}))
-    assert not cli.round_mutated(round_of("spawn_subagent", {"task": "look"}))
-    assert cli.round_mutated(round_of("read_output", {"handle": "bg1", "kill": True}))
-    assert cli.round_mutated(round_of("journal", {"text": "did x"}))
-    assert cli.round_mutated(round_of("edit_file"))
-
+    assert not cli._changes_something("read_output", {"handle": "bg1"})
+    assert not cli._changes_something("spawn_subagent", {"task": "look"})
+    assert not cli._changes_something("read_file", {"path": "a"})
+    assert cli._changes_something("read_output", {"handle": "bg1", "kill": True})
+    assert cli._changes_something("journal", {"text": "did x"})
+    assert cli._changes_something("edit_file", {})
 
 def test_launch_failures_are_named_in_the_trail(tmp_path, monkeypatch):
     ctx = tools.ToolContext(tmp_path, lambda p: True, lambda *a: None, lambda c: None)

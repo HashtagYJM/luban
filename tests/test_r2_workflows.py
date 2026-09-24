@@ -47,7 +47,7 @@ _CHILD = textwrap.dedent("""
     msgs = s.messages + [
         {"role": "assistant", "content": [{"type": "tool_use", "id": "t1", "name": name, "input": inp}]},
         {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": out.content}]}]
-    cli.bound_turn(s, None, None, root)(msgs)
+    cli.checkpoint_tool(s)(name, inp, msgs)
     os._exit(9)  # the terminal closes, the power goes: no finally, no exit journal
 """)
 
@@ -94,6 +94,7 @@ def test_an_interrupted_turn_after_an_edit_resumes_with_the_edit(tmp_path, monke
     s.messages.append({"role": "user", "content": "write f"})
     cfg = agent.AgentConfig("m", 100, stream=False)
     cfg.between_calls = cli.bound_turn(s, fc, config_mod.Config(platform="mac"), tmp_path)
+    cfg.after_tool = cli.checkpoint_tool(s)
     with pytest.raises(KeyboardInterrupt):
         s.messages = agent.run_turn(fc, cfg, s.messages, ctx, lambda t: None)
     cli.abandon_turn(s)

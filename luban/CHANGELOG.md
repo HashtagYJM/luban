@@ -13,7 +13,7 @@ below. Only user-facing behaviour earns a line here.
 
 Nothing yet since v0.8.1.
 
-## v0.8.1 — auto by default, and a write survives a crash mid-step
+## v0.8.1 — auto by default, a write survives a crash mid-step, and a one-line memory index
 
 ### Auto mode can be the default
 
@@ -22,6 +22,31 @@ Nothing yet since v0.8.1.
 ### A write is recorded before the next tool in the same step runs
 
 v0.8.0 saved the session after each step that changed something. One model step can ask for several tools, and if luban was killed after the first had written a file but before the step finished, the file was changed and the session had no record of it. The session is now saved right after each tool that writes, edits or runs something, unless you declined it or a rule denied it. The calls in that step that had not finished are saved as "not recorded as finished", so a resumed session knows about the write, is told which calls may not have run, and repeats nothing on its own. What luban cannot record is how far a tool got if luban died while it was running. A result that cannot be written to disk, such as text with a broken character, now gives a warning instead of stopping the step and closing luban.
+
+### The memory index keeps its descriptions to one line
+
+The one-line description each fact contributes to the always-on index was bounded in one
+case and not the other: a fact written by `remember` carried a `description:` header and
+was never trimmed at all, so a single verbose line could spend the context budget the
+whole index shares — while a fact without that header was cut at 80 characters and said
+nothing about it. Both now stop at one line, and a trimmed one ends in `…` so you can see
+it happened. The fact files themselves are untouched; `recall` still returns them whole.
+
+### A document says so itself
+
+Only the enhancement tracker was ever treated as a maintained document rather than an
+atomic fact, because its name was hardcoded — so the second long hand-edited file you
+filed in the memory folder competed in the fact lane and won searches by quoting them
+back at you, exactly as the tracker once did. Any file can now declare itself with a
+`document: true` line in its header: it stays out of fuzzy matching and surfaces when
+you name it exactly. The tracker keeps working unchanged.
+
+### SOUL.md's template stops contradicting the routing rule
+
+The template offered "add type hints" as an example of what belongs in SOUL.md, while
+luban's own memory instruction routes how you want work done to USER.md. The example
+now shows what SOUL.md is actually for — luban's character — and says where the other
+kind goes. Existing SOUL.md files are untouched; this only affects a fresh install.
 
 ## v0.8.0 — nothing lost, controls that mean what they say, and a setup check
 
@@ -162,32 +187,6 @@ luban now keeps a list of the skills loaded in a thread, saved with the session 
 A project has one continuity pointer, and it was written by whoever checkpointed last. Two sessions in the same folder — an import in one window, an analysis in the other — therefore erased each other, in silence and in both directions. Whoever wrote last defined what the project was doing, and a `/resume` reader had no way to tell a second strand had ever existed.
 
 A status is now stamped with the session that wrote it, and a status displaced by a different session is kept on an `also` line beside it, with the index line marking that another session's step is outstanding. The session doing the displacing is told, by name, whose step it took over.
-
-
-### The memory index keeps its descriptions to one line
-
-The one-line description each fact contributes to the always-on index was bounded in one
-case and not the other: a fact written by `remember` carried a `description:` header and
-was never trimmed at all, so a single verbose line could spend the context budget the
-whole index shares — while a fact without that header was cut at 80 characters and said
-nothing about it. Both now stop at one line, and a trimmed one ends in `…` so you can see
-it happened. The fact files themselves are untouched; `recall` still returns them whole.
-
-### A document says so itself
-
-Only the enhancement tracker was ever treated as a maintained document rather than an
-atomic fact, because its name was hardcoded — so the second long hand-edited file you
-filed in the memory folder competed in the fact lane and won searches by quoting them
-back at you, exactly as the tracker once did. Any file can now declare itself with a
-`document: true` line in its header: it stays out of fuzzy matching and surfaces when
-you name it exactly. The tracker keeps working unchanged.
-
-### SOUL.md's template stops contradicting the routing rule
-
-The template offered "add type hints" as an example of what belongs in SOUL.md, while
-luban's own memory instruction routes how you want work done to USER.md. The example
-now shows what SOUL.md is actually for — luban's character — and says where the other
-kind goes. Existing SOUL.md files are untouched; this only affects a fresh install.
 
 ## v0.7.2 — a session keeps its own name
 

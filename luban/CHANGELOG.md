@@ -11,7 +11,9 @@ below. Only user-facing behaviour earns a line here.
 
 ## Unreleased
 
-Nothing yet since v0.8.0.
+### Auto mode can be the default
+
+`auto = true` in `config.toml` starts every session in auto mode, as `--auto` does. Deny rules still apply, the prompt reads `you (auto)>`, and `/auto off` turns the prompts back on for that session. `luban --sync-config` adds the key, commented out.
 
 ## v0.8.0 — nothing lost, controls that mean what they say, and a setup check
 

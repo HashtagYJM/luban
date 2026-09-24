@@ -2218,7 +2218,7 @@ def main(argv: list[str] | None = None) -> None:
     session = Session(
         model=resolve_model(ns.model, cfg),
         max_tokens=resolve_max_tokens(ns.max_tokens, cfg, ns.stream),
-        auto=ns.auto, stream=ns.stream, messages=[],
+        auto=ns.auto or cfg.auto, stream=ns.stream, messages=[],
         project=str(project_root),
         thinking=cfg.thinking, effort=cfg.effort,
         thinking_verbose=cfg.thinking_verbose,

@@ -45,6 +45,9 @@ class Config:
     cache_prompt: bool = True
     thinking_verbose: bool = False  # stream the reasoning text; default silent
     auto_continue: bool = False  # reopen the folder's last session on a plain start
+    # Start every session in auto mode, as `--auto` does. Deny rules still apply, the
+    # prompt shows `you (auto)>`, and `/auto off` turns the prompts back on.
+    auto: bool = False
     # Fold the oldest turns automatically once context passes FOLD_TRIGGER, rather than
     # asking. A fold you have to approve is always LATE: by the time the prompt appears
     # you have been paying for the full window for a while, and the saving only ever
@@ -119,6 +122,11 @@ def _default_text(plat: str) -> str:
         "# instead of asking each time. Recent turns are kept verbatim and the full\n"
         "# transcript stays on disk either way. Default on:\n"
         "# auto_fold = true\n"
+        "\n"
+        "# Start every session in auto mode (like --auto): file writes and shell commands\n"
+        "# run without asking. Deny rules still apply; /auto off turns prompts back on.\n"
+        "# Prefer [permissions] allow rules for the tools you trust. Default off:\n"
+        "# auto = false\n"
         "\n"
         "# Reopen this folder's last session automatically on a plain `luban` start\n"
         "# (instead of just reminding you it exists). Default off:\n"
@@ -228,6 +236,7 @@ _MIGRATABLE = [
     ("thinking_verbose", "# thinking_verbose = false   # stream the reasoning text\n"),
     ("max_tokens", "# max_tokens = 32000   # ceiling on ONE turn: thinking + text + tool call\n"),
     ("cache_prompt", "# cache_prompt = true   # cache the stable system prompt\n"),
+    ("auto", "# auto = false   # start every session in auto mode, like --auto\n"),
     ("auto_continue", "# auto_continue = false   # reopen the last session on plain start\n"),
     ("auto_fold", "# auto_fold = true   # fold the oldest turns automatically instead of asking\n"),
     ("warn_tokens", "# warn_tokens = 150000   # when to nudge you to /compact\n"),
@@ -445,6 +454,9 @@ def load_config(path: Path = CONFIG_PATH) -> Config:
     auto_continue = data.get("auto_continue")
     if not isinstance(auto_continue, bool):
         auto_continue = False
+    auto = data.get("auto")
+    if not isinstance(auto, bool):
+        auto = False
     auto_fold = data.get("auto_fold")
     if not isinstance(auto_fold, bool):
         auto_fold = True
@@ -480,6 +492,7 @@ def load_config(path: Path = CONFIG_PATH) -> Config:
         cache_prompt=cache_prompt,
         thinking_verbose=thinking_verbose,
         auto_continue=auto_continue,
+        auto=auto,
         auto_fold=auto_fold,
         warn_tokens=warn_tokens,
         allow_out_of_tree_file_edits=allow_out_of_tree,

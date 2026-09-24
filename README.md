@@ -406,6 +406,7 @@ platform. The keys:
 | `cache_prompt` | `true` | Cache the stable system prompt (cheaper, faster turns) |
 | `memory_enabled` | `true` | Long-term memory |
 | `memory_file` | (chain) | Pin the project memory file |
+| `auto` | `false` | Start every session in auto mode, like `--auto`; `/auto off` turns prompts back on |
 | `warn_tokens` | `150000` | When to suggest `/compact` |
 | `allow_out_of_tree_file_edits` | `false` | Let file tools edit outside the project |
 | `web_search` | `false` | Server-side web search tool |

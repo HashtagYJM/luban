@@ -146,8 +146,8 @@ class AgentConfig:
     # and an agentic turn is where it actually grows: one prompt, a hundred tool calls,
     # every call re-sending all of it, and nothing able to act until the turn ended.
     between_calls: object = None
-    # Called after EACH tool in a round with (name, input, history so far), the history
-    # ending on this round's results to date. A round is not atomic: a write that has
+    # Called after EACH tool in a round with (name, input, result, history so far), the
+    # history ending on this round's results to date. A round is not atomic: a write that has
     # happened must be recordable before the next tool in the same response runs.
     after_tool: object = None
 
@@ -529,7 +529,7 @@ def run_turn(client, config: AgentConfig, messages: list[dict], ctx, on_text,
                     "is_error": out.is_error,
                 })
                 if config.after_tool is not None:
-                    config.after_tool(block.name, block.input,
+                    config.after_tool(block.name, block.input, out,
                                       messages + [{"role": "user", "content": list(results)}])
         except KeyboardInterrupt as exc:
             # A round interrupted part-way has already done what it did: a write before

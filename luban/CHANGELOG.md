@@ -17,7 +17,7 @@ below. Only user-facing behaviour earns a line here.
 
 ### A write is recorded before the next tool in the same step runs
 
-v0.8.0 saved the session after each step that changed something. One model step can ask for several tools, and if luban was killed after the first had written a file but before the step finished, the file was changed and the session had no record of it. The session is now saved right after each tool that writes, edits or runs something. A tool that had not started is left out of the record, so a resumed session knows about the write and repeats nothing. What can still go unrecorded is a tool that was running when luban died.
+v0.8.0 saved the session after each step that changed something. One model step can ask for several tools, and if luban was killed after the first had written a file but before the step finished, the file was changed and the session had no record of it. The session is now saved right after each tool that writes, edits or runs something, unless you declined it or a rule denied it. The calls in that step that had not finished are saved as "not recorded as finished", so a resumed session knows about the write, is told which calls may not have run, and repeats nothing on its own. What luban cannot record is how far a tool got if luban died while it was running. A result that cannot be written to disk, such as text with a broken character, now gives a warning instead of stopping the step and closing luban.
 
 ## v0.8.0 — nothing lost, controls that mean what they say, and a setup check
 

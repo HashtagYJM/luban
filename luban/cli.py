@@ -749,7 +749,7 @@ def save_session(session: Session) -> None:
             # in the window is not, so the successor has to be told to re-read it (E46).
             "skills_loaded": list(session.skills_loaded),
         })
-    except OSError as exc:
+    except (OSError, ValueError) as exc:  # ValueError: e.g. a lone surrogate in a result
         ui.print_text(f"warning: could not save session ({exc})\n")
 
 
@@ -1714,14 +1714,33 @@ def checkpoint_tool(session: Session):
     this way — losing their record costs tokens, not truth — which keeps the writes to
     a synced home to one per change.
 
-    What remains: a process killed WHILE a tool runs (its effect may be partial, and it
-    is not recorded), or while this save is being written (the atomic write keeps the
-    previous file, which lacks this tool)."""
-    def after(name: str, tool_input: dict, messages: list) -> None:
-        if _changes_something(name, tool_input or {}):
-            session.messages = messages
-            save_session(session)
+    Calls in the round that have not finished are saved WITH a result saying so, rather
+    than dropped: after a crash the resumed model is told, as after Ctrl-C, instead of
+    finding its own step silently shortened. It decides whether to repeat one; nothing is
+    replayed automatically.
+
+    What remains: a process killed WHILE a tool runs (its effect may be partial; the
+    record says only that it did not finish), or while this save is being written (the
+    atomic write keeps the previous file, which lacks this tool)."""
+    def after(name: str, tool_input: dict, out, messages: list) -> None:
+        if out.outcome in _NO_EFFECT or not _changes_something(name, tool_input or {}):
+            return
+        done = {b.get("tool_use_id") for b in messages[-1]["content"]}
+        pending = [{"type": "tool_result", "tool_use_id": b["id"], "is_error": True,
+                    "content": UNFINISHED}
+                   for b in messages[-2]["content"]
+                   if isinstance(b, dict) and b.get("type") == "tool_use" and b["id"] not in done]
+        session.messages = messages[:-1] + [
+            {"role": "user", "content": messages[-1]["content"] + pending}]
+        save_session(session)
     return after
+
+
+# Calls that were refused never ran, so they changed nothing and need no save.
+_NO_EFFECT = {"declined", "denied", "not_offered", "unknown"}
+UNFINISHED = ("Not recorded as finished: luban stopped at or before this call (the session "
+              "was saved after the previous one). It may have partly run; check before "
+              "repeating it.")
 
 
 def _changes_something(name: str, tool_input: dict) -> bool:

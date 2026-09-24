@@ -47,7 +47,7 @@ _CHILD = textwrap.dedent("""
     msgs = s.messages + [
         {"role": "assistant", "content": [{"type": "tool_use", "id": "t1", "name": name, "input": inp}]},
         {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": out.content}]}]
-    cli.checkpoint_tool(s)(name, inp, msgs)
+    cli.checkpoint_tool(s)(name, inp, out, msgs)
     os._exit(9)  # the terminal closes, the power goes: no finally, no exit journal
 """)
 

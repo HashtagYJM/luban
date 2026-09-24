@@ -56,9 +56,11 @@ def test_a_write_before_the_process_dies_mid_round_is_in_the_saved_session(tmp_p
     results = [b for m in data["messages"] if isinstance(m["content"], list)
                for b in m["content"] if b.get("type") == "tool_result"]
     # the finished write is recorded with its result; the command that never finished is
-    # not recorded as having happened
-    assert names == ["write_file"]
-    assert len(results) == 1 and results[0]["tool_use_id"] == "w1" and not results[0]["is_error"]
+    # recorded as NOT finished, so a resumed model is told rather than left guessing
+    assert names == ["write_file", "run_command"]
+    by_id = {r["tool_use_id"]: r for r in results}
+    assert not by_id["w1"]["is_error"]
+    assert by_id["k1"]["is_error"] and by_id["k1"]["content"] == cli.UNFINISHED
 
     # resume: the history is sendable as saved, and nothing is replayed
     restored = cli.Session(model="stub", max_tokens=100, auto=True, stream=False,
@@ -100,15 +102,18 @@ def test_between_two_writes_the_disk_holds_the_first_and_not_the_second(tmp_path
     snapshots = []
     hook = cli.checkpoint_tool(s)
 
-    def after(name, inp, msgs):
-        hook(name, inp, msgs)
+    def after(name, inp, out, msgs):
+        hook(name, inp, out, msgs)
         snapshots.append(sessions_mod.load(s.session_id)["messages"])
     cfg = agent.AgentConfig("m", 100, stream=False, after_tool=after)
     agent.run_turn(fc, cfg, s.messages, cli.build_tool_context(s, tmp_path), lambda t: None)
     first = snapshots[0]
     ids = lambda msgs, kind, key: [b[key] for m in msgs if isinstance(m["content"], list)
                                    for b in m["content"] if b.get("type") == kind]
-    assert ids(first, "tool_use", "id") == ["a"] and ids(first, "tool_result", "tool_use_id") == ["a"]
+    assert ids(first, "tool_use", "id") == ["a", "b"]
+    results = {b["tool_use_id"]: b for m in first if isinstance(m["content"], list)
+               for b in m["content"] if b.get("type") == "tool_result"}
+    assert not results["a"]["is_error"] and results["b"]["content"] == cli.UNFINISHED
     assert agent.sanitize_history(first) == first
     assert ids(snapshots[1], "tool_use", "id") == ["a", "b"]
 
@@ -130,3 +135,25 @@ def test_a_round_of_reads_writes_nothing_and_a_mixed_round_saves_once_per_change
     agent.run_turn(fc, cfg, [{"role": "user", "content": "look and write"}],
                    cli.build_tool_context(s, tmp_path), lambda t: None)
     assert len(saves) == 1
+
+
+def test_a_refused_call_saves_nothing_and_an_unsavable_result_does_not_stop_the_round(tmp_path, monkeypatch):
+    from tests.conftest import FakeBlock
+    printed, saves = [], []
+    monkeypatch.setattr(cli.ui, "print_text", printed.append)
+    monkeypatch.setattr(cli.ui, "render_diff", lambda *a: None)
+    monkeypatch.setattr(cli.ui, "ask_confirm", lambda p, input_fn=input: "no")
+    s = cli.Session(model="m", max_tokens=100, auto=False, stream=False, project=str(tmp_path))
+    real = cli.save_session
+    monkeypatch.setattr(cli, "save_session", lambda sess: saves.append(1) or real(sess))
+    fc = _round(FakeBlock("tool_use", id="d", name="write_file", input={"path": "no.txt", "content": "x"}))
+    cfg = agent.AgentConfig("m", 100, stream=False, after_tool=cli.checkpoint_tool(s))
+    agent.run_turn(fc, cfg, [{"role": "user", "content": "try"}], cli.build_tool_context(s, tmp_path), lambda t: None)
+    assert saves == [] and not (tmp_path / "no.txt").exists()
+    # a lone surrogate in a result cannot be encoded to disk: warn, keep going
+    s.auto = True
+    fc = _round(FakeBlock("tool_use", id="a", name="write_file", input={"path": "a.txt", "content": "x\ud800y"}),
+                FakeBlock("tool_use", id="b", name="write_file", input={"path": "b.txt", "content": "fine"}))
+    agent.run_turn(fc, cfg, [{"role": "user", "content": "two"}], cli.build_tool_context(s, tmp_path), lambda t: None)
+    assert (tmp_path / "b.txt").read_text() == "fine"
+    assert any("could not save session" in t for t in printed)

@@ -70,6 +70,54 @@ class Config:
     # Lifecycle hooks, from `[[hooks]]`. Empty = the feature costs nothing at all:
     # nothing declared, nothing fires, nothing spent. See hooks.py.
     hooks: list = field(default_factory=list)
+    # Named sub-agent roles, from `[roles.<name>]`: name -> {model, prompt, tools,
+    # description}. Only read when `subagents` is on. See parse_roles.
+    roles: dict = field(default_factory=dict)
+
+
+_ROLE_KEYS = ("model", "prompt", "description")
+
+
+def parse_roles(raw) -> tuple[dict, list[str]]:
+    """`[roles.<name>]` tables -> (roles, warnings). A malformed role is DROPPED and
+    said so, never half-applied: a reviewer quietly running with the full tool set, or
+    on the parent's model, is exactly the misconfiguration nobody would notice.
+
+    `tools` narrows what the child is offered. It may only name built-in read-only
+    tools, because a sub-agent runs unattended and nothing in it may ask for consent.
+    """
+    from luban import tools as tools_mod  # noqa: PLC0415  (config stays importable alone)
+
+    if raw is None:
+        return {}, []
+    if not isinstance(raw, dict):
+        return {}, ["[roles] must be a table of [roles.<name>] tables"]
+    roles: dict = {}
+    warnings: list[str] = []
+    for name, body in raw.items():
+        if not isinstance(body, dict):
+            warnings.append(f"role {name!r} ignored: [roles.{name}] must be a table")
+            continue
+        bad = [k for k in _ROLE_KEYS if k in body and not isinstance(body[k], str)]
+        if bad:
+            warnings.append(f"role {name!r} ignored: {', '.join(bad)} must be a string")
+            continue
+        tools = body.get("tools")
+        if tools is not None:
+            if not isinstance(tools, list) or not all(isinstance(t, str) for t in tools):
+                warnings.append(f"role {name!r} ignored: tools must be a list of tool names")
+                continue
+            extra = sorted(set(tools) - tools_mod.BUILTIN_READ_ONLY_TOOLS)
+            if extra:
+                warnings.append(
+                    f"role {name!r} ignored: {', '.join(extra)} is not a read-only tool "
+                    f"(allowed: {', '.join(sorted(tools_mod.BUILTIN_READ_ONLY_TOOLS))})")
+                continue
+        roles[name] = {"model": body.get("model", "").strip(),
+                       "prompt": body.get("prompt", "").strip(),
+                       "description": body.get("description", "").strip(),
+                       "tools": list(tools) if tools is not None else None}
+    return roles, warnings
 
 
 def detect_platform() -> str:
@@ -162,6 +210,18 @@ def _default_text(plat: str) -> str:
         "# Offer the spawn_subagent tool: the model can run a fresh read-only sub-agent\n"
         "# on a focused subtask. Default off (each sub-run costs extra model calls):\n"
         "# subagents = false\n"
+        "\n"
+        "# Named sub-agent roles (need subagents = true). The model picks one with\n"
+        "# spawn_subagent(role=...); an explicit model in the call overrides the role's.\n"
+        "# model: the child's model (default: the session's). prompt: added to the\n"
+        "# sub-agent's system prompt. tools: narrows the read-only set (list_dir, glob,\n"
+        "# grep, read_file, load_skill, sessions). description: shown to the model so\n"
+        "# it can choose. A deny rule such as \"spawn_subagent:reviewer\" blocks a role.\n"
+        "# [roles.reviewer]\n"
+        '# model       = "your-second-model-id"\n'
+        '# description = "Independent review of a change"\n'
+        '# prompt      = "You are a sceptical reviewer. Report defects, not style."\n'
+        '# tools       = ["read_file", "grep", "glob"]\n'
         "\n"
         "# Optional permission rules (deny > allow > ask; deny works even in --auto):\n"
         "# [permissions]\n"
@@ -322,7 +382,16 @@ def config_warnings(path: Path = CONFIG_PATH) -> list[str]:
     # A hook that was dropped for being malformed is the same failure class: the user
     # believes a step always happens, and nothing is running.
     out.extend(f"warning: {w}" for w in _hook_warnings(path))
+    out.extend(f"warning: {w}" for w in _role_warnings(path))
     return out
+
+
+def _role_warnings(path: Path) -> list[str]:
+    try:
+        data = tomllib.loads(path.read_text(encoding="utf-8", errors="replace"))
+    except (tomllib.TOMLDecodeError, OSError):
+        return []
+    return parse_roles(data.get("roles"))[1]
 
 
 def _hook_warnings(path: Path) -> list[str]:
@@ -344,9 +413,13 @@ def _repair_misplaced(lines: list[str]) -> tuple[list[str], list[str]]:
     keep: list[str] = []
     lifted: list[str] = []
     names: list[str] = []
+    in_role = False
     for line in lines[start:]:
+        if _TABLE_HEADER.match(line):
+            # A role's `model` is the role's own key, not a swallowed top-level one.
+            in_role = line.strip().startswith("[roles.")
         m = re.match(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=", line)
-        if m and m.group(1) in _TOP_LEVEL_KEYS:
+        if m and m.group(1) in _TOP_LEVEL_KEYS and not in_role:
             lifted.append(line if line.endswith("\n") else line + "\n")
             names.append(m.group(1))
         elif not _SYNC_BANNER.match(line):
@@ -479,6 +552,7 @@ def load_config(path: Path = CONFIG_PATH) -> Config:
     if not isinstance(subagents, bool):
         subagents = False
     hooks, _dropped = hooks_mod.parse(data.get("hooks"))
+    roles, _bad_roles = parse_roles(data.get("roles"))  # told at startup by config_warnings
     return Config(
         platform=plat,
         model=model,
@@ -501,4 +575,5 @@ def load_config(path: Path = CONFIG_PATH) -> Config:
         subagents=subagents,
         context_editing=context_editing,
         hooks=hooks,
+        roles=roles,
     )

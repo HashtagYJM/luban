@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import threading
+from concurrent import futures
 from dataclasses import dataclass, replace
 
 from luban import client as client_mod
@@ -65,7 +67,8 @@ _PLATFORM_LINE = {
 def system_blocks(platform: str, skills: list[dict] | None = None, memory: str = "",
                   global_memory: str = "",
                   tool_guidance: list[tuple[str, str]] | None = None,
-                  global_volatile: str = "", subagent: bool = False) -> tuple[str, str]:
+                  global_volatile: str = "", subagent: bool = False,
+                  role_prompt: str = "") -> tuple[str, str]:
     """The system prompt split into (stable, volatile), in prompt order.
 
     Prompt caching is a PREFIX match, so anything that changes invalidates every byte
@@ -75,15 +78,18 @@ def system_blocks(platform: str, skills: list[dict] | None = None, memory: str =
     end up behind the SECOND breakpoint, in the message tail; see with_cache_breakpoint.
     """
     return (system_prompt_for(platform, skills, memory, global_memory, tool_guidance,
-                              subagent=subagent),
+                              subagent=subagent, role_prompt=role_prompt),
             global_volatile)
 
 
 def system_prompt_for(platform: str, skills: list[dict] | None = None, memory: str = "",
                       global_memory: str = "",
                       tool_guidance: list[tuple[str, str]] | None = None,
-                      subagent: bool = False) -> str:
+                      subagent: bool = False, role_prompt: str = "") -> str:
     prompt = SUBAGENT_SYSTEM_PROMPT if subagent else SYSTEM_PROMPT
+    if subagent and role_prompt:
+        # A named role's preamble: who this child is, on top of what every child is.
+        prompt = f"{role_prompt}\n\n{prompt}"
     # The platform line exists to shape run_command, which a sub-agent does not have.
     line = None if subagent else _PLATFORM_LINE.get(platform)
     if line:
@@ -129,6 +135,7 @@ class AgentConfig:
     tool_guidance: list | None = None  # (name, guidance) from custom tools (E25)
     # A nested read-only run: it gets its own job description, not the main agent's (E45).
     subagent: bool = False
+    role_prompt: str = ""  # a named sub-agent role's preamble (config [roles.<name>].prompt)
     web_search: bool = False
     web_search_tool_type: str = "web_search_20250305"
     thinking: bool = False
@@ -289,7 +296,8 @@ def _run_model_turn(client, config, messages, on_text, on_thinking, on_retry=Non
     volatile_now = config.volatile_fn() if config.volatile_fn else config.global_volatile
     stable, volatile = system_blocks(
         config.platform, config.skills, config.memory, config.global_memory,
-        config.tool_guidance, volatile_now, subagent=config.subagent)
+        config.tool_guidance, volatile_now, subagent=config.subagent,
+        role_prompt=config.role_prompt)
     use_blocks = config.cache_prompt and probe["block_system"] is not False
 
     def _shape(cache: bool):
@@ -391,6 +399,12 @@ sanitize_history = history_mod.sanitize_history
 
 
 MAX_PAUSE_RESUMES = 8
+
+# Sub-agents requested in ONE assistant message run at the same time, at most this many
+# at once. They are read-only and never prompt, so running them together changes when
+# they finish, not what they may do. Every other tool stays sequential.
+MAX_PARALLEL_SUBAGENTS = 4
+_INTERRUPTED = "Interrupted by the user; this call may have partly run."
 MAX_TRUNCATION_RETRIES = 2
 
 TRUNCATION_NUDGE = (
@@ -446,6 +460,35 @@ def _probe_blank(client, config, messages, on_text, on_thinking, on_retry, on_pr
         if blocks:
             return got, blocks
     return None, []
+
+
+def _run_parallel(batch, ctx) -> list:
+    """Run several spawn_subagent calls at once; [(block, ToolResult)] in call order.
+
+    A child that fails is an error RESULT (the handler catches it), so one child can never
+    lose another's answer. Ctrl-C reaches only this thread, which therefore waits in short
+    slices — a blocking wait is not interruptible on Windows. On an interrupt the children
+    are told to stop at their next round, those not started never start, and the ones
+    that finished travel on the exception so their results are kept; nothing waits for
+    the rest, which are read-only and whose output nobody will read.
+    """
+    cancel = threading.Event()
+    batch_ctx = replace(ctx, cancel=cancel)
+    pool = futures.ThreadPoolExecutor(max_workers=min(MAX_PARALLEL_SUBAGENTS, len(batch)),
+                                      thread_name_prefix="luban-subagent")
+    jobs = [pool.submit(tools_mod.run_tool, b.name, b.input, batch_ctx) for b in batch]
+    try:
+        pending = set(jobs)
+        while pending:
+            _done, pending = futures.wait(pending, timeout=0.2)
+    except KeyboardInterrupt as exc:
+        cancel.set()
+        pool.shutdown(wait=False, cancel_futures=True)
+        exc.luban_finished = [(b, j.result()) for b, j in zip(batch, jobs)
+                              if j.done() and not j.cancelled()]
+        raise
+    pool.shutdown(wait=False)
+    return [(b, j.result()) for b, j in zip(batch, jobs)]
 
 
 def run_turn(client, config: AgentConfig, messages: list[dict], ctx, on_text,
@@ -511,9 +554,33 @@ def run_turn(client, config: AgentConfig, messages: list[dict], ctx, on_text,
             t["name"] for t in (config.tools if config.tools is not None else tools_mod.TOOLS)
         }
         results = []
+        calls = [b for b in msg.content if b.type == "tool_use"]
+        order = {b.id: i for i, b in enumerate(calls)}
+        batch = [b for b in calls if b.name == "spawn_subagent" and b.name in offered]
+        if len(batch) < 2:
+            batch = []
+        batch_ids = {b.id for b in batch}
+
+        def record(block, out):
+            results.append({
+                "type": "tool_result",
+                "tool_use_id": block.id,
+                "content": out.content,
+                "is_error": out.is_error,
+            })
+            if config.after_tool is not None:
+                config.after_tool(block.name, block.input, out,
+                                  messages + [{"role": "user", "content": list(results)}])
+
         try:
-            for block in msg.content:
-                if block.type != "tool_use":
+            for block in calls:
+                if batch and block.id == batch[0].id:
+                    # The whole batch runs where its first call stands; the rest of the
+                    # round keeps its order around it.
+                    for b, out in _run_parallel(batch, ctx):
+                        record(b, out)
+                    continue
+                if block.id in batch_ids:
                     continue
                 if block.name not in offered:
                     out = tools_mod.ToolResult(
@@ -522,27 +589,26 @@ def run_turn(client, config: AgentConfig, messages: list[dict], ctx, on_text,
                     tools_mod.audit_unavailable(ctx, block.name, block.input, out)
                 else:
                     out = tools_mod.run_tool(block.name, block.input, ctx)
-                results.append({
-                    "type": "tool_result",
-                    "tool_use_id": block.id,
-                    "content": out.content,
-                    "is_error": out.is_error,
-                })
-                if config.after_tool is not None:
-                    config.after_tool(block.name, block.input, out,
-                                      messages + [{"role": "user", "content": list(results)}])
+                record(block, out)
         except KeyboardInterrupt as exc:
             # A round interrupted part-way has already done what it did: a write before
             # the interrupted command is on disk. Answer every call in the round — the
             # finished ones with their results — and hand the history to the caller on
             # the exception, or the record of the finished work dies with this frame.
+            finished = getattr(exc, "luban_finished", [])
+            results += [{"type": "tool_result", "tool_use_id": b.id,
+                         "content": out.content, "is_error": out.is_error}
+                        for b, out in finished]
             done = {r["tool_use_id"] for r in results}
             results += [{"type": "tool_result", "tool_use_id": b.id, "is_error": True,
-                         "content": "Interrupted by the user; this call may have partly run."}
-                        for b in msg.content if b.type == "tool_use" and b.id not in done]
+                         "content": _INTERRUPTED}
+                        for b in calls if b.id not in done]
+            results.sort(key=lambda r: order.get(r["tool_use_id"], len(order)))
             messages.append({"role": "user", "content": results})
             exc.luban_messages = messages
             raise
+        # Results in call order, whatever order they finished in.
+        results.sort(key=lambda r: order.get(r["tool_use_id"], len(order)))
         if not results:
             # stop_reason was tool_use but no tool_use blocks were present;
             # returning avoids sending an empty tool_result message in a loop.

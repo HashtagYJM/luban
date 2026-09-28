@@ -16,6 +16,7 @@ never break a turn.
 from __future__ import annotations
 
 import json
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -85,6 +86,11 @@ def from_response(msg) -> Usage:
                  n("reasoning_tokens"))
 
 
+# Parallel sub-agents record into the one session ledger from worker threads, and `+=`
+# is a read-modify-write. Re-entrant because add() records into its per-model sub-ledger.
+_ADD_LOCK = threading.RLock()
+
+
 @dataclass
 class Ledger:
     """Session-cumulative totals, plus the most recent call.
@@ -133,6 +139,10 @@ class Ledger:
         flush, reflect. They cost real money and must be counted, but they send their own
         payload rather than the conversation, so letting one set `last` would report the
         session's context size as whatever that side call happened to send."""
+        with _ADD_LOCK:
+            self._add(u, model, context)
+
+    def _add(self, u: Usage, model: str, context: bool) -> None:
         self.input_tokens += u.input_tokens
         self.output_tokens += u.output_tokens
         self.cache_creation_input_tokens += u.cache_creation_input_tokens

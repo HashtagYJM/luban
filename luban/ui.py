@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import difflib
 import sys
+import threading
 
 _RESET = "\033[0m"
 
@@ -37,13 +38,18 @@ def _c(text: str, code: str) -> str:
     return f"\033[{code}m{text}{_RESET}" if _COLOR else text
 
 
+# Parallel sub-agents report from worker threads; a line is written whole or not yet.
+_EMIT_LOCK = threading.Lock()
+
+
 def _emit(text: str) -> None:
-    try:
-        sys.stdout.write(text)
-    except UnicodeEncodeError:
-        enc = sys.stdout.encoding or "ascii"
-        sys.stdout.write(text.encode(enc, errors="replace").decode(enc))
-    sys.stdout.flush()
+    with _EMIT_LOCK:
+        try:
+            sys.stdout.write(text)
+        except UnicodeEncodeError:
+            enc = sys.stdout.encoding or "ascii"
+            sys.stdout.write(text.encode(enc, errors="replace").decode(enc))
+        sys.stdout.flush()
 
 
 def unified_diff_text(path: str, old: str, new: str) -> str:

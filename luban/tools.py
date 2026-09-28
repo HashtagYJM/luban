@@ -20,6 +20,8 @@ from luban import skills as skills_mod
 MAX_OUTPUT = 20000  # chars; truncate large tool output to protect context
 MAX_COMMAND_TIMEOUT = 600  # seconds; cap model-supplied run_command timeouts
 READ_ONLY_TOOLS = {"list_dir", "glob", "grep", "read_file", "load_skill", "recall", "sessions"}
+# Before any custom tool registers itself as read-only: what a sub-agent role may name.
+BUILTIN_READ_ONLY_TOOLS = frozenset(READ_ONLY_TOOLS)
 
 
 @dataclass
@@ -66,6 +68,38 @@ class ToolContext:
     # Separate from `decide` because hooks consult `decide` for their own commands, and a
     # boundary on what the MODEL may touch must not also silence the user's hooks.
     scope: Callable[[str, dict], str] | None = None
+    # Set by the turn loop while it runs sub-agents in parallel: on Ctrl-C it is set, and
+    # a child still running stops at its next round instead of spending on unseen work.
+    cancel: threading.Event | None = None
+
+
+@dataclass
+class SubagentRun:
+    """What one sub-agent did, for the header its result starts with. A child is
+    otherwise a black box that costs tokens: the header says which role and model ran,
+    what it was offered, what it did and what it spent — and the terminal shows the same
+    line, because the parent's summary of a child is not evidence of it."""
+    text: str = ""
+    label: str = "subagent"  # "<role or subagent>#<n>", the tag its audit rows carry
+    model: str = ""
+    tools_offered: int = 0
+    calls: int = 0  # tool calls the child made
+    tokens: int = 0  # the child's own ledger total
+    error: str = ""
+    stubbed: bool = False  # its window passed the budget and old tool output was dropped
+
+    @property
+    def status(self) -> str:
+        if self.error:
+            return "error"
+        if not (self.text or "").strip():
+            return "empty"
+        return "stubbed" if self.stubbed else "ok"
+
+    def header(self) -> str:
+        return (f"[{self.label} · model {self.model or '?'} · {self.tools_offered} tools "
+                f"offered · {self.calls} tool calls · {self.tokens:,} tokens · "
+                f"{self.status}]")
 
 
 def _truncate(text: str) -> str:
@@ -794,43 +828,86 @@ def _spawn_subagent(inp: dict, ctx: ToolContext) -> ToolResult:
     task = inp.get("task")
     if not isinstance(task, str) or not task.strip():
         return ToolResult("Bad request: 'task' must be a non-empty string.", is_error=True)
+    kw = {}
+    for key in ("role", "model"):
+        value = inp.get(key)
+        if value is None or value == "":
+            continue
+        if not isinstance(value, str):
+            return ToolResult(f"Bad request: '{key}' must be a string.", is_error=True)
+        kw[key] = value.strip()
+    if ctx.cancel is not None:
+        kw["cancel"] = ctx.cancel
     try:
-        answer = ctx.subagent(task)
+        run = ctx.subagent(task, **kw)
     except Exception as exc:  # a sub-run failure must not kill the parent turn
-        return ToolResult(f"Subagent failed: {exc}", is_error=True)
-    if not (answer or "").strip():
+        run = f"Subagent failed: {exc}", True
+    header = ""
+    if isinstance(run, SubagentRun):
+        header = f"{run.header()}\n"
+        if ctx.notify is not None:
+            ctx.notify(header.strip())
+    elif isinstance(run, tuple):
+        run = SubagentRun(error=run[0])  # a runner with no record to report from
+    else:
+        run = SubagentRun(text=run)
+    if run.error:
+        return ToolResult(f"{header}{run.error}", is_error=True)
+    if run.status == "empty":
         # An EMPTY completion, not an empty answer. Returned as an ordinary result it is
         # indistinguishable from a sub-agent that looked and found nothing — so a critic
         # or research stage silently degrades to no stage at all, and nothing anywhere
         # says so (E40). The caller cannot tell a refusal from a gateway failure from a
         # genuinely empty completion; it can at least be told that it cannot.
         return ToolResult(
+            f"{header}"
             "The sub-agent returned no text at all. That is an EMPTY COMPLETION, not an "
             "answer of 'nothing found' — a refusal, a gateway failure and a completion "
             "with no body all look like this, and none of them can be told apart from "
             "here. Nothing was investigated. Do the work yourself or re-run the "
             "sub-agent with a different task.",
             is_error=True)
-    return ToolResult(_truncate(answer))
+    return ToolResult(_truncate(f"{header}{run.text}"))
+
+
+def subagent_tool(roles: dict | None = None) -> dict:
+    """The spawn_subagent schema, listing the configured roles so the coordinator can
+    choose one. Built from config once per turn and unchanged within a session, so the
+    tool list stays byte-identical for the prompt cache."""
+    description = (
+        "Run a fresh read-only sub-agent on a focused, self-contained sub-task and "
+        "get back its final answer. Use it to research or investigate in parallel "
+        "with your own work, or to isolate a big read-heavy subtask from your "
+        "context. The sub-agent can read and search but cannot write files or run "
+        "commands. Give it a complete, standalone task description. Several calls in "
+        "one message run at the same time; each result starts with a line naming the "
+        "role, model, tools, calls, tokens and status."
+    )
+    properties = {
+        "task": {"type": "string", "description": "Self-contained task for the sub-agent."},
+        "model": {"type": "string", "description": (
+            "Optional model id for this sub-agent (default: the role's model, else "
+            "yours). A model that cannot be served is refused, never substituted.")},
+    }
+    if roles:
+        listing = "\n".join(
+            f"- {name}: {r.get('description') or '(no description)'}"
+            + (f" [model {r['model']}]" if r.get("model") else "")
+            for name, r in roles.items())
+        description += f"\n\nRoles (pass role=<name>):\n{listing}"
+        properties["role"] = {"type": "string", "description": (
+            "Optional named role from the list above: its model, instructions and "
+            "tools. An explicit model overrides the role's.")}
+    return {
+        "name": "spawn_subagent",
+        "description": description,
+        "input_schema": {"type": "object", "properties": properties, "required": ["task"]},
+    }
 
 
 # Offered only when config.subagents is on (build_agent_config appends it); the
 # handler is always registered so run_tool can dispatch it when offered.
-SUBAGENT_TOOL = {
-    "name": "spawn_subagent",
-    "description": (
-        "Run a fresh read-only sub-agent on a focused, self-contained sub-task and "
-        "get back its final answer. Use it to research or investigate in parallel "
-        "with your own work, or to isolate a big read-heavy subtask from your "
-        "context. The sub-agent can read/search/recall but cannot write files or run "
-        "commands. Give it a complete, standalone task description."
-    ),
-    "input_schema": {
-        "type": "object",
-        "properties": {"task": {"type": "string", "description": "Self-contained task for the sub-agent."}},
-        "required": ["task"],
-    },
-}
+SUBAGENT_TOOL = subagent_tool()
 
 
 _DISPATCH = {

@@ -11,7 +11,17 @@ below. Only user-facing behaviour earns a line here.
 
 ## Unreleased
 
-Nothing yet since v0.8.1.
+### /reflect no longer touches the tracker or project files (E57)
+
+A routine `/reflect` could treat the enhancements tracker as a duplicate fact, write a shortened copy of it into a project file, rewrite project files that pointed at it, and delete it, all without a prompt in auto mode. `/reflect` now writes only facts, `USER.md` and `SOUL.md`. Anything else it would change, including the project memory file and any file marked `document: true`, is refused and listed under "Suggested edits" at the end of its report for you to apply in an ordinary turn.
+
+### The tracker keeps its items
+
+`remember` and `forget` now refuse the enhancements tracker and any other `document: true` file in every turn; change those with the file tools. A write that would drop the tracker's Open or Resolved section, a table header, or an item ID is refused with a message naming what would be lost; moving a row from Open to Resolved still works. A new tracker starts from a fuller template with Issue and Verification columns and a place for per-item detail.
+
+### Forgotten facts can be recovered
+
+`forget` now moves the fact to `~/.luban/memory/.forgotten/` instead of deleting it. If the tracker is missing at startup and a forgotten copy exists, luban still starts a fresh tracker but prints where the last copy is.
 
 ## v0.8.1 — auto by default, a write survives a crash mid-step, and a one-line memory index
 

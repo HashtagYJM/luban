@@ -362,7 +362,11 @@ luban maintains it with four tools, each write shown as a diff you confirm:
 `remember` (save/update a fact), `recall` (search), `forget` (delete a stale fact),
 and `journal` (note what happened). Facts are only ever written by an explicit
 `remember` or during `/reflect` — never by compaction. Run **`/reflect`** now and
-then to consolidate: it promotes journal items into facts and prunes stale ones.
+then to consolidate: it merges duplicate facts, prunes stale ones, and tightens
+`USER.md`. It writes only facts, `USER.md` and `SOUL.md`; anything else it would change
+— a maintained document such as the enhancements tracker, or a project file — is listed
+under "Suggested edits" at the end of its report for you to apply. `forget` keeps a copy
+of what it removes in `~/.luban/memory/.forgotten/`.
 
 > Memory writes are confirmed by default on purpose: text in a cloned repo could try
 > to talk the model into planting bad "facts". The confirm plus the audit log is your

@@ -107,7 +107,8 @@ def test_reflect_leaves_session_untouched(monkeypatch, mem):
     monkeypatch.setattr(cli.agent, "run_turn", fake_run_turn)
     s = make_session()
     before = list(s.messages)
-    cli.reflect_session(s, object(), object(), make_cfg())
+    # A real context: reflect narrows the one it is given to its own write scope.
+    cli.reflect_session(s, object(), _flush_ctx(), make_cfg())
     assert s.messages == before
     assert "journal" in seen["prompt"].lower()
     assert any(t["name"] == "remember" for t in seen["tools"])

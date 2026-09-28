@@ -59,6 +59,8 @@ REFLECT_PROMPT = (
     "stale one. Say which you dropped and why.\n"
     "4. DELETE — forget anything the project's own files, the journal, or the session "
     "transcripts already record, and anything that was only ever true for one task.\n"
+    "   EXCEPT the maintained documents listed below by name: they are not facts, and "
+    "that they repeat the transcripts is what they are for.\n"
     "   EXCEPT the continuity pointers shown separately below. They are task-scoped and "
     "they duplicate the project's own files by design — that is what they are for, and "
     "luban rewrites them itself. Leave every current one alone; the only one you may "
@@ -83,10 +85,16 @@ REFLECT_PROMPT = (
     "7. REPORT — briefly: what you merged, deleted, graduated, what you tightened, and "
     "what you deliberately left alone. If you merged nothing, name the closest pair you "
     "considered and say why it survived — 'no duplicates' with nothing behind it is the "
-    "answer a pass gives when it only compared wording.\n\n"
-    "Every change is a normal write: the user sees a diff and confirms. Propose nothing "
-    "you cannot justify.\n\n"
+    "answer a pass gives when it only compared wording. End the report with a "
+    "'Suggested edits' list: every change you would make outside your scope (below), "
+    "each with the file and the edit, for the user to apply in an ordinary turn.\n\n"
+    "SCOPE — you write facts (remember, forget), USER.md and SOUL.md, and nothing else. "
+    "Maintained documents and project files, the project memory file included, are out "
+    "of scope: luban refuses those writes, and run_command, so list them under Suggested "
+    "edits instead. Every change is a normal write with a diff. Propose nothing you "
+    "cannot justify.\n\n"
 )
+REFLECT_SCOPE_REFUSAL = "outside /reflect's scope — list it under Suggested edits in your report"
 # Kept for reference; the live threshold is config.warn_tokens (default 150k).
 DEFAULT_WARN_TOKENS = 150_000
 # First match wins; a `memory_file` key in config.toml overrides the chain.
@@ -1112,12 +1120,38 @@ def flush_memory(session: Session, client, ctx, cfg: config_mod.Config) -> None:
         session.journaled = True  # a journal entry was actually written this segment
 
 
+def reflect_scope(ctx: tools.ToolContext):
+    """The /reflect write boundary: facts, USER.md and SOUL.md.
+
+    Reflect is told to be ruthless, and under auto mode no diff is read before a write
+    lands — so its reach is bounded by the runtime, not by the prompt. A routine pass
+    rewrote project files that pointed at the tracker and then deleted it (E57). Anything
+    outside the zone is refused with a pointer to Suggested edits, so the report still
+    carries the change and the user applies it in an ordinary turn. Commands and custom
+    tools can write anywhere, so they are outside it too.
+    """
+    def scope(name: str, tool_input: dict) -> str:
+        if name in ("run_command", "read_output") or name in tools._CUSTOM_NAMES:
+            return f"{name} is {REFLECT_SCOPE_REFUSAL}"
+        if name not in ("write_file", "edit_file"):
+            return ""
+        path = str(tool_input.get("path", ""))
+        try:
+            target = tools.resolve_tool_path(ctx.project_root, path, writing=True,
+                                             allow_out_of_tree=ctx.allow_out_of_tree)
+        except Exception:
+            return ""  # the tool refuses it itself, with the reason
+        return "" if memory_mod.in_reflect_zone(target) else f"{path} is {REFLECT_SCOPE_REFUSAL}"
+    return scope
+
+
 def reflect_session(session: Session, client, ctx, cfg: config_mod.Config,
                     project_root: Path | None = None) -> None:
     """Isolated consolidation turn; the live conversation is never touched."""
     if not cfg.memory_enabled:
         ui.print_text("memory is disabled (memory_enabled = false in config.toml).\n")
         return
+    ctx = replace(ctx, scope=reflect_scope(ctx))
     config = agent.AgentConfig(
         session.model, session.max_tokens, session.stream, platform=cfg.platform,
         global_memory=memory_mod.bootstrap_block(), tools=tools.active_tools(True),
@@ -2264,7 +2298,9 @@ def main(argv: list[str] | None = None) -> None:
                 "to add them to your config.toml, or /config to see what's in effect.\n"
             )
     if cfg.memory_enabled:
-        memory_mod.ensure_scaffold()  # guarantees enhancements.md exists to reconcile
+        notice = memory_mod.ensure_scaffold()  # guarantees enhancements.md exists to reconcile
+        if notice:
+            ui.print_text(notice + "\n")
         if upgraded:
             session.pending_context.append(reconcile_directive(prev, section))
     try:

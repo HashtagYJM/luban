@@ -154,9 +154,14 @@ def test_without_volatile_fn_the_static_string_is_used(monkeypatch):
 
 # ---------------- E27: ranking is no longer length-biased ----------------
 
+def _tracker(description, body):
+    # Written directly: remember refuses a document slug (E57).
+    (memory.MEMORY_DIR / "enhancements.md").write_text(
+        f"description: {description}\n\n{body}\n", encoding="utf-8")
+
+
 def test_a_huge_generic_fact_no_longer_outranks_the_right_one(mem):
-    memory.remember("enhancements", "tracker of issues",
-                    "tracker " * 900 + " coding style ruff type hints written")
+    _tracker("tracker of issues", "tracker " * 900 + " coding style ruff type hints written")
     memory.remember("yjm-coding-style", "how the user likes code written",
                     "Prefers ruff and type hints.")
     out = memory.recall("how does the user like their code written")
@@ -202,14 +207,14 @@ def test_a_maintained_document_does_not_compete_in_the_fact_lane(mem):
     """The tracker is a large hand-edited DOCUMENT filed as an atomic fact, and it is
     self-referential — it quotes past queries, so it wins searches about problems it
     recorded. Normalising scores masked that; the category error was the real cause."""
-    memory.remember("enhancements", "tracker", "E27 recall ranking coding style problem")
+    _tracker("tracker", "E27 recall ranking coding style problem")
     memory.remember("yjm-coding-style", "how code is written", "Prefers ruff.")
     facts = [l for l in memory.recall("coding style").splitlines() if l.startswith("[")]
     assert facts == ["[yjm-coding-style]"]
 
 
 def test_a_document_is_still_reachable_by_name(mem):
-    memory.remember("enhancements", "tracker", "the open items")
+    _tracker("tracker", "the open items")
     assert memory.recall("enhancements").startswith("[enhancements]")
 
 

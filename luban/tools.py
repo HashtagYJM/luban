@@ -62,6 +62,10 @@ class ToolContext:
     # Called with a skill's name when load_skill succeeds. A loaded skill otherwise exists
     # only as a message, so every context-shrinking path silently revokes it (E46).
     record_skill: Callable[[str], None] | None = None
+    # A turn's write boundary: returns why a call falls outside it, or "" to proceed.
+    # Separate from `decide` because hooks consult `decide` for their own commands, and a
+    # boundary on what the MODEL may touch must not also silence the user's hooks.
+    scope: Callable[[str, dict], str] | None = None
 
 
 def _truncate(text: str) -> str:
@@ -400,6 +404,23 @@ def _unverified(label: str, target, expected: str) -> ToolResult | None:
     )
 
 
+def _tracker_refusal(target: Path, old: str, new: str) -> ToolResult | None:
+    """Refuse a tracker write that drops structure the file already has — in every turn.
+
+    A diff was the only guard, and under auto mode nobody reads it: a shortened copy
+    written over the real tracker is how its history was lost (E57).
+    """
+    if not memory_mod.is_tracker(target):
+        return None
+    lost = memory_mod.tracker_losses(old, new)
+    if not lost:
+        return None
+    return ToolResult(
+        "Refused: this write would remove " + "; ".join(lost) + " from the enhancements "
+        "tracker. Rows may move and change, but its sections, table headers and item IDs "
+        "stay — move a closed row to Resolved instead of deleting it.", is_error=True)
+
+
 def _write_file(inp: dict, ctx: ToolContext) -> ToolResult:
     try:
         target = resolve_tool_path(
@@ -410,6 +431,9 @@ def _write_file(inp: dict, ctx: ToolContext) -> ToolResult:
         return ToolResult(f"Bad request: {exc}", is_error=True)
     old = target.read_text(encoding="utf-8", errors="replace") if target.exists() else ""
     new = inp["content"]
+    refused = _tracker_refusal(target, old, new)
+    if refused:
+        return refused
     ctx.render_diff(inp["path"], old, new)
     if not ctx.confirm(f"Write {inp['path']}?"):
         return ToolResult("User declined the write.", outcome="declined")
@@ -441,6 +465,9 @@ def _edit_file(inp: dict, ctx: ToolContext) -> ToolResult:
             is_error=True,
         )
     new = old.replace(inp["old_string"], inp["new_string"])
+    refused = _tracker_refusal(target, old, new)
+    if refused:
+        return refused
     ctx.render_diff(inp["path"], old, new)
     if not ctx.confirm(f"Edit {inp['path']}?"):
         return ToolResult("User declined the edit.", outcome="declined")
@@ -679,6 +706,9 @@ def _remember(inp: dict, ctx: ToolContext) -> ToolResult:
             f"Invalid memory name: {name!r} (kebab-case: a-z, 0-9, dashes, max 64).",
             is_error=True,
         )
+    refusal = memory_mod.document_refusal(name)
+    if refusal:
+        return ToolResult(refusal, is_error=True)
     old = memory_mod.read_fact(name) or ""
     new = f"description: {description.strip()}\n\n{body.strip()}\n"
     ctx.render_diff(f"~/.luban/memory/{name}.md", old, new)
@@ -690,6 +720,9 @@ def _remember(inp: dict, ctx: ToolContext) -> ToolResult:
 
 def _forget(inp: dict, ctx: ToolContext) -> ToolResult:
     name = inp.get("name", "")
+    refusal = memory_mod.document_refusal(name)
+    if refusal:
+        return ToolResult(refusal, is_error=True)
     old = memory_mod.read_fact(name)
     if old is None:
         return ToolResult(f"No memory named '{name}'.", is_error=True)
@@ -1113,7 +1146,8 @@ def reset_custom() -> None:
 
 # decision → outcome, for the rows where the tool never ran. A refused call and an
 # executed one that failed were both `is_error: true`; the trail has to tell them apart.
-_REFUSED = {"deny_rule": "denied", "not_offered": "not_offered", "unknown": "unknown"}
+_REFUSED = {"deny_rule": "denied", "not_offered": "not_offered", "unknown": "unknown",
+            "out_of_scope": "out_of_scope"}
 
 
 def _audit_call(ctx: ToolContext, name: str, tool_input: dict, decision: str, out: ToolResult) -> None:
@@ -1153,6 +1187,11 @@ def run_tool(name: str, tool_input: dict, ctx: ToolContext) -> ToolResult:
         # model and the audit trail both, because no tool call is silently dropped.
         out = ToolResult(f"Blocked: {name} is not available on this turn.", is_error=True)
         _audit_call(ctx, name, tool_input, "not_offered", out)
+        return out
+    reason = ctx.scope(name, tool_input) if ctx.scope is not None else ""
+    if reason:
+        out = ToolResult(f"Blocked: {reason}", is_error=True)
+        _audit_call(ctx, name, tool_input, "out_of_scope", out)
         return out
     decision = ctx.decide(name, tool_input) if ctx.decide is not None else None
     if decision is not None and decision.action == "deny":

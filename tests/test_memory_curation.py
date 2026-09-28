@@ -130,7 +130,9 @@ def test_reflect_prompt_is_a_procedure_with_graduation():
     assert "USER.md" in p
     assert "cannot know to recall it before you act" in p   # why graduation exists
     assert "transcript" in p.lower()                        # deleting is safe
-    assert "diff and confirm" in p or "confirms" in p       # user still approves
+    # Under auto mode nothing is confirmed, so the prompt no longer promises it; what
+    # bounds the pass is its write scope, and the rest reaches the user as suggestions.
+    assert "Suggested edits" in p and "out of scope" in p
 
 
 def test_reflect_prompt_carries_the_store_not_a_recall_instruction():

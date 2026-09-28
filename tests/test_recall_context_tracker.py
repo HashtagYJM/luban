@@ -227,7 +227,7 @@ def test_context_report_says_when_caching_is_off(mem, tmp_path):
 
 def test_scaffold_offers_non_fix_terminal_states():
     t = memory._ENHANCEMENTS_TEMPLATE
-    assert "| ID | Resolution | Notes |" in t
+    assert "| ID | Issue | Resolution | Verification |" in t
     for verdict in ("wontfix", "mitigated", "obsolete"):
         assert verdict in t
     assert "stays Open forever" in t  # says WHY the states exist

@@ -57,6 +57,81 @@ def is_document(slug: str, text: str) -> bool:
     return slug in _DOCUMENTS or bool(_DOCUMENT_MARK.search(text))
 
 
+def document_refusal(name: str) -> str:
+    """Why remember/forget must not touch `name`, or "" when it is a fact.
+
+    They are fact verbs: remember rewrites the whole file from a description and a body,
+    and forget removes it. On a document either one is a silent rewrite of something the
+    user maintains by hand — forget("enhancements") is the exact call that emptied the
+    tracker (E57). A document is changed with the file tools, which show a diff.
+    """
+    if not valid_slug(name):
+        return ""
+    if not is_document(name, _fact_text(name) or ""):
+        return ""
+    return (f"'{name}' is a maintained document, not a fact — remember and forget never "
+            f"touch it. Change it with read_file and edit_file on "
+            f"~/.luban/memory/{name}.md instead.")
+
+
+def _same_path(a: Path, b: Path) -> bool:
+    try:
+        return a.resolve() == b.resolve() or (a.exists() and b.exists()
+                                               and a.samefile(b))
+    except OSError:
+        return False
+
+
+def is_tracker(target: Path) -> bool:
+    return _same_path(target, MEMORY_DIR / f"{TRACKER}.md")
+
+
+def in_reflect_zone(target: Path) -> bool:
+    """True for a file /reflect may write on its own: a fact, USER.md or SOUL.md.
+
+    Everything else it would change — a maintained document, the project memory file,
+    any other project file — goes to the user as a suggestion. luban never rewrites a
+    repo file on its own initiative, and under auto mode nothing else would stop it.
+    """
+    if _same_path(target, USER_PATH) or _same_path(target, SOUL_PATH):
+        return True
+    if target.suffix != ".md" or not _same_path(target.parent, MEMORY_DIR):
+        return False
+    slug = target.stem
+    if slug == "MEMORY" or not valid_slug(slug):
+        return False
+    return not is_document(slug, _fact_text(slug) or "")
+
+
+_OPEN_RX = re.compile(r"^##\s+Open\s*$", re.MULTILINE)
+_RESOLVED_RX = re.compile(r"^##\s+Resolved\s*$", re.MULTILINE)
+_HEADER_ROW_RX = re.compile(r"^\s*\|\s*ID\s*\|.*$", re.MULTILINE)
+_ITEM_ID_RX = re.compile(r"\bE\d+\b")
+
+
+def tracker_losses(old: str, new: str) -> list[str]:
+    """What a write would remove from the tracker's structure; empty means allowed.
+
+    Checks only what the current file already has, so a tracker in any format passes as
+    long as it keeps its own shape. Rows may move and change — Open to Resolved is the
+    whole lifecycle — but an ID never vanishes: a shortened copy written over the real
+    one is the damage this exists to stop (E57).
+    """
+    lost = []
+    for label, rx in (("## Open", _OPEN_RX), ("## Resolved", _RESOLVED_RX)):
+        if rx.search(old) and not rx.search(new):
+            lost.append(f"the '{label}' section")
+    kept_rows = {" ".join(r.split()) for r in _HEADER_ROW_RX.findall(new)}
+    for row in _HEADER_ROW_RX.findall(old):
+        if " ".join(row.split()) not in kept_rows:
+            lost.append(f"the table header '{row.strip()}'")
+    gone = set(_ITEM_ID_RX.findall(old)) - set(_ITEM_ID_RX.findall(new))
+    if gone:
+        ids = sorted(gone, key=lambda i: int(i[1:]))
+        lost.append("item ID(s) " + ", ".join(ids))
+    return lost
+
+
 _SOUL_TEMPLATE = (
     "<!-- SOUL.md — luban's character and standing behavior when working with you. -->\n"
     "<!-- Edit freely; luban reads this at the start of every session. -->\n"
@@ -100,12 +175,14 @@ _ENHANCEMENTS_TEMPLATE = (
     "\n"
     "# Luban — Self-Improvement Tracker\n"
     "\n"
-    "Runtime/tooling issues to flag but NOT fix locally. Share Open items with the\n"
-    "maintainer (screenshot or text). Lifecycle: OPEN -> SHARED (sent to maintainer)\n"
-    "-> CLOSED. After an upgrade, review Open items against the release notes and move\n"
-    "closed rows to Resolved (keep the audit trail).\n"
+    "Runtime and tooling issues to flag but NOT fix locally. Share Open items with the\n"
+    "maintainer (screenshot or text); after an upgrade, check them against the release\n"
+    "notes and move what closed to Resolved, keeping the audit trail. IDs are never\n"
+    "reused or deleted.\n"
     "\n"
-    "An item can close FOUR ways — put the reason in the Resolution column:\n"
+    "Lifecycle: OPEN -> SHARED -> CLOSED (SHARED = sent to the maintainer).\n"
+    "\n"
+    "An item closes one of FOUR ways — put the reason in the Resolution column:\n"
     "  <version>  fixed in a release, verified\n"
     "  wontfix    a deliberate design decision by the maintainer (record WHY)\n"
     "  mitigated  solved outside luban core; no core change is coming\n"
@@ -118,10 +195,13 @@ _ENHANCEMENTS_TEMPLATE = (
     "| ID | Sev | Area | Status | Issue -> suggested fix |\n"
     "|----|-----|------|--------|------------------------|\n"
     "\n"
+    "Per-item detail (reproduction, evidence, what was tried) goes in a\n"
+    "`### E<n>: title` section under this table, one per item that needs it.\n"
+    "\n"
     "## Resolved\n"
     "\n"
-    "| ID | Resolution | Notes |\n"
-    "|----|------------|-------|\n"
+    "| ID | Issue | Resolution | Verification |\n"
+    "|----|-------|------------|--------------|\n"
 )
 
 _journal_writes = 0
@@ -168,8 +248,33 @@ _HYGIENE = (
 )
 
 
-def ensure_scaffold() -> None:
+TRACKER = "enhancements"
+
+# Where forget() puts what it removes. A dot-directory, so fact_files()'s flat `*.md` glob
+# never sees it: a forgotten fact must not come back as a fact.
+FORGOTTEN_DIR = ".forgotten"
+_FORGOTTEN_RX = re.compile(r"^(\d{8}-\d{6})(?:-(\d+))?-(.+)\.md$")
+
+
+def _last_forgotten(slug: str) -> Path | None:
+    """The newest copy of `slug` that forget() kept, or None."""
+    try:
+        found = []
+        for p in (MEMORY_DIR / FORGOTTEN_DIR).glob(f"*-{slug}.md"):
+            m = _FORGOTTEN_RX.match(p.name)
+            if m and m.group(3) == slug:
+                found.append(((m.group(1), int(m.group(2) or 0)), p))
+    except OSError:
+        return None
+    return max(found)[1] if found else None
+
+
+def ensure_scaffold() -> str:
     """First-run setup: SOUL.md template, journal dir, tracker. Idempotent.
+
+    Returns one line for the user when the tracker was missing but a forgotten copy
+    exists — recreating an empty template over a lost tracker without a word is how a
+    deleted tracker went unnoticed (E57). "" otherwise.
 
     The index is REBUILT here every launch, not merely created when absent. It is derived
     from the fact files, but it was regenerated only as a side effect of remember/forget —
@@ -179,18 +284,24 @@ def ensure_scaffold() -> None:
     "damaged" means, and it overwrites no user work, since the index is already rewritten
     wholesale on every fact write.
     """
+    notice = ""
     try:
         (MEMORY_DIR / "journal").mkdir(parents=True, exist_ok=True)
         if not SOUL_PATH.exists():
             paths.atomic_write_text(SOUL_PATH, _SOUL_TEMPLATE)
         if not USER_PATH.exists():
             paths.atomic_write_text(USER_PATH, _USER_TEMPLATE)
-        tracker = MEMORY_DIR / "enhancements.md"
+        tracker = MEMORY_DIR / f"{TRACKER}.md"
         if not tracker.exists():
             paths.atomic_write_text(tracker, _ENHANCEMENTS_TEMPLATE)
+            kept = _last_forgotten(TRACKER)
+            if kept is not None:
+                notice = (f"note: the tracker ~/.luban/memory/{TRACKER}.md was missing, so "
+                          f"luban started a fresh one; the last copy it kept is {kept}")
         _rebuild_index()
     except Exception:
         pass  # memory must never break startup
+    return notice
 
 
 def _read_whole(path: Path, label: str) -> str:
@@ -613,9 +724,11 @@ def duplicate_candidates(threshold: float = DUPLICATE_THRESHOLD
         if is_checkpoint(p.stem):
             continue  # one pointer per project; they are meant to look alike
         try:
-            facts.append((p.stem, p.read_text(encoding="utf-8", errors="replace")))
+            text = p.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
+        if not is_document(p.stem, text):  # a document is never a merge candidate
+            facts.append((p.stem, text))
     pairs = []
     for i, (sa, ta) in enumerate(facts):
         for sb, tb in facts[i + 1:]:
@@ -642,6 +755,8 @@ def description_index() -> list[tuple[str, str]]:
         try:
             text = path.read_text(encoding="utf-8", errors="replace")
         except OSError:
+            continue
+        if is_document(path.stem, text):
             continue
         out.append((path.stem, _fact_description(text) or "(no description)"))
     return out
@@ -674,14 +789,21 @@ def audit(extra: list[tuple[str, int]] | None = None) -> str:
     consolidation never happened. This is injected into the isolated /reflect turn only,
     so an ordinary turn never carries it.
     """
-    facts, maintained = [], []
+    facts, maintained, documents = [], [], []
     for p in fact_files():
         try:
-            entry = f"[{p.stem}]\n{p.read_text(encoding='utf-8', errors='replace').strip()}"
+            text = p.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
+        if is_document(p.stem, text):
+            # By name and size only. Given the body, every rule in REFLECT_PROMPT reads a
+            # tracker as a duplicate of the transcripts and project files it quotes — and
+            # that is how one was shortened and forgotten (E57).
+            documents.append(f"  - [{p.stem}] {len(text):,} chars")
+            continue
+        entry = f"[{p.stem}]\n{text.strip()}"
         (maintained if is_checkpoint(p.stem) else facts).append(entry)
-    if not facts and not maintained:
+    if not facts and not maintained and not documents:
         return always_on_budget(extra) + "\n\n(the fact store is empty)"
     body = "\n\n".join(facts)
     parts = [always_on_budget(extra),
@@ -699,6 +821,12 @@ def audit(extra: list[tuple[str, int]] | None = None) -> str:
                      "touched in months — the 'last session' date is in the fact, and "
                      "if you are wrong the next /compact there writes it back.\n\n"
                      + "\n\n".join(maintained))
+    if documents:
+        parts.append("MAINTAINED DOCUMENTS — not facts; never merge, shorten, move or "
+                     "forget. The user keeps these by hand, so remember and forget refuse "
+                     "them and a /reflect write to one is refused too. Anything you would "
+                     "change in one goes under Suggested edits in your report.\n"
+                     + "\n".join(documents))
     index = description_index()
     if len(index) > 1:
         # Every fact in one place, one line each. The pairwise comparison this exists for
@@ -786,6 +914,9 @@ def read_fact(name: str) -> str | None:
 def remember(name: str, description: str, body: str) -> str:
     if not valid_slug(name):
         return f"Invalid memory name: {name!r} (kebab-case: a-z, 0-9, dashes, max 64)."
+    refusal = document_refusal(name)
+    if refusal:
+        return refusal
     try:
         MEMORY_DIR.mkdir(parents=True, exist_ok=True)
         paths.atomic_write_text(
@@ -797,18 +928,38 @@ def remember(name: str, description: str, body: str) -> str:
     return f"Remembered '{name}'."
 
 
+def _forgotten_path(name: str) -> Path:
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    folder = MEMORY_DIR / FORGOTTEN_DIR
+    target, n = folder / f"{stamp}-{name}.md", 1
+    while target.exists():
+        n += 1
+        target = folder / f"{stamp}-{n}-{name}.md"
+    return target
+
+
 def forget(name: str) -> str:
+    """Remove a fact from the store, keeping a copy under .forgotten/.
+
+    Curation is told to be ruthless, and a ruthless pass that is wrong once should cost
+    a file move to undo, not the fact.
+    """
     if not valid_slug(name):
         return f"Invalid memory name: {name!r}."
+    refusal = document_refusal(name)
+    if refusal:
+        return refusal
     path = _fact_path(name)
     if not path.exists():
         return f"No memory named '{name}'."
     try:
-        path.unlink()
+        kept = _forgotten_path(name)
+        kept.parent.mkdir(parents=True, exist_ok=True)
+        path.replace(kept)
         _rebuild_index()
     except OSError as exc:
         return f"Could not delete memory: {exc}"
-    return f"Forgot '{name}'."
+    return f"Forgot '{name}' (a copy is kept at ~/.luban/memory/{FORGOTTEN_DIR}/{kept.name})."
 
 
 # --- continuity pointers ---------------------------------------------------------

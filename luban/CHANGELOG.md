@@ -11,7 +11,21 @@ below. Only user-facing behaviour earns a line here.
 
 ## Unreleased
 
-Nothing yet since v0.8.1.
+### A sub-agent can run on another model
+
+`spawn_subagent` always ran on the session's model, and its tokens were booked under that model even when it was not the one that spent them. The model can now choose the child's `model`; the child runs on it and its usage is counted under it in `/usage`. A model your client cannot serve is refused by name and nothing runs, instead of quietly falling back to the session's model.
+
+### Named sub-agent roles
+
+There was no way to give a sub-agent standing instructions, a model or a narrower tool set. `[roles.<name>]` in `config.toml` now defines one, with `model`, `prompt`, `tools` (read-only tools only) and a `description` the model sees when choosing. `spawn_subagent(role=...)` uses it, an unknown role is refused, and a permission rule such as `spawn_subagent:reviewer` can allow or deny a single role.
+
+### Every sub-agent result says what ran
+
+A sub-agent's answer arrived with no record of what produced it or what it cost. Each result now starts with one line, also printed in the terminal, naming the role, model, tools offered, tool calls made, tokens spent and status (`ok`, `empty`, `error` or `stubbed`), and audit entries made inside a sub-agent are tagged with it.
+
+### Sub-agents in one step run at the same time
+
+Several `spawn_subagent` calls in one step ran one after another, so two reviewers took twice as long. They now run together, up to four at once, with results in the order they were asked for; other tools still run one at a time. Ctrl-C stops them all, keeps any answer already back, and the session saves and resumes cleanly.
 
 ## v0.8.1 — auto by default, a write survives a crash mid-step, and a one-line memory index
 

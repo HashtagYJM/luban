@@ -4,8 +4,10 @@ import argparse
 import json
 import os
 import re
+import itertools
 import subprocess
 import sys
+import threading
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
@@ -171,7 +173,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def _final_text(messages: list[dict]) -> str:
-    """The last assistant message's text (for a sub-agent's return value)."""
+    """The last assistant message's text (for a sub-agent's return value). "" when there
+    is none: a placeholder here read as an answer and hid the empty completion (E40)."""
     for msg in reversed(messages):
         if msg.get("role") != "assistant":
             continue
@@ -183,7 +186,11 @@ def _final_text(messages: list[dict]) -> str:
                      if isinstance(b, dict) and b.get("type") == "text"]
             if any(parts):
                 return "\n".join(p for p in parts if p)
-    return "(sub-agent produced no text)"
+    return ""
+
+
+class _SubagentCancelled(Exception):
+    """Raised inside a child's turn loop once the parent's Ctrl-C has asked it to stop."""
 
 
 def auto_line(session: Session) -> str:
@@ -243,14 +250,70 @@ def build_tool_context(
 
     subagent = None
     if client is not None and cfg is not None and cfg.subagents:
-        def subagent(task: str) -> str:
+        spawned = itertools.count(1)  # numbers each child in the session: reviewer#3
+        route_lock = threading.Lock()
+        routes: dict[str, str] = {}  # model -> why it cannot be served ("" = it can)
+
+        def subagent(task: str, role: str = "", model: str = "",
+                     cancel: threading.Event | None = None) -> tools.SubagentRun:
+            spec = cfg.roles.get(role) if role else {}
+            run = tools.SubagentRun(label=f"{role or 'subagent'}#{next(spawned)}",
+                                    model=model or (spec or {}).get("model") or session.model)
+            # Refusals come before any model call: an unknown role or a model nothing can
+            # serve is named back to the caller, never quietly replaced by the parent's.
+            if spec is None:
+                known = ", ".join(cfg.roles) or "none are configured"
+                run.error = (f"Unknown role {role!r} (roles: {known}). Nothing was run.")
+                return run
+            chosen = model or spec.get("model") or ""
+            if chosen:
+                with route_lock:
+                    if chosen not in routes:
+                        routes[chosen] = client_mod.unroutable(client, chosen)
+                    reason = routes[chosen]
+                if reason:
+                    run.error = (f"Cannot run a sub-agent on {chosen}: {reason}. Nothing "
+                                 f"was run. Choose another model, or omit it to use "
+                                 f"{session.model}.")
+                    return run
+            if cancel is not None and cancel.is_set():
+                run.error = "Cancelled before it started: the user interrupted the turn."
+                return run
             # Nested agent: read-only tools only (no writes/run_command → no confirm
-            # prompts and no unattended mutations), no memory, no further nesting.
+            # prompts and no unattended mutations), no memory, no further nesting. A role
+            # may narrow that set further, never widen it.
             read_only = [t for t in tools.active_tools(False)
                          if t["name"] in tools.READ_ONLY_TOOLS]
+            if spec.get("tools") is not None:
+                read_only = [t for t in read_only if t["name"] in spec["tools"]]
+            run.tools_offered = len(read_only)
+            child = usage_mod.Ledger()
+
+            def on_usage(u) -> None:
+                # Every child call reaches the ledger as a SIDE call: counted in the
+                # totals and per-model figures, never as the session's context size,
+                # which is the parent's last request and not the child's. Recorded under
+                # the model that made it — the child's, which need not be the parent's.
+                session.ledger.add(u, run.model, context=False)
+                child.add(u)
+                run.tokens = child.total_tokens
+
+            def between(msgs: list) -> list:
+                if cancel is not None and cancel.is_set():
+                    raise _SubagentCancelled()
+                before = _history_chars(msgs)
+                out = bound_subagent(msgs)
+                if _history_chars(out) < before:
+                    run.stubbed = True
+                return out
+
+            def after_tool(*_args) -> None:
+                run.calls += 1
+
             sub_cfg = agent.AgentConfig(
-                session.model, session.max_tokens, stream=False, platform=cfg.platform,
+                run.model, session.max_tokens, stream=False, platform=cfg.platform,
                 tools=read_only,
+                role_prompt=spec.get("prompt", ""),
                 # load_skill is read-only, so it IS offered — and its own description says
                 # the catalog is in the system prompt. Without this the tool could never
                 # fire and the sub-agent could not know what it was missing (E45). Dropping
@@ -258,28 +321,35 @@ def build_tool_context(
                 # untestable through sub-agents, which is the cheapest place to test it.
                 skills=skills_mod.list_skills(str(project_root)),
                 subagent=True,
-                # Every child call reaches the ledger as a SIDE call: counted in the
-                # totals and per-model figures, never as the session's context size,
-                # which is the parent's last request and not the child's.
-                on_usage=lambda u: session.ledger.add(u, session.model, context=False),
-                between_calls=bound_subagent,
+                on_usage=on_usage,
+                between_calls=between,
+                after_tool=after_tool,
             )
             sub_ctx = tools.ToolContext(
                 project_root=Path(project_root),
                 confirm=lambda p: False,  # writes aren't offered; deny defensively
                 render_diff=lambda p, o, n: None,
                 render_command=lambda c: None,
-                decide=decide, audit=audit_cb,
+                decide=decide,
+                # Tagged, so the trail tells the child's reads from the parent's.
+                audit=(lambda e: audit_cb({**e, "agent": run.label})) if audit_cb else None,
                 # Derived from the schema list so the control and the offer cannot drift:
                 # withholding a tool by leaving it out of the schema is a request, and this
                 # nested run is the one place that had nothing but the request.
                 only=frozenset(t["name"] for t in read_only),
                 session_id=session.session_id,
             )
-            msgs = agent.run_turn(
-                client, sub_cfg, [{"role": "user", "content": task}], sub_ctx, lambda t: None
-            )
-            return _final_text(msgs)
+            try:
+                msgs = agent.run_turn(
+                    client, sub_cfg, [{"role": "user", "content": task}], sub_ctx,
+                    lambda t: None)
+            except _SubagentCancelled:
+                run.error = "Cancelled: the user interrupted the turn."
+            except Exception as exc:  # a sub-run failure must not kill the parent turn
+                run.error = f"Subagent failed: {exc}"
+            else:
+                run.text = _final_text(msgs)
+            return run
 
     def record_skill(name: str) -> None:
         if name not in session.skills_loaded:
@@ -1038,7 +1108,7 @@ def bound_subagent(messages: list, budget_chars: int = SUBAGENT_BUDGET_CHARS,
 def build_agent_config(session: Session, cfg: config_mod.Config, project_root: Path) -> agent.AgentConfig:
     tool_list = tools.active_tools(cfg.memory_enabled)
     if cfg.subagents:
-        tool_list = [*tool_list, tools.SUBAGENT_TOOL]
+        tool_list = [*tool_list, tools.subagent_tool(cfg.roles)]
     return agent.AgentConfig(
         session.model, session.max_tokens, session.stream, platform=cfg.platform,
         skills=skills_mod.list_skills(str(project_root)),

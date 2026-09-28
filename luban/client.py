@@ -12,6 +12,7 @@ from __future__ import annotations
 import importlib.util
 import os
 import random
+import threading
 import time
 import types
 from pathlib import Path
@@ -131,6 +132,29 @@ class Facade:
         return list(self._by_provider.values())
 
 
+def unroutable(client, model: str) -> str:
+    """Why `client` cannot serve `model` — "" when it can.
+
+    Used before a sub-agent runs on a model the coordinator chose, because the router
+    itself never refuses: an unrecognised id goes to the primary client, and a wrong
+    choice would surface as a gateway error mid-run, or not at all. The backend's own
+    model list is the authority when it answers; without one, an OpenAI-prefixed id with
+    no OpenAI provider configured is the case that is certainly wrong.
+    """
+    facade = isinstance(client, Facade)
+    target = client.client_for(model) if facade else client
+    ids = list_models(target)
+    if ids is not None:
+        if model in ids:
+            return ""
+        return (f"model {model!r} is not among the {len(ids)} models the "
+                f"{provider_for(model) if facade else 'configured'} client lists")
+    if provider_for(model) == "openai" and not facade:
+        return (f"model {model!r} needs an OpenAI provider, and none is configured "
+                f"(client_local.py defines no build_openai_client)")
+    return ""
+
+
 def get_client() -> Any:
     provider = _load_provider()
     if provider is None:
@@ -153,10 +177,15 @@ def get_client() -> Any:
 # property of.
 _PROBE_FIELDS = ("extras", "block_system", "ctx_mgmt", "cache_ttl")
 _PROBES: dict[str, dict] = {}
+# Parallel sub-agents probe from worker threads. The entry is created under the lock so
+# two first calls cannot each build one; the tri-state flags themselves only ever move
+# from None to a value both threads would agree on.
+_PROBES_LOCK = threading.Lock()
 
 
 def probes(model: str) -> dict:
-    return _PROBES.setdefault(provider_for(model), dict.fromkeys(_PROBE_FIELDS, None))
+    with _PROBES_LOCK:
+        return _PROBES.setdefault(provider_for(model), dict.fromkeys(_PROBE_FIELDS, None))
 
 
 def _thinking_extras(thinking: bool, effort: str, verbose: bool = False) -> dict:

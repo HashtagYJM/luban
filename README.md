@@ -290,7 +290,7 @@ deny  = ["run_command:del *", "write_file:*.env"]
 ```
 
 A rule is `"<tool>"` (every call) or `"<tool>:<pattern>"` (a glob against the command
-for `run_command`, the path for file tools). A file rule is matched against every spelling
+for `run_command`, the path for file tools, the role name for `spawn_subagent`). A file rule is matched against every spelling
 of the same file — as typed, absolute, project-relative, and the `~/.luban/…` alias — so
 `write_file:~/.luban/*` holds however the path is written. Precedence is **deny > allow > ask**,
 and **deny holds even under `--auto`**. Allowed actions still show their diff or
@@ -432,8 +432,35 @@ degrades to a plain request automatically.
   match your backend (newer models use `web_search_20260209`; the default
   `web_search_20250305` is broadly available).
 - **`subagents = true`** — lets the model spawn a fresh **read-only** sub-agent on a
-  focused subtask and get back just the answer. It can read, search, and recall, but
-  not write files or run commands. Each sub-run costs extra model calls.
+  focused subtask and get back just the answer. It can read and search, but not write
+  files or run commands. Each sub-run costs extra model calls. The model may pick the
+  child's `model`; one your client cannot serve is refused by name and nothing runs.
+  Several sub-agents asked for in one step run at the same time (up to four), and
+  Ctrl-C stops them all while keeping any answer already back. Every result, and the
+  terminal, gets one line saying which role and model ran, how many tools it was
+  offered and called, the tokens it spent, and whether it finished `ok`, `empty`,
+  `error` or `stubbed` (its window was trimmed). Audit rows written inside a child
+  carry `"agent": "<role>#<n>"`.
+
+  **Roles** give the model named, pre-configured sub-agents to choose from:
+
+  ```toml
+  [roles.reviewer]
+  model       = "example-model-b"        # default: the session's model
+  description = "Independent review of a change"   # shown to the model
+  prompt      = "You are a sceptical reviewer. Report defects, not style."
+  tools       = ["read_file", "grep", "glob"]      # narrows the read-only set
+
+  [roles.scout]
+  description = "Find where something lives"
+  tools       = ["glob", "grep", "list_dir"]
+  ```
+
+  The model calls `spawn_subagent(task, role="reviewer")`; an explicit `model` in the
+  call overrides the role's. `tools` may name only read-only tools (`list_dir`, `glob`,
+  `grep`, `read_file`, `load_skill`, `sessions`); a role naming anything else is
+  ignored and luban says so at startup. `deny = ["spawn_subagent:reviewer"]` blocks
+  one role.
 
 ## Sync across devices
 

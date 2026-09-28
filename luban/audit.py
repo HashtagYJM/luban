@@ -6,6 +6,7 @@ the agent loop, so all filesystem errors are swallowed.
 from __future__ import annotations
 
 import json
+import threading
 from datetime import datetime
 from pathlib import Path
 
@@ -17,6 +18,8 @@ AUDIT_PATH = paths.luban_home() / "audit.jsonl"
 # diagnostics: a full disk or a locked file must not stop the work, but a trail that
 # silently stopped is worse than none, because it reads as "nothing happened".
 last_error = ""
+# Parallel sub-agents audit from worker threads; one line must never interleave another.
+_LOCK = threading.Lock()
 
 
 def log(entry: dict, path: Path | None = None) -> bool:
@@ -28,7 +31,7 @@ def log(entry: dict, path: Path | None = None) -> bool:
             {"ts": datetime.now().isoformat(timespec="seconds"), **entry},
             ensure_ascii=False,
         )
-        with p.open("a", encoding="utf-8") as f:
+        with _LOCK, p.open("a", encoding="utf-8") as f:
             f.write(line + "\n")
         return True
     except Exception as exc:  # auditing must never raise into the agent loop

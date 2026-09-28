@@ -39,7 +39,7 @@ def test_every_child_call_reaches_the_ledger_once_as_a_side_call(tmp_path):
     s.ledger.add(usage_mod.Usage(input_tokens=50_000, output_tokens=5), "m")  # the parent
     cfg = config_mod.Config(platform="mac", subagents=True)
     ctx = cli.build_tool_context(s, tmp_path, cfg, client=fc)
-    assert "found it" in ctx.subagent("look")
+    assert "found it" in ctx.subagent("look").text
     assert s.ledger.calls == 3
     assert s.ledger.input_tokens == 52_200 and s.ledger.output_tokens == 55
     assert s.ledger.context_tokens == 50_000  # still the PARENT's window

@@ -117,6 +117,14 @@ def test_first_turn_makes_one_title_call_and_takes_the_title():
     assert s.ledger.calls == 1 and s.ledger.context_tokens == 0  # a side call
 
 
+def test_the_title_call_is_logged_by_kind_for_usage_reports(monkeypatch):
+    logged = []
+    monkeypatch.setattr(cli.audit_mod, "log", lambda e: logged.append(e) or True)
+    s = _first_turn_session()
+    cli.name_thread(s, FakeClient([_text("Tag parser off by one")]))
+    assert [(e["tool"], e["kind"]) for e in logged] == [("model:call", "title")]
+
+
 def test_a_second_turn_makes_no_title_call():
     s = _first_turn_session()
     s.messages += [{"role": "user", "content": "and now?"},

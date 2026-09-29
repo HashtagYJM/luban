@@ -951,7 +951,7 @@ def name_thread(session: Session, client) -> None:
             client, model=session.model, max_tokens=TITLE_MAX_TOKENS,
             system="You name conversations.",
             messages=[{"role": "user", "content": prompt}], tools=[])
-        session.ledger.add(usage_mod.from_response(msg), session.model, context=False)
+        record_call(session, usage_mod.from_response(msg), session.model, "title")
         title = clean_title("".join(getattr(b, "text", "") for b in msg.content
                                     if getattr(b, "type", "") == "text"))
     except Exception:

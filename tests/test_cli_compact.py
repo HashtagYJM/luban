@@ -1,3 +1,5 @@
+import json
+
 from conftest import FakeBlock, FakeClient, FakeMessage
 
 from luban import cli, sessions
@@ -15,24 +17,25 @@ def _session(**over):
     return cli.Session(**kw)
 
 
-def test_compact_reseeds_and_detaches(tmp_path, monkeypatch, capsys):
+def test_compact_reseeds_in_place(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(sessions, "SESSIONS_DIR", tmp_path)
     fc = FakeClient([FakeMessage([FakeBlock("text", text="THE SUMMARY")], "end_turn")])
     s = _session()
     cli.compact_session(s, fc)
-    # old transcript preserved on disk
-    old = sessions.load("2026-07-03-1400-abcd", sessions_dir=tmp_path)
-    assert len(old["messages"]) == 2
+    # old transcript preserved in the archive, named by the seed
+    [arch] = sessions.archives("2026-07-03-1400-abcd", sessions_dir=tmp_path)
+    assert len(json.loads(arch.read_text())["messages"]) == 2
     # live session reseeded: summary seed + assistant ack
     assert len(s.messages) == 2
     assert "THE SUMMARY" in s.messages[0]["content"]
-    assert "compacted from 2026-07-03-1400-abcd" in s.messages[0]["content"]
+    assert arch.name in s.messages[0]["content"]
     assert s.messages[1]["role"] == "assistant"
-    # detached to a NEW id, saved immediately, title prefixed
-    assert s.session_id and s.session_id != "2026-07-03-1400-abcd"
-    new = sessions.load(s.session_id, sessions_dir=tmp_path)
-    assert new["title"].startswith("compacted:")
-    assert "compacted" in capsys.readouterr().out
+    # the SAME id and title, and the session's own file now holds the seed
+    assert s.session_id == "2026-07-03-1400-abcd"
+    saved = sessions.load(s.session_id, sessions_dir=tmp_path)
+    assert saved["title"] == "fix the bug"
+    assert len(saved["messages"]) == 2 and "THE SUMMARY" in saved["messages"][0]["content"]
+    assert "same session" in capsys.readouterr().out
 
 
 def test_compact_api_failure_is_noop(tmp_path, monkeypatch, capsys):

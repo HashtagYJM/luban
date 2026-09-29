@@ -176,10 +176,11 @@ last exchange so you know where you left off. Resuming another folder's session
 (via `--all`) moves it to your current folder — luban warns loudly when that
 happens, since it's rarely what you meant.
 
-**Two threads in one folder.** You don't have to name sessions — the first thing
-you type becomes the title, and `/sessions` numbers them, so `/resume 2` is always
-enough. Naming earns its keep when you run *parallel* threads in one project (say a
-long research thread and a quick bug fix), where auto-titles look alike:
+**Two threads in one folder.** You don't have to name sessions — after your first
+exchange luban asks the model for a short title (one small call), and `/compact`
+refreshes it from its summary. Until then, or if that call fails, the first thing you
+typed is the title. `/sessions` numbers them, so `/resume 2` is always enough. A name
+you give with `/title` or `/new` is never replaced:
 
 ```
 /new market update        # saves the current thread, starts a named one
@@ -196,7 +197,9 @@ switching never loses work.
 luban can look this up itself: the read-only `sessions` tool lists saved sessions
 (add `all: true` for every folder), so you can ask what you were working on
 recently. Transcripts are plain JSON under `~/.luban/sessions/` — the model can
-`read_file` one directly if you ask it to look closer.
+`read_file` one directly if you ask it to look closer. History a session summarized
+away (by `/compact` or folding) is kept under `~/.luban/sessions/archive/`, and the
+`sessions` tool lists those files under the session they belong to.
 
 ## Skills
 
@@ -379,9 +382,10 @@ how to run your own well — see
 
 ### Compacting long conversations
 
-`/compact` summarizes the conversation, saves the full transcript to disk (still
-resumable via `--resume`), and continues in a fresh session seeded with the summary,
-keeping context small. Before it discards anything, luban writes one short journal
+`/compact` summarizes the conversation, archives the full transcript under
+`~/.luban/sessions/archive/`, and continues in the same session from the summary,
+keeping context small. The session keeps its id and title, so `/sessions`, `luban -c`
+and `/resume` still show one entry per thread. Before it discards anything, luban writes one short journal
 line for the segment. luban suggests `/compact` when a conversation grows large.
 
 ### Staying on top of issues

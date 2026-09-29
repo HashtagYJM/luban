@@ -142,7 +142,7 @@ with `"""` again. The prompt reads `you (auto)>` while confirmations are off.
 | `/verbose [on\|off]` | Show or hide the reasoning text |
 | `/auto [on\|off]` | Stop asking before file writes and shell commands, or start again |
 | `/config` | Every setting in effect, plus your always-on context budget |
-| `/usage` | Tokens used this session, per model |
+| `/usage` | Tokens used this session, per model; `/usage today` or `/usage 7d` for all sessions, by call kind |
 | `/context` | What is loaded into the prompt every turn, and its token cost |
 | `/skills` | List skills |
 | `/skill <name>` | Load a skill into context |

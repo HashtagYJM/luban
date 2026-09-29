@@ -386,3 +386,82 @@ def report(led: Ledger, warn_tokens: int, model: str = "") -> str:
                    "  Your actual bill may differ if requests are routed or charged back\n"
                    "  on another basis.\n")
     return "".join(out)
+
+
+def _m(n: float) -> str:
+    return f"{n/1e6:.1f}M" if n >= 1e6 else _k(n)
+
+
+def period_since(arg: str, now=None):
+    """`today` or `<N>d` (today and the N-1 days before it) -> the local midnight it
+    starts at, or None for anything else."""
+    from datetime import datetime, timedelta
+    now = now or datetime.now()
+    arg = arg.strip().lower()
+    if arg == "today":
+        days = 1
+    elif arg[:-1].isdigit() and arg.endswith("d") and int(arg[:-1]) > 0:
+        days = int(arg[:-1])
+    else:
+        return None
+    return now.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=days - 1)
+
+
+def period_report(path: Path, since, label: str) -> str:
+    """The cross-session view, read from audit.jsonl: every model call by what it was for
+    and which model made it, and the tools that drove the turns. Tokens are what the
+    gateway meters — the whole prompt, cache reads at full weight."""
+    from datetime import datetime
+    kinds: dict = {}
+    models: dict = {}
+    tool_counts: dict = {}
+    blanks = 0
+    try:
+        f = path.open(encoding="utf-8", errors="replace")
+    except OSError:
+        return f"no audit log at {path}.\n"
+    with f:
+        for line in f:
+            try:
+                row = json.loads(line)
+                if datetime.fromisoformat(row["ts"]) < since:
+                    continue
+            except (ValueError, KeyError, TypeError):
+                continue
+            tool = row.get("tool") or ""
+            if tool == "model:call":
+                inp, out = int(row.get("input") or 0), int(row.get("output") or 0)
+                for table, key in ((kinds, row.get("kind") or "?"),
+                                   (models, row.get("target") or "?")):
+                    c = table.setdefault(key, [0, 0, 0])
+                    c[0] += 1
+                    c[1] += inp
+                    c[2] += out
+            elif tool == "model:empty":
+                blanks += 1
+            elif tool and not tool.startswith("model:"):
+                tool_counts[tool] = tool_counts.get(tool, 0) + 1
+    if not kinds:
+        return (f"no model calls recorded {label}. Calls are recorded in audit.jsonl from "
+                f"this version on.\n")
+    calls = sum(c[0] for c in kinds.values())
+    inp = sum(c[1] for c in kinds.values())
+    out = sum(c[2] for c in kinds.values())
+    lines = [f"usage {label}, all sessions (from audit.jsonl; input counts cache reads "
+             f"in full, as the gateway does):\n\n",
+             f"  {calls:,} model calls · {_m(inp)} input · {_m(out)} output · "
+             f"{_k(inp / calls)} input per call\n\n",
+             f"  {'by kind':<14}{'calls':>7}{'input':>9}{'share':>7}{'per call':>10}\n"]
+    for key, (n, i, _o) in sorted(kinds.items(), key=lambda kv: -kv[1][1]):
+        share = f"{round(100 * i / inp)}%" if inp else "-"
+        lines.append(f"  {key:<14}{n:>7,}{_m(i):>9}{share:>7}{_k(i / n):>10}\n")
+    lines.append(f"\n  {'by model':<22}{'calls':>7}{'input':>9}{'output':>9}\n")
+    for key, (n, i, o) in sorted(models.items(), key=lambda kv: -kv[1][1]):
+        lines.append(f"  {key:<22}{n:>7,}{_m(i):>9}{_m(o):>9}\n")
+    if tool_counts:
+        top = sorted(tool_counts.items(), key=lambda kv: -kv[1])[:6]
+        lines.append(f"\n  tool calls {sum(tool_counts.values()):,}: "
+                     + ", ".join(f"{t} {n:,}" for t, n in top) + "\n")
+    if blanks:
+        lines.append(f"  blank answers {blanks:,}\n")
+    return "".join(lines)

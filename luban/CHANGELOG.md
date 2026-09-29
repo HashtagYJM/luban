@@ -11,6 +11,10 @@ below. Only user-facing behaviour earns a line here.
 
 ## Unreleased
 
+### `/usage today` says where the calls went
+
+`/usage` covered one session, so a high daily total could not be traced to its cause: ordinary turns, folds, blank-answer probes, memory flushes or sub-agents. Every model call now leaves a `model:call` row in `audit.jsonl` naming what it was for, the model and the tokens it sent and received. `/usage today` and `/usage 7d` read those rows across all sessions and show calls and input tokens by kind and by model, input per call, and the most-used tools. Input counts cache reads in full, as a gateway meter does.
+
 ### /reflect no longer touches the tracker or project files (E57)
 
 A routine `/reflect` could treat the enhancements tracker as a duplicate fact, write a shortened copy of it into a project file, rewrite project files that pointed at it, and delete it, all without a prompt in auto mode. `/reflect` now writes only facts, `USER.md` and `SOUL.md`. Anything else it would change, including the project memory file and any file marked `document: true`, is refused and listed under "Suggested edits" at the end of its report for you to apply in an ordinary turn.

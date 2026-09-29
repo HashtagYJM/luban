@@ -239,6 +239,6 @@ def test_every_model_call_site_reports_usage():
     import inspect
     from luban import cli
     for fn in (cli.fold_history, cli.compact_session):
-        assert "ledger.add" in inspect.getsource(fn), fn.__name__
+        assert "record_call" in inspect.getsource(fn), fn.__name__
     for fn in (cli.flush_memory, cli.reflect_session, cli.build_agent_config):
         assert "on_usage" in inspect.getsource(fn), fn.__name__

@@ -385,7 +385,7 @@ def test_an_unpriced_model_in_the_mix_yields_no_total_rather_than_a_low_one():
 def test_every_call_is_attributed_to_the_model_that_made_it():
     src = Path("luban/cli.py").read_text(encoding="utf-8")
     body = src[src.index("def build_agent_config"):src.index("def flush_memory")]
-    assert "ledger.add(u, session.model)" in body
+    assert "record_call(session, u, session.model, kind" in body
 
 
 # ---------------- 9: an estimate must announce itself ----------------
@@ -434,7 +434,7 @@ def test_a_full_tool_using_turn_runs_against_the_adapter(tmp_path):
     cfg = cli.agent.AgentConfig(
         "gpt-5.6", 4096, stream=False, platform="mac", cache_prompt=True,
         tools=cli.tools.active_tools(False), thinking=True, effort="high",
-        on_usage=lambda u: led.add(u, "gpt-5.6"))
+        on_usage=lambda u, kind: led.add(u, "gpt-5.6"))
     ctx = cli.tools.ToolContext(project_root=tmp_path, confirm=lambda p: True,
                                 render_diff=lambda *a: None,
                                 render_command=lambda c: None)

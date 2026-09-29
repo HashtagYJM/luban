@@ -1,4 +1,4 @@
-"""Audit trail — one JSON line per tool call, at ~/.luban/audit.jsonl.
+"""Audit trail — one JSON line per tool call and per model call, at ~/.luban/audit.jsonl.
 
 Standard library only. Auditing is a side channel: it must NEVER raise into
 the agent loop, so all filesystem errors are swallowed.

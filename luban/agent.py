@@ -145,6 +145,9 @@ class AgentConfig:
     # and estimate at 4 chars/token instead — a 36% undercount that made the /compact
     # nudge fire ~54k tokens late. These cost nothing: they arrive with the response.
     on_usage: object = None
+    # What this call is FOR, passed to on_usage beside the counts: a turn, or one of
+    # luban's own calls (probe, fold, flush…) that the user never typed but still pays for.
+    call_kind: str = "turn"
     # Server-side tool-result clearing config (None = off). Derived from
     # warn_tokens by cli; not a knob.
     ctx_mgmt: dict | None = None
@@ -378,7 +381,7 @@ def _run_model_turn(client, config, messages, on_text, on_thinking, on_retry=Non
                 probe["cache_ttl"] = True
     if config.on_usage is not None:
         try:
-            config.on_usage(usage_mod.from_response(msg))
+            config.on_usage(usage_mod.from_response(msg), config.call_kind)
         except Exception:
             pass  # accounting must never break a turn
     if config.stream:
@@ -426,11 +429,11 @@ def _blank_variants(config: AgentConfig) -> list[tuple[str, AgentConfig]]:
     this call actually carried: a variant that changes nothing is not a probe."""
     out = []
     if config.volatile_fn or config.global_volatile:
-        out.append(("the memory index", replace(config, volatile_fn=lambda: "", global_volatile="")))
+        out.append(("the memory index", replace(config, volatile_fn=lambda: "", global_volatile="", call_kind="probe")))
     if config.ctx_mgmt:
-        out.append(("context editing", replace(config, ctx_mgmt=None)))
+        out.append(("context editing", replace(config, ctx_mgmt=None, call_kind="probe")))
     if config.thinking:
-        out.append(("thinking", replace(config, thinking=False)))
+        out.append(("thinking", replace(config, thinking=False, call_kind="probe")))
     return out
 
 

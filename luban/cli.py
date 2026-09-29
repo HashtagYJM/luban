@@ -297,12 +297,12 @@ def build_tool_context(
             run.tools_offered = len(read_only)
             child = usage_mod.Ledger()
 
-            def on_usage(u) -> None:
+            def on_usage(u, _kind="turn") -> None:
                 # Every child call reaches the ledger as a SIDE call: counted in the
                 # totals and per-model figures, never as the session's context size,
                 # which is the parent's last request and not the child's. Recorded under
                 # the model that made it — the child's, which need not be the parent's.
-                session.ledger.add(u, run.model, context=False)
+                record_call(session, u, run.model, "subagent")
                 child.add(u)
                 run.tokens = child.total_tokens
 
@@ -436,6 +436,17 @@ def blank_account(session: Session, msg) -> dict:
         "cleared_tokens": session.ledger.cleared_tokens,
     })
     return diag
+
+
+def record_call(session: Session, u, model: str, kind: str, *,
+                context: bool = False) -> None:
+    """Count one model call in the session ledger and leave a `model:call` row in
+    audit.jsonl, so `/usage today` can say where the calls and tokens went across
+    sessions. `input` is the whole prompt read, cache included — what the gateway meters."""
+    session.ledger.add(u, model, context=context)
+    audit_mod.log({"project": session.project, "session": session.session_id,
+                   "tool": "model:call", "target": model, "kind": kind,
+                   "input": u.context_tokens, "output": u.output_tokens})
 
 
 def blank_probe_notice(session: Session, variant: str, msg, answered) -> None:
@@ -1131,7 +1142,7 @@ def build_agent_config(session: Session, cfg: config_mod.Config, project_root: P
         web_search_tool_type=cfg.web_search_tool_type,
         # Attribute every call to the model that made it — /model can switch provider
         # mid-session, and rates differ.
-        on_usage=lambda u: session.ledger.add(u, session.model),
+        on_usage=lambda u, kind: record_call(session, u, session.model, kind, context=True),
         ctx_mgmt=(client_mod.context_management(cfg.warn_tokens)
                   if cfg.context_editing else None),
         thinking=session.thinking,
@@ -1177,7 +1188,7 @@ def flush_memory(session: Session, client, ctx, cfg: config_mod.Config) -> None:
     config = agent.AgentConfig(
         session.model, session.max_tokens, stream=False, platform=cfg.platform,
         global_memory=memory_mod.bootstrap_block(), tools=flush_tools,
-        on_usage=lambda u: session.ledger.add(u, session.model, context=False),
+        on_usage=lambda u, _kind: record_call(session, u, session.model, "flush"),
     )
     before = memory_mod._journal_writes
     try:
@@ -1225,7 +1236,7 @@ def reflect_session(session: Session, client, ctx, cfg: config_mod.Config,
     config = agent.AgentConfig(
         session.model, session.max_tokens, session.stream, platform=cfg.platform,
         global_memory=memory_mod.bootstrap_block(), tools=tools.active_tools(True),
-        on_usage=lambda u: session.ledger.add(u, session.model, context=False),
+        on_usage=lambda u, _kind: record_call(session, u, session.model, "reflect"),
     )
     ui.print_text("\nluban> ")
     try:
@@ -1680,7 +1691,7 @@ def fold_history(session: Session, client, cfg: config_mod.Config,
             messages=old + [{"role": "user", "content": FOLD_PROMPT}], tools=[])
         # A fold sends the whole early span uncached — the single most expensive call in
         # a session, and it was missing from /usage entirely.
-        session.ledger.add(usage_mod.from_response(msg), session.model, context=False)
+        record_call(session, usage_mod.from_response(msg), session.model, "fold")
         summary = "".join(b.text for b in msg.content if b.type == "text").strip()
     except Exception as exc:
         # Cost a call. Not retried on the next call — maintain_context waits for material
@@ -1872,7 +1883,7 @@ def compact_session(session: Session, client, ctx=None, cfg=None) -> None:
             client, model=session.model, max_tokens=session.max_tokens,
             system=agent.SYSTEM_PROMPT, messages=msgs, tools=[],
         )
-        session.ledger.add(usage_mod.from_response(msg), session.model, context=False)
+        record_call(session, usage_mod.from_response(msg), session.model, "compact")
         summary = "".join(b.text for b in msg.content if b.type == "text").strip()
     except Exception as exc:
         ui.print_text(f"compact failed ({exc}) — session unchanged.\n")
@@ -2025,7 +2036,7 @@ COMMANDS = [
     ("/verbose [on|off]", "Show or hide the reasoning text"),
     ("/auto [on|off]", "Stop asking before file writes and shell commands, or start again"),
     ("/config", "Every setting in effect, plus your always-on context budget"),
-    ("/usage", "Tokens used this session, per model"),
+    ("/usage", "Tokens used this session; /usage today or /usage 7d for all sessions"),
     ("/context", "What is loaded into the prompt every turn, and its token cost"),
     ("/skills", "List skills"),
     ("/skill <name>", "Load a skill into context"),
@@ -2145,6 +2156,14 @@ def handle_command(line: str, session: Session, client=None, ctx=None, cfg=None)
         if miss:
             ui.print_text(f"({len(miss)} new setting(s) not in your config.toml — "
                           "run `luban --sync-config` to add them)\n")
+        return "handled"
+    if cmd == "/usage" and arg:
+        since = usage_mod.period_since(arg)
+        if since is None:
+            ui.print_text("usage: /usage [today | <N>d] — no argument is this session.\n")
+        else:
+            label = "today" if arg.strip().lower() == "today" else f"over {arg.strip()}"
+            ui.print_text(usage_mod.period_report(audit_mod.AUDIT_PATH, since, label))
         return "handled"
     if cmd == "/usage":
         # Measured from API responses — never estimated. This is the number to watch to

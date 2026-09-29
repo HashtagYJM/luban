@@ -728,6 +728,12 @@ def _sessions(inp: dict, ctx: ToolContext) -> ToolResult:
             f'{prefix}{h["id"]}  {h["updated"]}  {h["model"]}  '
             f'"{h["title"]}"  ({h["message_count"]} msgs)'
         )
+        # A fold or a /compact keeps the id and moves the history it replaced into an
+        # archive, so the session file alone is no longer the whole thread.
+        n = len(sessions_mod.archives(h["id"]))
+        if n:
+            lines.append(f"    earlier history: {n} archive(s) at "
+                         f"~/.luban/sessions/archive/{h['id']}-*.json")
     return ToolResult(_truncate("\n".join(lines)))
 
 
@@ -1040,7 +1046,8 @@ TOOLS = [
         "description": "List saved conversation sessions for this project "
         "(newest first). Set all=true to include every project. Full transcripts "
         "are JSON files under ~/.luban/sessions/, readable with read_file — use "
-        "them (not the journal) to recover what a past session was actually doing. "
+        "them (not the journal) to recover what a past session was actually doing; "
+        "history a session summarized away is in the archive files listed under it. "
         "Read them via the ~/.luban alias, never a shell '~'.",
         "input_schema": {
             "type": "object",

@@ -39,6 +39,14 @@ A sub-agent's answer arrived with no record of what produced it or what it cost.
 
 Several `spawn_subagent` calls in one step ran one after another, so two reviewers took twice as long. They now run together, up to four at once, with results in the order they were asked for; other tools still run one at a time. Ctrl-C stops them all, keeps any answer already back, and the session saves and resumes cleanly.
 
+### /compact keeps the same session
+
+Each `/compact` started a new session titled "compacted: …", so a long thread became a chain of look-alike entries in `/sessions` and resuming it meant finding the newest link. `/compact` now continues the same session with the same id and title; the full earlier transcript is archived under `~/.luban/sessions/archive/` and the summary names the file. If the archive cannot be written, nothing is compacted and the session is left as it was.
+
+### Sessions name themselves
+
+A session's title was the first line you typed, so parallel threads in one folder often looked alike. After the first exchange luban now makes one small model call for a short title, and `/compact` refreshes it from its own summary at no extra cost. If the call fails, the first-line title stays. A title you set with `/title` or `/new <title>` is never replaced.
+
 ## v0.8.1 — auto by default, a write survives a crash mid-step, and a one-line memory index
 
 ### Auto mode can be the default

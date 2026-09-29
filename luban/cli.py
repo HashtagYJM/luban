@@ -29,8 +29,17 @@ from luban import usage as usage_mod
 COMPACT_PROMPT = (
     "Summarize this conversation comprehensively so a fresh session can continue "
     "the work: key decisions and rationale, files created or changed and why, the "
-    "current state, and open items or next steps. Reply with only the summary."
+    "current state, and open items or next steps. Begin with one line of the form "
+    "'Title: <3-6 words naming this work>', then reply with only the summary."
 )
+# Asked of the model once, after a thread's first turn. The first typed line is often
+# "hi" or a pasted traceback, and with several sessions open in one folder /sessions
+# could not tell them apart.
+TITLE_PROMPT = (
+    "Name this conversation for a list of saved sessions. Reply with a 3-6 word title "
+    "only — no quotes, and no punctuation at the end."
+)
+TITLE_MAX_TOKENS = 30
 FLUSH_PROMPT = (
     "Before this conversation is compacted, do two things. First call checkpoint with "
     "ONE sentence saying where this project now stands and what the next step is — that "
@@ -117,6 +126,10 @@ class Session:
     session_id: str = ""
     created: str = ""
     title: str = ""
+    # Who named the thread: "user" (/title, /new <title>) is never replaced; "first_line"
+    # is the typed line, which the first turn's title call and /compact's summary may
+    # improve; "auto" came from one of those and /compact may refresh it.
+    title_source: str = "first_line"
     pending_context: list = field(default_factory=list)
     # Skills loaded in this thread, in load order. The BODY lives in the message list and
     # dies with it; this is the record that the skill is still in force, so a fold or a
@@ -374,7 +387,8 @@ def build_tool_context(
         subagent=subagent,
         hooks=cfg.hooks if cfg is not None else [],
         notify=lambda msg: ui.print_text(f"({msg})\n"),
-        # Read through the session, not captured: /compact mints a new id mid-session.
+        # Refreshed on the context by the turn loop, /compact and resume: the thread this
+        # context serves changes mid-session on /new and resume.
         session_id=session.session_id,
         record_skill=record_skill,
     )
@@ -792,6 +806,7 @@ def archive_session(session: Session) -> str:
     path = sessions_mod.archive({
         "id": session.session_id, "project": session.project, "created": session.created,
         "model": session.model, "title": session.title,
+        "title_source": session.title_source,
         "messages": agent.sanitize_history(session.messages),
         "skills_loaded": list(session.skills_loaded),
     })
@@ -821,6 +836,7 @@ def save_session(session: Session) -> None:
             "created": session.created,
             "model": session.model,
             "title": session.title,
+            "title_source": session.title_source,
             # never persist a history that ends in an unanswered tool_use (E14)
             "messages": agent.sanitize_history(session.messages),
             # A skill loaded before a resume is still in force after it; the body it put
@@ -872,6 +888,66 @@ def title_from(text: str) -> str:
     first-line-only titling was introduced to fix, arriving by another road.
     """
     return " ".join(title_from_body(text).split())[:60]
+
+
+_TITLE_LINE = re.compile(r"^\W*title\W*:\s*(.*)$", re.IGNORECASE)
+
+
+def clean_title(text: str) -> str:
+    """One line of model output as a session title, or "" if there is none worth using."""
+    line = next((ln for ln in text.splitlines() if ln.strip()), "")
+    line = line.strip().strip("\"'`*“”‘’").strip()
+    line = " ".join(line.rstrip(".!?:;,").split())
+    return line[:60].strip()
+
+
+def split_title(summary: str) -> tuple[str, str]:
+    """(title, summary without it). The compact summary is asked to open with a
+    `Title:` line so a thread can be renamed without a second call; the line names the
+    work for /sessions and has no business in the seed the model continues from."""
+    lines = summary.strip().splitlines()
+    if lines:
+        m = _TITLE_LINE.match(lines[0].strip())
+        if m:
+            return clean_title(m.group(1)), "\n".join(lines[1:]).strip()
+    return "", summary.strip()
+
+
+def name_thread(session: Session, client) -> None:
+    """After a thread's first completed turn, ask the model for a short title.
+
+    Only a title luban derived from the first typed line is replaced, and only once: a
+    thread with more than one human turn — a resumed one, or one past its first turn —
+    is left alone, and so is any title the user chose. Best-effort and silent on failure:
+    the first-line title is still a usable name, so nothing here may raise into the turn
+    loop."""
+    try:
+        if client is None or session.title_source != "first_line":
+            return
+        human = [m for m in session.messages if _is_human_turn(m)]
+        if len(human) != 1 or not isinstance(human[0]["content"], str):
+            return
+        asked = title_from_body(human[0]["content"])[:2000]
+        if not asked.strip():
+            return
+        answer = " ".join(
+            b.get("text", "") for m in session.messages if m["role"] == "assistant"
+            and isinstance(m["content"], list)
+            for b in m["content"] if isinstance(b, dict) and b.get("type") == "text")
+        prompt = (f"{TITLE_PROMPT}\n\nFirst message:\n{asked}\n\n"
+                  f"Start of the answer:\n{answer.strip()[:500]}")
+        msg = client_mod.create_turn(
+            client, model=session.model, max_tokens=TITLE_MAX_TOKENS,
+            system="You name conversations.",
+            messages=[{"role": "user", "content": prompt}], tools=[])
+        session.ledger.add(usage_mod.from_response(msg), session.model, context=False)
+        title = clean_title("".join(getattr(b, "text", "") for b in msg.content
+                                    if getattr(b, "type", "") == "text"))
+    except Exception:
+        return
+    if title:
+        session.title, session.title_source = title, "auto"
+        save_session(session)
 
 
 def compose_user_message(session: Session, line: str) -> str:
@@ -1627,7 +1703,7 @@ def fold_history(session: Session, client, cfg: config_mod.Config,
         ui.print_text(
             f"  folding cannot bring this down further yet — ~{projected:,} tokens remain "
             f"and the turns a fold has to keep are the bulk of it. It will try again as "
-            f"the work moves on; /compact starts a fresh session from a summary now, and "
+            f"the work moves on; /compact summarizes the whole conversation now, and "
             f"nothing on disk is lost.\n")
         return changed
 
@@ -1758,8 +1834,8 @@ def maintain_context(session: Session, client, cfg: config_mod.Config,
             ui.print_text("\n")
             return
         if answer not in ("y", "yes"):
-            ui.print_text("  left as-is — /compact starts fresh when you want that "
-                          "instead.\n")
+            ui.print_text("  left as-is — /compact summarizes the whole conversation when "
+                          "you want that instead.\n")
             return
     else:
         ui.print_text("  folding now (auto_fold = true — set it false in config.toml to "
@@ -1858,14 +1934,28 @@ def _changes_something(name: str, tool_input: dict) -> bool:
 
 
 def compact_session(session: Session, client, ctx=None, cfg=None) -> None:
+    """Replace the whole conversation with a summary, in the same session.
+
+    /compact used to save the transcript and start a NEW session from the summary. With
+    several threads running in one folder that turned each long workstream into a chain
+    of "compacted: …" entries in /sessions, and resuming the thread meant knowing which
+    link was the live one. A fold already rewrote history in place and kept the id; this
+    is the same move applied to all of it. The full history goes to the archive first —
+    the session's own file will hold only the seed after the save below.
+    """
     if not session.messages:
         ui.print_text("nothing to compact.\n")
         return
     if ctx is not None and cfg is not None:
         flush_memory(session, client, ctx, cfg)
-    save_session(session)  # preserve the full transcript on disk first
-    old_id = session.session_id
-    old_title = session.title
+    save_session(session)  # the latest state on disk, whatever happens below
+    try:
+        archived = archive_session(session)
+    except (OSError, ValueError) as exc:  # ValueError: as in save_session
+        # A seed naming an archive that was never written is the data loss E51 ended.
+        ui.print_text(f"compact failed: could not write the transcript archive ({exc}) "
+                      f"— session unchanged.\n")
+        return
     msgs = session.messages + [{"role": "user", "content": COMPACT_PROMPT}]
     try:
         msg = client_mod.create_turn(
@@ -1877,28 +1967,30 @@ def compact_session(session: Session, client, ctx=None, cfg=None) -> None:
     except Exception as exc:
         ui.print_text(f"compact failed ({exc}) — session unchanged.\n")
         return
+    title, summary = split_title(summary)
     if not summary:
         ui.print_text("compact failed (empty summary) — session unchanged.\n")
         return
     ui.print_text(f"\n{summary}\n\n")
     session.messages = [
         {"role": "user",
-         "content": f"[conversation summary — compacted from {old_id}]\n{summary}"
+         "content": f"[conversation summary — the full earlier transcript is on disk at "
+                    f"{archived}, which read_file can open]\n{summary}"
                     + loaded_skills_line(session.skills_loaded)},
         {"role": "assistant",
          "content": [{"type": "text", "text": "Understood — continuing from the summary."}]},
     ]
-    session.session_id = ""
-    session.created = ""
-    session.title = f"compacted: {old_title}"[:60] if old_title else ""
+    # The summary has just named the work, at no extra cost; a name the user chose stays.
+    if title and session.title_source != "user":
+        session.title, session.title_source = title, "auto"
     new_journal_segment(session)  # the post-compaction segment can journal again
-    save_session(session)  # mint the new file now so the seed survives a crash
-    ui.print_text(f"✓ compacted — new session started (previous saved as {old_id})\n")
+    save_session(session)  # the seed on disk now, so it survives a crash
+    ui.print_text(f"✓ compacted — same session; full history archived at {archived}\n")
     if ctx is not None:
-        ctx.session_id = session.session_id  # /compact detached to a new thread
+        ctx.session_id = session.session_id  # unchanged unless this compact minted it
     if ctx is not None and cfg is not None:
         # A session_start hook exists to put something in front of the model at the
-        # start of a session; /compact resets the session, so firing only at launch
+        # start of a session; /compact empties the context, so firing only at launch
         # would drop it at exactly the moment the emptied context needs it most.
         fire_hooks(session, cfg, ctx, "session_start")
 
@@ -1948,6 +2040,9 @@ def restore_session(session: Session, data: dict) -> None:
     session.session_id = data["id"]
     session.created = data.get("created", "")
     session.title = _repaired_title(data)
+    # Files from before title_source existed: not known to be user-set, so /compact may
+    # rename them; they are past their first turn, so no title call fires.
+    session.title_source = data.get("title_source") or "first_line"
     skills_back = data.get("skills_loaded")
     session.skills_loaded = list(skills_back) if isinstance(skills_back, list) else []
     # Switching threads starts a new journal segment. Otherwise a `journaled` flag
@@ -2192,6 +2287,7 @@ def handle_command(line: str, session: Session, client=None, ctx=None, cfg=None)
         session.messages.clear()
         session.session_id = ""
         session.title = arg.strip()[:60] if cmd == "/new" else ""
+        session.title_source = "user" if session.title else "first_line"
         session.created = ""
         new_journal_segment(session)
         # A different thread, not a shorter one. /compact keeps the loaded skills because
@@ -2204,7 +2300,7 @@ def handle_command(line: str, session: Session, client=None, ctx=None, cfg=None)
         if not arg.strip():
             ui.print_text(f'title: "{session.title or "(untitled)"}"\n')
             return "handled"
-        session.title = arg.strip()[:60]
+        session.title, session.title_source = arg.strip()[:60], "user"
         if session.messages:
             save_session(session)  # persist the rename now, not at exit
         ui.print_text(f'✓ title → "{session.title}"\n')
@@ -2459,7 +2555,7 @@ def main(argv: list[str] | None = None) -> None:
             )
         # The thread's name has to be settled BEFORE the turn: a checkpoint or a hook
         # inside it is attributed to the session that made it (E46/E47), and -c/-r and
-        # /compact all change which session that is.
+        # /new change which session that is.
         ctx.session_id = ensure_session_id(session)
         agent_config = build_agent_config(session, cfg, project_root)
         agent_config.between_calls = bound_turn(session, client, cfg, project_root)
@@ -2504,13 +2600,14 @@ def main(argv: list[str] | None = None) -> None:
             # The live token line: what this turn cost and how full the window is.
             ui.print_text(usage_mod.turn_line(session.ledger, cfg.warn_tokens,
                                               session.model) + "\n")
+            name_thread(session, client)  # acts after a thread's first turn only
             # MEASURED, not estimated. The old path compared warn_tokens against a
             # 4-chars/token estimate of the message text — 36% low against the measured
             # ratio, so the nudge arrived tens of thousands of tokens late and ignored
             # the system prompt and tool schemas entirely. context_tokens is what the
             # model actually read.
-            # Offer to fold before the nudge: folding keeps the session and its thread,
-            # /compact resets both. The user should be offered the reversible option first.
+            # Offer to fold before the nudge: folding keeps the recent turns verbatim,
+            # /compact summarizes all of them. The lighter option is offered first.
             maintain_context(session, client, cfg, project_root)
             real = session.ledger.context_tokens or estimate_tokens(session.messages)
             if real > cfg.warn_tokens:

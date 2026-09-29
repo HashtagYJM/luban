@@ -73,6 +73,15 @@ def archive(data: dict, sessions_dir: Path | None = None) -> Path:
     return path
 
 
+def archives(session_id: str, sessions_dir: Path | None = None) -> list[Path]:
+    """Every archive written for this session, oldest first. A fold and a /compact both
+    keep the session's id, so a long thread's earlier history is spread across these."""
+    d = _dir(sessions_dir) / "archive"
+    if not d.exists():
+        return []
+    return sorted(d.glob(f"{session_id}-*.json"))
+
+
 def load(session_id: str, sessions_dir: Path | None = None) -> dict:
     path = _dir(sessions_dir) / f"{session_id}.json"
     if not path.exists():
@@ -81,6 +90,9 @@ def load(session_id: str, sessions_dir: Path | None = None) -> dict:
 
 
 _HEADER_KEYS = ("id", "project", "created", "updated", "model", "title")
+# Keys a session file may lack because it was written before they existed. Listed with
+# their default, so an old file is read rather than skipped as unreadable.
+_OPTIONAL_HEADER_KEYS = {"title_source": "first_line"}
 
 
 def list_sessions(project: str | None, sessions_dir: Path | None = None) -> list[dict]:
@@ -92,6 +104,7 @@ def list_sessions(project: str | None, sessions_dir: Path | None = None) -> list
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
             header = {k: data[k] for k in _HEADER_KEYS}
+            header.update({k: data.get(k) or v for k, v in _OPTIONAL_HEADER_KEYS.items()})
             header["message_count"] = len(data["messages"])
         except Exception:
             print(f"warning: skipping unreadable session file {path.name}", file=sys.stderr)

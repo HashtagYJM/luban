@@ -11,7 +11,9 @@ below. Only user-facing behaviour earns a line here.
 
 ## Unreleased
 
-Nothing yet since v0.9.0.
+### glob finds files in ~/.luban (E58)
+
+`glob` with a pattern such as `~/.luban/OPINIONS.md` answered "no matches" for a file that exists, so luban told you it was missing, and an absolute pattern failed outright. A pattern starting with `~/.luban/` or an absolute path now searches that folder, under the same rules as `read_file` and `grep`: Python files in `~/.luban` stay hidden, and luban says how many it left out. A folder outside the project, or one that does not exist, is now an error instead of an empty answer.
 
 ## v0.9.0 — sub-agents on their own models, /reflect stays in its lane, /compact keeps the session
 

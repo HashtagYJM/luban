@@ -312,23 +312,72 @@ def _read_file(inp: dict, ctx: ToolContext) -> ToolResult:
     return ToolResult(_truncate(numbered))
 
 
+_GLOB_CHARS = re.compile(r"[*?\[]")
+
+
+def _glob_base(root: Path, pattern: str, ctx: ToolContext) -> tuple[Path, str]:
+    """(directory to search, pattern relative to it).
+
+    A relative pattern searches the project root, as it always did. A pattern that starts
+    with the ~/.luban alias or an absolute path has its literal leading segments resolved
+    through resolve_tool_path, the resolver read_file, list_dir and grep share — so the
+    alias, the home Python guard and out-of-tree gating mean the same thing here. Handed
+    straight to Path.glob, "~/.luban/X.md" searched a literal folder named "~" under the
+    project and answered "(no matches)" for a file that exists, and the agent told the
+    user it was missing (E58); an absolute pattern raised instead.
+    """
+    norm = pattern.replace("\\", "/")
+    if not (norm.startswith("~") or Path(norm).is_absolute() or re.match(r"^[A-Za-z]:/", norm)):
+        return root, pattern
+    parts = norm.split("/")
+    cut = next((i for i, seg in enumerate(parts) if _GLOB_CHARS.search(seg)), len(parts))
+    if cut == len(parts):  # no wildcard at all: the pattern names one path
+        cut = len(parts) - 1
+    prefix = "/".join(parts[:cut]) or "/"
+    base = resolve_tool_path(root, prefix, allow_out_of_tree=ctx.allow_out_of_tree)
+    return base, "/".join(parts[cut:])
+
+
 def _glob(inp: dict, ctx: ToolContext) -> ToolResult:
     root = Path(ctx.project_root).resolve()
     home = LUBAN_HOME.resolve()
+    try:
+        base, pattern = _glob_base(root, inp["pattern"], ctx)
+    except (ValueError, KeyError) as exc:
+        return ToolResult(str(exc), is_error=True)
+    if not base.is_dir():
+        # A silent "(no matches)" for a place that cannot be searched reads as a genuine
+        # empty result — error, as grep does (E4a).
+        return ToolResult(f"Path not found: {inp['pattern']} (no folder at {base})",
+                          is_error=True)
+    base = base.resolve()
     matches = []
-    for p in root.glob(inp["pattern"]):
+    hidden_py = 0
+    for p in base.glob(pattern):
         if not p.is_file():
             continue
         rp = p.resolve()
-        if rp != root and root not in rp.parents:
-            continue  # drop matches that escape the project root (e.g. a symlink)
+        if rp != base and base not in rp.parents:
+            continue  # drop matches that escape the searched folder (e.g. a symlink)
         # Same rule as grep: never list protected home Python, even when the
         # project root contains (or is) the luban home and a lexical match lands
         # inside it — resolve_tool_path's read/write guards would refuse it anyway.
-        if home_relative(rp) is not None and rp.name.rstrip(" .").lower().endswith(".py"):
+        under_home = home_relative(rp)
+        if under_home is not None and rp.name.rstrip(" .").lower().endswith(".py"):
+            hidden_py += 1
             continue
-        matches.append(str(rp.relative_to(root)))
-    return ToolResult(_truncate("\n".join(sorted(matches)) or "(no matches)"))
+        if rp == root or root in rp.parents:
+            matches.append(str(rp.relative_to(root)))
+        elif under_home is not None:
+            matches.append(f"~/.luban/{under_home}")  # the spelling the file tools accept
+        else:
+            matches.append(str(rp))
+    out = "\n".join(sorted(matches)) or "(no matches)"
+    if hidden_py:
+        # Exclusion must not read as absence (E53).
+        out += (f"\n(not listed: {hidden_py} Python file(s) under ~/.luban — luban never "
+                f"exposes them)")
+    return ToolResult(_truncate(out))
 
 
 def _grep(inp: dict, ctx: ToolContext) -> ToolResult:
@@ -946,7 +995,7 @@ TOOLS = [
     },
     {
         "name": "glob",
-        "description": "Find files by glob pattern across the project tree.",
+        "description": "Find files by glob pattern across the project tree, or under ~/.luban with a pattern that starts ~/.luban/.",
         "input_schema": {
             "type": "object",
             "properties": {"pattern": {"type": "string"}},

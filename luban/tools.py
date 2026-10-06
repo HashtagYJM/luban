@@ -925,6 +925,11 @@ def _spawn_subagent(inp: dict, ctx: ToolContext) -> ToolResult:
     return ToolResult(_truncate(f"{header}{run.text}"))
 
 
+def subagent_models(roles: dict | None) -> list[str]:
+    """The models a sub-agent may be put on by name: those the user's roles name."""
+    return sorted({r["model"] for r in (roles or {}).values() if r.get("model")})
+
+
 def subagent_tool(roles: dict | None = None) -> dict:
     """The spawn_subagent schema, listing the configured roles so the coordinator can
     choose one. Built from config once per turn and unchanged within a session, so the
@@ -940,10 +945,15 @@ def subagent_tool(roles: dict | None = None) -> dict:
     )
     properties = {
         "task": {"type": "string", "description": "Self-contained task for the sub-agent."},
-        "model": {"type": "string", "description": (
-            "Optional model id for this sub-agent (default: the role's model, else "
-            "yours). A model that cannot be served is refused, never substituted.")},
     }
+    models = subagent_models(roles)
+    if models:
+        # An enum, not free text: a model id recalled from training is often one the
+        # gateway has retired. With no model configured the field is not offered and
+        # the child runs on the session's model.
+        properties["model"] = {"type": "string", "enum": models, "description": (
+            "Optional model for this sub-agent, from the configured list (default: the "
+            "role's model, else yours).")}
     if roles:
         listing = "\n".join(
             f"- {name}: {r.get('description') or '(no description)'}"

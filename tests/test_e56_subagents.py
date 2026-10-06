@@ -53,13 +53,21 @@ ROLES = {"reviewer": {"model": "gpt-x", "prompt": "ROLE-PREAMBLE: review sceptic
                       "tools": ["read_file"], "description": "Independent review"}}
 
 
+def _models(*ids):
+    """Roles that do nothing but name models: since 0.9.2 the only way a model becomes
+    choosable for a sub-agent."""
+    return {f"m{i}": {"model": m, "prompt": "", "tools": None, "description": ""}
+            for i, m in enumerate(ids)}
+
+
 # ------------------------------------------------------- 1. model and attribution ----
 
 def test_a_chosen_model_routes_by_prefix_and_is_booked_under_itself(tmp_path):
     anthropic = FakeClient([], model_ids=["claude-parent"])
     openai = FakeClient([_text("gpt says hi", 400, 40)], model_ids=["gpt-x"])
     s = _session(tmp_path)
-    ctx = cli.build_tool_context(s, tmp_path, config_mod.Config(platform="mac", subagents=True),
+    ctx = cli.build_tool_context(s, tmp_path, config_mod.Config(platform="mac", subagents=True,
+                                                                roles=_models("gpt-x")),
                                  client=client_mod.Facade(anthropic, openai))
     out = tools.run_tool("spawn_subagent", {"task": "look", "model": "gpt-x"}, ctx)
     assert not out.is_error and "gpt says hi" in out.content
@@ -73,17 +81,20 @@ def test_a_model_the_backend_does_not_list_is_refused_with_no_call(tmp_path):
     anthropic = FakeClient([], model_ids=["claude-parent"])
     openai = FakeClient([], model_ids=["gpt-x"])
     ctx = cli.build_tool_context(_session(tmp_path), tmp_path,
-                                 config_mod.Config(platform="mac", subagents=True),
+                                 config_mod.Config(platform="mac", subagents=True,
+                                                   roles=_models("gpt-nope")),
                                  client=client_mod.Facade(anthropic, openai))
     out = tools.run_tool("spawn_subagent", {"task": "look", "model": "gpt-nope"}, ctx)
     assert out.is_error and "gpt-nope" in out.content and "Nothing was run" in out.content
+    assert "not among" in out.content  # refused by the backend's list, not the config
     assert anthropic.messages.calls == [] and openai.messages.calls == []
 
 
 def test_an_openai_model_with_no_openai_provider_is_refused_not_substituted(tmp_path):
     primary = FakeClient([_text("should not run")])  # lists no models at all
     ctx = cli.build_tool_context(_session(tmp_path), tmp_path,
-                                 config_mod.Config(platform="mac", subagents=True), client=primary)
+                                 config_mod.Config(platform="mac", subagents=True,
+                                                   roles=_models("gpt-x")), client=primary)
     out = tools.run_tool("spawn_subagent", {"task": "look", "model": "gpt-x"}, ctx)
     assert out.is_error and "gpt-x" in out.content and "OpenAI provider" in out.content
     assert primary.messages.calls == []
@@ -146,7 +157,8 @@ def test_an_unknown_role_is_refused_with_no_call(tmp_path):
 def test_an_explicit_model_overrides_the_roles(tmp_path):
     anthropic = FakeClient([_text("claude ran")], model_ids=["claude-parent", "claude-other"])
     openai = FakeClient([], model_ids=["gpt-x"])
-    cfg = config_mod.Config(platform="mac", subagents=True, roles=ROLES)
+    cfg = config_mod.Config(platform="mac", subagents=True,
+                            roles={**ROLES, **_models("claude-other")})
     s = _session(tmp_path)
     ctx = cli.build_tool_context(s, tmp_path, cfg, client=client_mod.Facade(anthropic, openai))
     out = tools.run_tool("spawn_subagent",
@@ -359,3 +371,43 @@ def test_a_single_subagent_call_is_not_threaded(tmp_path):
     agent.run_turn(stub, _parent_cfg(tmp_path, s, cfg),
                    [{"role": "user", "content": "go"}], ctx, lambda t: None)
     assert stub.spans["solo"][2] == threading.get_ident()
+
+
+# ------------------------------------------------- 0.9.2: only configured models ----
+
+def test_a_model_no_role_names_is_refused_even_when_the_gateway_lists_it(tmp_path):
+    """The coordinator filled the free model field from memory with ids the gateway had
+    retired but still listed (or could not list), and the child hung on them."""
+    old = FakeClient([_text("should not run")], model_ids=["claude-parent", "claude-retired"])
+    ctx = cli.build_tool_context(_session(tmp_path), tmp_path,
+                                 config_mod.Config(platform="mac", subagents=True,
+                                                   roles=_models("claude-new")), client=old)
+    out = tools.run_tool("spawn_subagent", {"task": "x", "model": "claude-retired"}, ctx)
+    assert out.is_error and "not a configured sub-agent model" in out.content
+    assert "claude-new" in out.content and old.messages.calls == []
+
+
+def test_the_schema_offers_only_configured_models_and_none_without_them():
+    assert "model" not in tools.subagent_tool({})["input_schema"]["properties"]
+    schema = tools.subagent_tool({**ROLES, **_models("claude-new")})
+    assert schema["input_schema"]["properties"]["model"]["enum"] == ["claude-new", "gpt-x"]
+
+
+def test_the_session_model_is_always_allowed(tmp_path):
+    fc = FakeClient([_text("parent model ran")], model_ids=["claude-parent"])
+    s = _session(tmp_path)
+    ctx = cli.build_tool_context(s, tmp_path, config_mod.Config(platform="mac", subagents=True),
+                                 client=fc)
+    out = tools.run_tool("spawn_subagent", {"task": "x", "model": s.model}, ctx)
+    assert not out.is_error and "parent model ran" in out.content
+
+
+def test_sync_config_adds_the_roles_example_once(tmp_path):
+    p = tmp_path / "config.toml"
+    p.write_text('model = "m"\nsubagents = true\n\n[permissions]\nallow = []\n',
+                 encoding="utf-8")
+    assert "roles" in config_mod.sync_config(p)
+    text = p.read_text(encoding="utf-8")
+    assert "# [roles.reviewer]" in text and text.index("[permissions]") < text.index("# [roles.")
+    assert "roles" not in config_mod.sync_config(p)
+    assert config_mod.load_config(p).roles == {}  # still only a comment

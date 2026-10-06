@@ -78,6 +78,24 @@ class Config:
 _ROLE_KEYS = ("model", "prompt", "description")
 
 
+# The commented roles example, shared by a fresh config and --sync-config.
+_ROLES_EXAMPLE = (
+    "# Named sub-agent roles (need subagents = true). The model picks one with\n"
+    "# spawn_subagent(role=...). A role's model is also the ONLY place a sub-agent's\n"
+    "# model is chosen: the model may pass any model named here, and nothing else —\n"
+    "# with no role naming a model, every sub-agent runs on the session's model.\n"
+    "# prompt: added to the sub-agent's system prompt. tools: narrows the read-only\n"
+    "# set (list_dir, glob, grep, read_file, load_skill, sessions). description: shown\n"
+    "# to the model so it can choose. A deny rule such as \"spawn_subagent:reviewer\"\n"
+    "# blocks a role.\n"
+    "# [roles.reviewer]\n"
+    '# model       = "your-second-model-id"\n'
+    '# description = "Independent review of a change"\n'
+    '# prompt      = "You are a sceptical reviewer. Report defects, not style."\n'
+    '# tools       = ["read_file", "grep", "glob"]\n'
+)
+
+
 def parse_roles(raw) -> tuple[dict, list[str]]:
     """`[roles.<name>]` tables -> (roles, warnings). A malformed role is DROPPED and
     said so, never half-applied: a reviewer quietly running with the full tool set, or
@@ -211,17 +229,7 @@ def _default_text(plat: str) -> str:
         "# on a focused subtask. Default off (each sub-run costs extra model calls):\n"
         "# subagents = false\n"
         "\n"
-        "# Named sub-agent roles (need subagents = true). The model picks one with\n"
-        "# spawn_subagent(role=...); an explicit model in the call overrides the role's.\n"
-        "# model: the child's model (default: the session's). prompt: added to the\n"
-        "# sub-agent's system prompt. tools: narrows the read-only set (list_dir, glob,\n"
-        "# grep, read_file, load_skill, sessions). description: shown to the model so\n"
-        "# it can choose. A deny rule such as \"spawn_subagent:reviewer\" blocks a role.\n"
-        "# [roles.reviewer]\n"
-        '# model       = "your-second-model-id"\n'
-        '# description = "Independent review of a change"\n'
-        '# prompt      = "You are a sceptical reviewer. Report defects, not style."\n'
-        '# tools       = ["read_file", "grep", "glob"]\n'
+        + _ROLES_EXAMPLE +
         "\n"
         "# Optional permission rules (deny > allow > ask; deny works even in --auto):\n"
         "# [permissions]\n"
@@ -464,6 +472,14 @@ def sync_config(path: Path = CONFIG_PATH) -> list[str]:
         at = _top_level_end(lines)  # above the first table, not at EOF
         lines = lines[:at] + block + (["\n"] if at < len(lines) else []) + lines[at:]
         added = missing
+    if not re.search(r"^\s*#?\s*\[roles", "".join(lines), re.MULTILINE):
+        # The roles example is a commented TABLE, so it goes at the end, below every
+        # table, rather than in the top-level region the keys above go to. Without it a
+        # synced config never showed where a sub-agent's model is set.
+        lines = lines + ["\n" if lines and not lines[-1].endswith("\n") else "",
+                         f"\n# --- added by luban --sync-config (v{__version__}) ---\n",
+                         _ROLES_EXAMPLE]
+        added = [*added, "roles"]
     if not repaired and not added:
         return []
     try:

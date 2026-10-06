@@ -287,6 +287,17 @@ def build_tool_context(
                 run.error = (f"Unknown role {role!r} (roles: {known}). Nothing was run.")
                 return run
             chosen = model or spec.get("model") or ""
+            allowed = tools.subagent_models(cfg.roles)
+            if model and model != session.model and model not in allowed:
+                # The coordinator fills a free model field from its own memory, and that
+                # memory holds ids the gateway has since retired; a gateway that still
+                # lists them, or cannot list at all, let them through and the child hung
+                # on them. Only models the user named in config are choosable.
+                named = ", ".join(allowed) or "none — add a model to a [roles.<name>] table"
+                run.error = (f"{model!r} is not a configured sub-agent model (configured: "
+                             f"{named}; omitting the model uses {session.model}). "
+                             f"Nothing was run.")
+                return run
             if chosen:
                 with route_lock:
                     if chosen not in routes:

@@ -464,8 +464,11 @@ degrades to a plain request automatically.
   tools       = ["glob", "grep", "list_dir"]
   ```
 
-  The model calls `spawn_subagent(task, role="reviewer")`; an explicit `model` in the
-  call overrides the role's. `tools` may name only read-only tools (`list_dir`, `glob`,
+  The model calls `spawn_subagent(task, role="reviewer")`. **A role is also where a
+  sub-agent's model is chosen:** the model may pass `model=` only with a model some role
+  names (or the session's own); anything else is refused before any call. With no role
+  naming a model, every sub-agent runs on the session's model. `luban --sync-config`
+  adds a commented example of this table to an existing config. `tools` may name only read-only tools (`list_dir`, `glob`,
   `grep`, `read_file`, `load_skill`, `sessions`); a role naming anything else is
   ignored and luban says so at startup. `deny = ["spawn_subagent:reviewer"]` blocks
   one role.

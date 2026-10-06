@@ -11,7 +11,9 @@ below. Only user-facing behaviour earns a line here.
 
 ## Unreleased
 
-Nothing yet since v0.9.1.
+### Sub-agents only run on models you configured
+
+The model could put a sub-agent on any model id it remembered, including ones your gateway has retired, and a gateway that still listed them let the call through, so the session hung on it. A sub-agent's model now has to be one a `[roles.<name>]` table names, or the session's own; anything else is refused before any call and the refusal lists the configured models. With no role naming a model, sub-agents run on the session's model. `luban --sync-config` now also adds a commented `[roles.reviewer]` example, which a synced config never showed before.
 
 ## v0.9.1 — glob finds files in ~/.luban
 

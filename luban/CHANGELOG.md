@@ -14,6 +14,9 @@ below. Only user-facing behaviour earns a line here.
 ### Roles follow new model versions
 A role's `model` had to be an exact id, so every model retirement meant editing `config.toml` or watching the role break. A role may now name a family such as `model = "claude-sonnet-*"`: at startup it resolves to the newest id the gateway lists, and luban prints which one. If nothing matches, or the gateway cannot list its models, the role is turned off and the reason is printed; it never falls back to another model. Exact ids work as before.
 
+### Sessions can leave each other notes
+Passing word between two parallel sessions meant writing it into the journal, which is re-sent on every call of every session for days, can scroll out before the other thread acts on it, and names no recipient. A session can now leave a note for another one with the new `note_to_session` tool. The other session gets it once, at its next turn or when it is resumed, marked as coming from another session and printed in its terminal. `/sessions` shows how many notes are waiting and, under each thread, the next step it last checkpointed.
+
 ## v0.9.2 — sub-agents only run on models you configured
 
 ### Sub-agents only run on models you configured

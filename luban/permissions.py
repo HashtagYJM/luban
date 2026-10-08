@@ -32,6 +32,7 @@ _TARGET_KEY = {
     "forget": "name",
     "recall": "query",
     "journal": "text",
+    "note_to_session": "session",
     "spawn_subagent": "role",  # `spawn_subagent:reviewer` targets one named role
 }
 

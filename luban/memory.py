@@ -223,6 +223,8 @@ _HYGIENE = (
     "X, it was wrong, we do Y now) and a SURPRISE (something behaved unlike its "
     "documentation) — plan files record decisions, rarely the reasoning that overturned "
     "one."
+    " A message for ANOTHER running or resumable session — something it must know or do "
+    "— goes through note_to_session, never the journal."
     " For a project whose details live in its own files, save a short POINTER fact "
     "(path + status + 'details live at …') rather than copying code that will go "
     "stale, and cross-reference related facts by name with [[slug]] — recall follows "
@@ -1017,6 +1019,14 @@ def _status_line(label: str, entry: tuple[str, str, str]) -> str:
     when, writer, text = entry
     stamp = f"{when}, session {writer}" if writer else when
     return f"{label} ({stamp}): {text}"
+
+
+def session_steps(project: str) -> dict[str, tuple[str, str]]:
+    """{writer session id: (date, next step)} from this project's pointer — at most the
+    current status and its one `also` line. Lets /sessions say where each thread stands
+    without a second store."""
+    return {w: (d, t) for d, w, t in _status_entries(read_fact(checkpoint_slug(project)) or "")
+            if w}
 
 
 def checkpoint_writer(project: str) -> str:

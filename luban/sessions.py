@@ -157,3 +157,58 @@ def resolve(ref: str, project: str | None = None,
     if len(matches) > 1:
         raise AmbiguousSession(matches)
     return load(matches[0]["id"], sessions_dir)
+
+
+# ------------------------------------------------------------------ session notes ----
+# One luban session leaves a note for another; the target takes it once at its next turn.
+# The journal was the channel people used, and it is the wrong one: it is re-sent on every
+# call of every session in the project for days, a busy day evicts the line before anyone
+# acts on it, and it cannot name a recipient. A note is addressed, read once, and paid once.
+
+def _notes_path(session_id: str, sessions_dir: Path | None) -> Path:
+    # .jsonl, so list_sessions' "*.json" never mistakes it for a session.
+    return _dir(sessions_dir) / f"{session_id}.notes.jsonl"
+
+
+def send_note(target: str, text: str, sender: str, project: str,
+              sessions_dir: Path | None = None) -> None:
+    """Append one note for `target`. Raises SessionNotFound for an id with no saved file:
+    a note nobody will ever open is a silent loss, not a delivery."""
+    if not target or not (_dir(sessions_dir) / f"{target}.json").exists():
+        raise SessionNotFound(target)
+    note = {"from": sender, "project": project, "at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+            "text": text}
+    with _notes_path(target, sessions_dir).open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(note, ensure_ascii=False) + "\n")
+
+
+def pending_notes(session_id: str, sessions_dir: Path | None = None) -> int:
+    try:
+        return sum(1 for line in _notes_path(session_id, sessions_dir)
+                   .read_text(encoding="utf-8").splitlines() if line.strip())
+    except OSError:
+        return 0
+
+
+def take_notes(session_id: str, sessions_dir: Path | None = None) -> list[dict]:
+    """Every pending note for this session, removed from disk as it is read.
+
+    Moved aside before reading, so a note appended meanwhile lands in a fresh file and
+    waits for the next turn instead of being deleted unread.
+    """
+    if not session_id:
+        return []
+    path = _notes_path(session_id, sessions_dir)
+    taking = path.with_suffix(".taking")
+    try:
+        path.replace(taking)
+    except OSError:
+        return []
+    notes = []
+    for line in taking.read_text(encoding="utf-8", errors="replace").splitlines():
+        try:
+            notes.append(json.loads(line))
+        except ValueError:
+            continue
+    taking.unlink(missing_ok=True)
+    return notes

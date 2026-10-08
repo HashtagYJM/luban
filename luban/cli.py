@@ -1299,7 +1299,7 @@ def reflect_scope(ctx: tools.ToolContext):
     tools can write anywhere, so they are outside it too.
     """
     def scope(name: str, tool_input: dict) -> str:
-        if name in ("run_command", "read_output") or name in tools._CUSTOM_NAMES:
+        if name in ("run_command", "read_output", "note_to_session") or name in tools._CUSTOM_NAMES:
             return f"{name} is {REFLECT_SCOPE_REFUSAL}"
         if name not in ("write_file", "edit_file"):
             return ""
@@ -2090,13 +2090,39 @@ def restore_session(session: Session, data: dict) -> None:
 
 def _print_session_list(heads: list[dict], current_id: str = "",
                         with_project: bool = False) -> None:
+    steps: dict[str, dict] = {}  # project name -> {session id: (date, next step)}
     for i, h in enumerate(heads, 1):
-        prefix = f"[{Path(h['project']).name}] " if with_project else ""
+        name = Path(h["project"]).name
+        prefix = f"[{name}] " if with_project else ""
         marker = "  (current)" if h["id"] == current_id else ""
+        notes = sessions_mod.pending_notes(h["id"])
+        waiting = f"  ✉ {notes} note(s) waiting" if notes else ""
         ui.print_text(
             f'{i:3}. {prefix}{h["id"]}  {h["updated"]}  {h["model"]}  '
-            f'"{h["title"]}"  ({h["message_count"]} msgs){marker}\n'
+            f'"{h["title"]}"  ({h["message_count"]} msgs){marker}{waiting}\n'
         )
+        if name not in steps:
+            steps[name] = memory_mod.session_steps(name)
+        step = steps[name].get(h["id"])
+        if step:
+            ui.print_text(f"       next ({step[0]}): {step[1][:120]}\n")
+
+
+def deliver_notes(session: Session) -> None:
+    """Notes other sessions left for this one, parked as machine context for this turn.
+
+    Taken at the turn boundary, never mid-turn: injected text after a tool result is the
+    documented trigger for a blank answer (handling-stop-reasons). Shown to the human too,
+    because the model is about to act on words the user did not type.
+    """
+    for n in sessions_mod.take_notes(session.session_id):
+        sender = n.get("from") or "an unnamed session"
+        ui.print_text(f"✉ note from session {sender} ({n.get('at', '')}): {n.get('text', '')}\n")
+        session.pending_context.append(
+            f"A NOTE FROM ANOTHER LUBAN SESSION ({sender}, project {n.get('project', '?')}, "
+            f"{n.get('at', '')}). Another thread of this user's work wrote it; the user did "
+            f"not type it in this session. Weigh it, and say so if it conflicts with what "
+            f"you are doing:\n{n.get('text', '')}")
 
 
 def resolve_or_report(ref: str, project: str | None) -> dict | None:
@@ -2585,6 +2611,7 @@ def main(argv: list[str] | None = None) -> None:
             if status == "handled":
                 continue
             fire_hooks(session, cfg, ctx, "user_prompt_submit")
+            deliver_notes(session)
             session.messages.append(
                 {"role": "user", "content": compose_user_message(session, line)}
             )

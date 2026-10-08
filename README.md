@@ -189,6 +189,16 @@ you give with `/title` or `/new` is never replaced:
 /resume market            # back into it — by name, number, or id
 ```
 
+**Telling another thread something.** With two terminals open, ask one session to tell
+the other something ("tell the import session the March file is fixed"). The model
+calls `note_to_session` with the other session's id (from the `sessions` tool); you
+confirm it like a journal entry. The note is shown to the other session once, at its
+next turn, marked as coming from another session rather than from you, and printed in
+its terminal. A session that isn't open gets it when you resume it. `/sessions` shows
+how many notes are waiting, and under each thread the next step it last checkpointed.
+Use notes rather than the journal for this: the journal is re-sent on every call of
+every session for days and names no recipient.
+
 `/resume` takes anything that identifies one session: its `/sessions` number, its
 full id, or a fragment of the title or id. If a fragment matches several, luban
 lists them instead of guessing. `/new` always saves the thread you're leaving, so
@@ -454,7 +464,7 @@ degrades to a plain request automatically.
 
   ```toml
   [roles.reviewer]
-  model       = "example-model-b"        # default: the session's model
+  model       = "example-model-b"        # or a family: "example-model-*"
   description = "Independent review of a change"   # shown to the model
   prompt      = "You are a sceptical reviewer. Report defects, not style."
   tools       = ["read_file", "grep", "glob"]      # narrows the read-only set
@@ -467,7 +477,10 @@ degrades to a plain request automatically.
   The model calls `spawn_subagent(task, role="reviewer")`. **A role is also where a
   sub-agent's model is chosen:** the model may pass `model=` only with a model some role
   names (or the session's own); anything else is refused before any call. With no role
-  naming a model, every sub-agent runs on the session's model. `luban --sync-config`
+  naming a model, every sub-agent runs on the session's model. A `model` with a `*` is a
+family: at startup it resolves to the newest id the gateway lists (numbers compare as
+numbers), and luban prints the choice; if nothing matches, or the gateway cannot list
+its models, the role is turned off and the reason printed. `luban --sync-config`
   adds a commented example of this table to an existing config. `tools` may name only read-only tools (`list_dir`, `glob`,
   `grep`, `read_file`, `load_skill`, `sessions`); a role naming anything else is
   ignored and luban says so at startup. `deny = ["spawn_subagent:reviewer"]` blocks

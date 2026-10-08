@@ -779,6 +779,9 @@ def _sessions(inp: dict, ctx: ToolContext) -> ToolResult:
         )
         # A fold or a /compact keeps the id and moves the history it replaced into an
         # archive, so the session file alone is no longer the whole thread.
+        notes = sessions_mod.pending_notes(h["id"])
+        if notes:
+            lines.append(f"    {notes} note(s) from other sessions waiting for its next turn")
         n = len(sessions_mod.archives(h["id"]))
         if n:
             lines.append(f"    earlier history: {n} archive(s) at "
@@ -872,6 +875,30 @@ def _journal(inp: dict, ctx: ToolContext) -> ToolResult:
         f"entry this size evicts earlier days outright. Keep it to what happened and why. "
         f"Edit plans, code and tracebacks belong in a file under docs/ — and the full "
         f"detail is already in the session transcript, which is searchable.")
+
+
+def _note_to_session(inp: dict, ctx: ToolContext) -> ToolResult:
+    target = str(inp.get("session", "")).strip()
+    text = str(inp.get("text", "")).strip()
+    if not text:
+        return ToolResult("Empty note.", is_error=True)
+    if target and target == ctx.session_id:
+        return ToolResult("That is this session's own id — a note goes to a different "
+                          "session.", is_error=True)
+    ctx.render_command(f"note → {target}: {text}")
+    if not ctx.confirm(f"Send note to session {target}?"):
+        return ToolResult("User declined the note.")
+    try:
+        sessions_mod.send_note(target, text, sender=ctx.session_id,
+                               project=Path(ctx.project_root).name)
+    except sessions_mod.SessionNotFound:
+        return ToolResult(f"No saved session {target!r}. List them with the sessions tool "
+                          f"(all=true for other projects) and pass an exact id. A session "
+                          f"that has not finished its first turn has no id yet.",
+                          is_error=True)
+    return ToolResult(f"Note queued for {target}: it is delivered at that session's next "
+                      f"turn, or when it is resumed. Delivery is not confirmation that it "
+                      f"was read or acted on.")
 
 
 def _spawn_subagent(inp: dict, ctx: ToolContext) -> ToolResult:
@@ -991,6 +1018,7 @@ _DISPATCH = {
     "forget": _forget,
     "recall": _recall,
     "journal": _journal,
+    "note_to_session": _note_to_session,
     "checkpoint": _checkpoint,
 }
 
@@ -1113,6 +1141,25 @@ TOOLS = [
             "properties": {
                 "all": {"type": "boolean", "description": "include all projects, default false"}
             },
+        },
+    },
+    {
+        "name": "note_to_session",
+        "description": "Leave a note for ANOTHER luban session of this user — another "
+        "terminal working in parallel, or a thread that will be resumed later. It is "
+        "shown to that session once, at the start of its next turn, then it is part of "
+        "that session's transcript and costs nothing further. Use it for something the "
+        "other thread must know or do (\"tests on the parser branch are green\", \"do not "
+        "edit config.py, I am changing it\"). Never use the journal for this: the journal "
+        "is re-sent on every call of every session for days and names no recipient. "
+        "Get the exact session id from the sessions tool.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "session": {"type": "string", "description": "exact id of the target session"},
+                "text": {"type": "string", "description": "the note, self-contained"},
+            },
+            "required": ["session", "text"],
         },
     },
     {

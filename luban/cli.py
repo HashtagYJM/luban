@@ -2507,6 +2507,11 @@ def main(argv: list[str] | None = None) -> None:
         ui.print_text(f"could not start: the client adapter failed — {type(exc).__name__}: "
                       f"{exc}\nRun `luban --doctor` for a step-by-step check.\n")
         raise SystemExit(1)
+    if cfg.subagents and any("*" in r.get("model", "") for r in cfg.roles.values()):
+        # Resolved once, before the tool schema is built from the roles: the schema's
+        # model list must hold real ids, and stays byte-identical for the whole session.
+        for line in config_mod.resolve_role_models(cfg.roles, client_mod.list_models(client)):
+            ui.print_text(line + "\n")
     ctx = build_tool_context(session, project_root, cfg, client=client)
     if ns.cont:
         data = sessions_mod.latest(str(project_root))

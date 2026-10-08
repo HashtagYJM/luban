@@ -411,3 +411,42 @@ def test_sync_config_adds_the_roles_example_once(tmp_path):
     assert "# [roles.reviewer]" in text and text.index("[permissions]") < text.index("# [roles.")
     assert "roles" not in config_mod.sync_config(p)
     assert config_mod.load_config(p).roles == {}  # still only a comment
+
+
+# ------------------------------------------------------- model-family patterns ----
+
+def _pattern_roles(**models):
+    return {n: {"model": m, "prompt": "", "description": "", "tools": None}
+            for n, m in models.items()}
+
+
+def test_a_pattern_resolves_to_the_newest_listed_id():
+    roles = _pattern_roles(reviewer="claude-sonnet-*", exact="gpt-x")
+    listed = ["claude-sonnet-4-5-20250929", "claude-sonnet-5", "claude-sonnet-4-6",
+              "claude-opus-5", "gpt-x"]
+    lines = config_mod.resolve_role_models(roles, listed)
+    assert roles["reviewer"]["model"] == "claude-sonnet-5"
+    assert roles["exact"]["model"] == "gpt-x"  # exact ids untouched, nothing printed
+    assert lines == ["role 'reviewer': claude-sonnet-* → claude-sonnet-5"]
+
+
+def test_numbers_compare_as_numbers_not_text():
+    roles = _pattern_roles(r="claude-sonnet-*")
+    config_mod.resolve_role_models(roles, ["claude-sonnet-9", "claude-sonnet-10"])
+    assert roles["r"]["model"] == "claude-sonnet-10"
+
+
+def test_a_pattern_with_no_match_or_no_listing_disables_the_role():
+    roles = _pattern_roles(a="claude-haiku-*", b="claude-sonnet-*", keep="gpt-x")
+    lines = config_mod.resolve_role_models(roles, ["claude-sonnet-5"])
+    assert set(roles) == {"b", "keep"} and "no listed model matches claude-haiku-*" in lines[0]
+    roles = _pattern_roles(b="claude-sonnet-*", keep="gpt-x")
+    lines = config_mod.resolve_role_models(roles, None)
+    assert set(roles) == {"keep"} and "did not list" in lines[0]
+
+
+def test_the_schema_offers_the_resolved_id_never_the_pattern():
+    roles = _pattern_roles(reviewer="claude-sonnet-*")
+    config_mod.resolve_role_models(roles, ["claude-sonnet-4-6", "claude-sonnet-5"])
+    assert tools.subagent_models(roles) == ["claude-sonnet-5"]
+    assert "*" not in json.dumps(tools.subagent_tool(roles))

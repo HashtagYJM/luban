@@ -6,6 +6,7 @@ to grow — more keys (model, auto, stream) can be added later.
 """
 from __future__ import annotations
 
+import fnmatch
 import platform as _platform
 import re
 import sys
@@ -87,7 +88,9 @@ _ROLES_EXAMPLE = (
     "# prompt: added to the sub-agent's system prompt. tools: narrows the read-only\n"
     "# set (list_dir, glob, grep, read_file, load_skill, sessions). description: shown\n"
     "# to the model so it can choose. A deny rule such as \"spawn_subagent:reviewer\"\n"
-    "# blocks a role.\n"
+    "# blocks a role. model may be a family pattern such as \"claude-sonnet-*\": it\n"
+    "# resolves at startup to the newest id the gateway lists, and the role is\n"
+    "# disabled, with the reason printed, when nothing matches.\n"
     "# [roles.reviewer]\n"
     '# model       = "your-second-model-id"\n'
     '# description = "Independent review of a change"\n'
@@ -136,6 +139,43 @@ def parse_roles(raw) -> tuple[dict, list[str]]:
                        "description": body.get("description", "").strip(),
                        "tools": list(tools) if tools is not None else None}
     return roles, warnings
+
+
+def _version_key(model_id: str) -> list:
+    """Natural sort: digit runs compare as numbers, so claude-sonnet-10 > claude-sonnet-9
+    and claude-sonnet-4-6 > claude-sonnet-4-5-20250929."""
+    return [(0, int(p), "") if p.isdigit() else (1, 0, p)
+            for p in re.findall(r"\d+|\D+", model_id)]
+
+
+def resolve_role_models(roles: dict, available: list[str] | None) -> list[str]:
+    """Resolve a role's family pattern (`claude-sonnet-*`) to the newest id the gateway
+    lists, in place, and return one line per pattern to print at startup.
+
+    A pattern lets a role follow new model versions without a config edit; an exact id
+    keeps working unchanged. A pattern that matches nothing, or a gateway that cannot
+    list, DISABLES the role with a reason: falling back to some other model is the
+    retired-model failure of 2026-10-06 in a new form.
+    """
+    lines: list[str] = []
+    for name in list(roles):
+        pattern = roles[name].get("model", "")
+        if "*" not in pattern:
+            continue
+        if not available:
+            del roles[name]
+            lines.append(f"role {name!r} disabled: {pattern} is a pattern and the gateway "
+                         f"did not list its models")
+            continue
+        matches = [m for m in available if fnmatch.fnmatchcase(m, pattern)]
+        if not matches:
+            del roles[name]
+            lines.append(f"role {name!r} disabled: no listed model matches {pattern}")
+            continue
+        roles[name]["model"] = max(matches, key=_version_key)
+        lines.append(f"role {name!r}: {pattern} → {roles[name]['model']}")
+    return lines
+
 
 
 def detect_platform() -> str:

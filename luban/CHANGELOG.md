@@ -9,7 +9,7 @@ see — it matches `## v<number>`. A release RENAMES that heading to its derived
 it never writes a version heading ahead of the release, and never edits the heading
 below. Only user-facing behaviour earns a line here.
 
-## Unreleased
+## v0.9.3 — sessions leave each other notes; roles follow new model versions
 
 ### Roles follow new model versions
 A role's `model` had to be an exact id, so every model retirement meant editing `config.toml` or watching the role break. A role may now name a family such as `model = "claude-sonnet-*"`: at startup it resolves to the newest id the gateway lists, and luban prints which one. If nothing matches, or the gateway cannot list its models, the role is turned off and the reason is printed; it never falls back to another model. Exact ids work as before.

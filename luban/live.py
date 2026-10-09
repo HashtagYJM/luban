@@ -93,6 +93,8 @@ def live(include_self: bool = True) -> dict[str, dict]:
     except OSError:
         return out
     for path in files:
+        if path.name.startswith("writer-"):
+            continue  # a writer lock, not a session marker
         try:
             marker = json.loads(path.read_text(encoding="utf-8"))
             pid = int(marker.get("pid", 0))
@@ -129,3 +131,51 @@ def state_label(marker: dict | None) -> str:
     if state == "input":
         return "✋ waiting for input"
     return state
+
+
+# ------------------------------------------------------------- writer lock ----
+# One writer child per checkout at a time, across every luban process on this machine.
+# Keyed by the resolved project path, held in the same temp dir as the markers: a lock
+# in the synced home would be a lock on every machine that syncs it.
+
+def _lock_path(project_root: Path) -> Path:
+    import hashlib
+
+    key = hashlib.sha1(str(Path(project_root).resolve()).encode("utf-8")).hexdigest()[:16]
+    return LIVE_DIR / f"writer-{key}.json"
+
+
+def acquire_writer(project_root: Path, session_id: str, label: str) -> tuple[bool, str]:
+    """(acquired, note). Refused when a live process holds it; a lock whose pid is gone
+    is taken over, and the note says so."""
+    path = _lock_path(project_root)
+    note = ""
+    try:
+        LIVE_DIR.mkdir(parents=True, exist_ok=True)
+        if path.exists():
+            try:
+                held = json.loads(path.read_text(encoding="utf-8"))
+            except Exception:
+                held = {}
+            pid = int(held.get("pid", 0) or 0)
+            if pid and _pid_alive(pid):
+                who = f"{held.get('label', '?')} in session {held.get('session', '?')} (pid {pid})"
+                return False, (f"another writer sub-agent is already editing this checkout: "
+                               f"{who}, since {held.get('since', '?')}. Wait for it, or run "
+                               f"this task after it finishes.")
+            note = f"took over a stale writer lock left by pid {pid or '?'}"
+        paths.atomic_write_text(path, json.dumps(
+            {"pid": os.getpid(), "session": session_id, "label": label,
+             "since": datetime.now().isoformat(timespec="seconds")}))
+    except Exception as exc:
+        return False, f"could not take the writer lock: {exc}"
+    return True, note
+
+
+def release_writer(project_root: Path) -> None:
+    try:
+        path = _lock_path(project_root)
+        if path.exists() and json.loads(path.read_text(encoding="utf-8")).get("pid") == os.getpid():
+            path.unlink()
+    except Exception:
+        pass

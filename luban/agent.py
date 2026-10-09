@@ -559,7 +559,11 @@ def run_turn(client, config: AgentConfig, messages: list[dict], ctx, on_text,
         results = []
         calls = [b for b in msg.content if b.type == "tool_use"]
         order = {b.id: i for i, b in enumerate(calls)}
-        batch = [b for b in calls if b.name == "spawn_subagent" and b.name in offered]
+        writers = getattr(ctx, "writer_roles", frozenset())
+        # A writer child edits the checkout, so it runs alone, in call order, like any
+        # other tool; only read-only children fan out.
+        batch = [b for b in calls if b.name == "spawn_subagent" and b.name in offered
+                 and (b.input or {}).get("role") not in writers]
         if len(batch) < 2:
             batch = []
         batch_ids = {b.id for b in batch}

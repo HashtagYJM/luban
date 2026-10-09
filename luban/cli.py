@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import json
 import os
 import re
@@ -255,6 +256,42 @@ def set_state(session: Session, project_root: Path, state: str) -> None:
     session._last_state = state
 
 
+def writer_scope(spec: dict, project_root: Path, allow_out_of_tree: bool):
+    """A writer child's boundary, enforced by the runtime like /reflect's: a write
+    outside the role's `write` globs or a command outside its `commands` patterns is
+    refused and audited out_of_scope. Globs match the project-relative path; a path the
+    tool itself would refuse is left to it. Commands can write anywhere, so the pattern
+    list is the only real bound on them; background commands and custom tools are
+    outside any writer's scope."""
+    writes = list(spec.get("write") or [])
+    commands = list(spec.get("commands") or [])
+
+    def scope(name: str, tool_input: dict) -> str:
+        if name in tools._CUSTOM_NAMES or name == "read_output":
+            return f"{name} is outside a writer sub-agent's scope"
+        if name == "run_command":
+            command = str(tool_input.get("command", "")).strip()
+            if tool_input.get("background") is True:
+                return "a writer sub-agent may not start background commands"
+            if not any(fnmatch.fnmatchcase(command, p) for p in commands):
+                return (f"the command is outside this role's allowed commands "
+                        f"({', '.join(commands) or 'none'})")
+            return ""
+        if name not in config_mod.WRITE_TOOLS:
+            return ""
+        path = str(tool_input.get("path", ""))
+        try:
+            target = tools.resolve_tool_path(Path(project_root), path, writing=True,
+                                             allow_out_of_tree=allow_out_of_tree)
+            rel = target.resolve().relative_to(Path(project_root).resolve()).as_posix()
+        except Exception:
+            return f"{path} is outside the project, so outside this role's write scope"
+        if not any(fnmatch.fnmatchcase(rel, p) for p in writes):
+            return f"{path} is outside this role's write scope ({', '.join(writes) or 'none'})"
+        return ""
+    return scope
+
+
 def build_tool_context(
     session: Session, project_root: Path, cfg: config_mod.Config | None = None,
     client=None,
@@ -342,14 +379,26 @@ def build_tool_context(
             if cancel is not None and cancel.is_set():
                 run.error = "Cancelled before it started: the user interrupted the turn."
                 return run
-            # Nested agent: read-only tools only (no writes/run_command → no confirm
-            # prompts and no unattended mutations), no memory, no further nesting. A role
-            # may narrow that set further, never widen it.
-            read_only = [t for t in tools.active_tools(False)
-                         if t["name"] in tools.READ_ONLY_TOOLS]
+            # Nested agent: read-only tools, no memory, no further nesting — unless the
+            # role is a WRITER, which adds the write tools inside its declared scope and
+            # run_command for its declared patterns. A role may narrow, never widen.
+            writer = bool(spec.get("write") or spec.get("commands"))
+            granted = set(tools.READ_ONLY_TOOLS)
+            if spec.get("write"):
+                granted |= config_mod.WRITE_TOOLS
+            if spec.get("commands"):
+                granted |= config_mod.COMMAND_TOOLS
+            read_only = [t for t in tools.active_tools(False) if t["name"] in granted]
             if spec.get("tools") is not None:
                 read_only = [t for t in read_only if t["name"] in spec["tools"]]
             run.tools_offered = len(read_only)
+            if writer:
+                taken, note = live.acquire_writer(project_root, session.session_id, run.label)
+                if not taken:
+                    run.error = f"{note} Nothing was run."
+                    return run
+                if note:
+                    ui.print_text(f"({run.label}: {note})\n")
             child = usage_mod.Ledger()
 
             def on_usage(u, _kind="turn") -> None:
@@ -370,8 +419,14 @@ def build_tool_context(
                     run.stubbed = True
                 return out
 
-            def after_tool(*_args) -> None:
+            def after_tool(name, tool_input, out, *_rest) -> None:
                 run.calls += 1
+                if out.is_error or getattr(out, "outcome", "") == "declined":
+                    return
+                if name in config_mod.WRITE_TOOLS:
+                    run.files_changed.append(str(tool_input.get("path", "?")))
+                elif name == "run_command":
+                    run.commands_run.append(str(tool_input.get("command", "?")))
 
             sub_cfg = agent.AgentConfig(
                 run.model, session.max_tokens, stream=False, platform=cfg.platform,
@@ -390,9 +445,15 @@ def build_tool_context(
             )
             sub_ctx = tools.ToolContext(
                 project_root=Path(project_root),
-                confirm=lambda p: False,  # writes aren't offered; deny defensively
-                render_diff=lambda p, o, n: None,
-                render_command=lambda c: None,
+                # A writer's prompts reach the parent's terminal under the child's label;
+                # auto mode answers them as it answers the parent's. A read-only child is
+                # never offered a write, so its confirm is a defensive no.
+                confirm=(lambda p, _l=run.label: confirm(f"[{_l}] {p}")) if writer
+                else (lambda p: False),
+                render_diff=ui.render_diff if writer else (lambda p, o, n: None),
+                render_command=ui.render_command if writer else (lambda c: None),
+                scope=writer_scope(spec, project_root,
+                                   cfg.allow_out_of_tree_file_edits) if writer else None,
                 decide=decide,
                 # Tagged, so the trail tells the child's reads from the parent's.
                 audit=(lambda e: audit_cb({**e, "agent": run.label})) if audit_cb else None,
@@ -412,6 +473,9 @@ def build_tool_context(
                 run.error = f"Subagent failed: {exc}"
             else:
                 run.text = _final_text(msgs)
+            finally:
+                if writer:
+                    live.release_writer(project_root)
             return run
 
     def record_skill(name: str) -> None:
@@ -427,6 +491,7 @@ def build_tool_context(
         audit=audit_cb,
         allow_out_of_tree=cfg.allow_out_of_tree_file_edits if cfg is not None else False,
         subagent=subagent,
+        writer_roles=tools.writer_roles(cfg.roles) if cfg is not None else frozenset(),
         hooks=cfg.hooks if cfg is not None else [],
         notify=lambda msg: ui.print_text(f"({msg})\n"),
         # Refreshed on the context by the turn loop, /compact and resume: the thread this

@@ -71,6 +71,8 @@ class ToolContext:
     # Set by the turn loop while it runs sub-agents in parallel: on Ctrl-C it is set, and
     # a child still running stops at its next round instead of spending on unseen work.
     cancel: threading.Event | None = None
+    # Roles that may write: their spawn_subagent calls never join the parallel batch.
+    writer_roles: frozenset[str] = frozenset()
 
 
 @dataclass
@@ -87,6 +89,8 @@ class SubagentRun:
     tokens: int = 0  # the child's own ledger total
     error: str = ""
     stubbed: bool = False  # its window passed the budget and old tool output was dropped
+    files_changed: list = field(default_factory=list)  # a writer's edits, in order
+    commands_run: list = field(default_factory=list)   # a writer's commands, in order
 
     @property
     def status(self) -> str:
@@ -97,9 +101,16 @@ class SubagentRun:
         return "stubbed" if self.stubbed else "ok"
 
     def header(self) -> str:
-        return (f"[{self.label} · model {self.model or '?'} · {self.tools_offered} tools "
+        line = (f"[{self.label} · model {self.model or '?'} · {self.tools_offered} tools "
                 f"offered · {self.calls} tool calls · {self.tokens:,} tokens · "
                 f"{self.status}]")
+        # Nothing a writer does is invisible: every file and command, on the line the
+        # parent and the human both read.
+        if self.files_changed:
+            line += f"\n[files changed: {', '.join(self.files_changed)}]"
+        if self.commands_run:
+            line += f"\n[commands run: {' ; '.join(self.commands_run)}]"
+        return line
 
 
 def _truncate(text: str) -> str:
@@ -952,6 +963,11 @@ def _spawn_subagent(inp: dict, ctx: ToolContext) -> ToolResult:
     return ToolResult(_truncate(f"{header}{run.text}"))
 
 
+def writer_roles(roles: dict | None) -> frozenset[str]:
+    """The roles granted a write scope or a command list."""
+    return frozenset(n for n, r in (roles or {}).items() if r.get("write") or r.get("commands"))
+
+
 def subagent_models(roles: dict | None) -> list[str]:
     """The models a sub-agent may be put on by name: those the user's roles name."""
     return sorted({r["model"] for r in (roles or {}).values() if r.get("model")})
@@ -966,9 +982,13 @@ def subagent_tool(roles: dict | None = None) -> dict:
         "get back its final answer. Use it to research or investigate in parallel "
         "with your own work, or to isolate a big read-heavy subtask from your "
         "context. The sub-agent can read and search but cannot write files or run "
-        "commands. Give it a complete, standalone task description. Several calls in "
-        "one message run at the same time; each result starts with a line naming the "
-        "role, model, tools, calls, tokens and status."
+        "commands — unless its role is a WRITER (listed below with its write scope and "
+        "allowed commands): a writer may edit files inside that scope and run those "
+        "commands, under the user's permission rules, one writer at a time. Give it a "
+        "complete, standalone task description. Several read-only calls in one message "
+        "run at the same time; writer calls run one after another, in order. Each "
+        "result starts with a line naming the role, model, tools, calls, tokens and "
+        "status, and a writer's lists every file it changed and command it ran."
     )
     properties = {
         "task": {"type": "string", "description": "Self-contained task for the sub-agent."},
@@ -985,6 +1005,8 @@ def subagent_tool(roles: dict | None = None) -> dict:
         listing = "\n".join(
             f"- {name}: {r.get('description') or '(no description)'}"
             + (f" [model {r['model']}]" if r.get("model") else "")
+            + (f" [WRITER: edits {', '.join(r['write'])}]" if r.get("write") else "")
+            + (f" [runs: {', '.join(r['commands'])}]" if r.get("commands") else "")
             for name, r in roles.items())
         description += f"\n\nRoles (pass role=<name>):\n{listing}"
         properties["role"] = {"type": "string", "description": (

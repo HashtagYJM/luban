@@ -503,6 +503,25 @@ its models, the role is turned off and the reason printed. `luban --sync-config`
   ignored and luban says so at startup. `deny = ["spawn_subagent:reviewer"]` blocks
   one role.
 
+  **A writer role** may edit and run checks, inside a scope you declare:
+
+  ```toml
+  [roles.fixer]
+  description = "Makes the smallest change that makes the named tests pass"
+  prompt      = "Edit only what the task names. Run the tests. Report what changed."
+  write       = ["src/**", "tests/**"]              # project-relative globs it may edit
+  commands    = ["python -m pytest*", "ruff check*"] # the only commands it may run
+  ```
+
+  `write` grants `edit_file` and `write_file` for matching paths; `commands` grants
+  `run_command` for matching commands; everything else is refused and audited. Your
+  `deny` rules still win, and your auto mode applies: with auto off, the writer's
+  prompts appear in your terminal as `[fixer#2] Write src/a.py?`. One writer per
+  checkout at a time, across terminals; writer calls run one after another, never in
+  the parallel batch. Every result lists the files it changed and the commands it ran.
+  Naming `edit_file` or `run_command` in `tools` without the matching scope is a config
+  error, so a role is never a writer by accident.
+
 ## Sync across devices
 
 By default everything lives under `~/.luban`. To keep memory, skills, and config in

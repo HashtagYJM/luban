@@ -17,6 +17,9 @@ With several luban tabs open, finding the one that had stopped meant clicking th
 ### Opening one thread in two terminals is refused
 Two terminals on the same thread each saved the whole transcript, so the later save silently erased the other's turns; `luban -c` in a second tab did exactly this. A thread open in another terminal can no longer be resumed — the refusal names the holder — and `luban -c` skips such threads and says so.
 
+### A sub-agent that may edit, inside a declared scope
+Every sub-agent was read-only, so the coordinator could not hand a child its assigned checks or edits. A role with `write = ["src/**", "tests/**"]` may now edit files whose project-relative path matches, and with `commands = ["python -m pytest*"]` run only commands matching; anything outside is refused and audited. It runs under your permission rules (a `deny` rule still wins) and your auto mode — with auto off, its prompts appear in your terminal under the child's name. One writer per checkout at a time, across terminals; writer calls run one after another and never in the parallel batch. Its result lists every file it changed and command it ran. Roles without `write` or `commands` stay read-only, and naming a write tool without the scope is a config error.
+
 ### A short session list, and an attic for old threads
 `/sessions` listed every thread ever saved. It now shows live threads and those touched in the last 7 days, says how many older ones it hid, and `/sessions old` lists everything. New `luban --tidy [DAYS]` moves threads untouched for 30 days, with their notes and fold archives, into `~/.luban/sessions/attic/YYYY-MM/`; nothing is deleted.
 

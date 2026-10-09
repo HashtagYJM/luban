@@ -96,7 +96,20 @@ _ROLES_EXAMPLE = (
     '# description = "Independent review of a change"\n'
     '# prompt      = "You are a sceptical reviewer. Report defects, not style."\n'
     '# tools       = ["read_file", "grep", "glob"]\n'
+    "#\n"
+    "# A role with `write` is a WRITER: it may edit files whose project-relative path\n"
+    "# matches one of the patterns, and run only commands matching `commands`. It runs\n"
+    "# under your permission rules and auto mode, one writer per checkout at a time,\n"
+    "# and its result lists every file it changed and command it ran.\n"
+    "# [roles.fixer]\n"
+    '# description = "Makes the smallest change that makes the named tests pass"\n'
+    '# prompt      = "Edit only what the task names. Run the tests. Report what changed."\n'
+    '# write       = ["src/**", "tests/**"]\n'
+    '# commands    = ["python -m pytest*", "ruff check*"]\n'
 )
+
+WRITE_TOOLS = frozenset({"edit_file", "write_file"})
+COMMAND_TOOLS = frozenset({"run_command"})
 
 
 def parse_roles(raw) -> tuple[dict, list[str]]:
@@ -123,21 +136,42 @@ def parse_roles(raw) -> tuple[dict, list[str]]:
         if bad:
             warnings.append(f"role {name!r} ignored: {', '.join(bad)} must be a string")
             continue
-        tools = body.get("tools")
+        lists = {}
+        bad_list = False
+        for key in ("tools", "write", "commands"):
+            value = body.get(key)
+            if value is not None and (not isinstance(value, list)
+                                      or not all(isinstance(t, str) and t.strip() for t in value)):
+                warnings.append(f"role {name!r} ignored: {key} must be a list of strings")
+                bad_list = True
+                break
+            lists[key] = [v.strip() for v in value] if value is not None else None
+        if bad_list:
+            continue
+        tools, write, commands = lists["tools"], lists["write"], lists["commands"]
+        # What a role may be offered: the read-only set, plus the write tools when it
+        # declares a write scope, plus run_command when it declares a command list. A
+        # writer with no scope would be a writer with no limit, so the grant IS the scope.
+        allowed = set(tools_mod.BUILTIN_READ_ONLY_TOOLS)
+        if write:
+            allowed |= WRITE_TOOLS
+        if commands:
+            allowed |= COMMAND_TOOLS
         if tools is not None:
-            if not isinstance(tools, list) or not all(isinstance(t, str) for t in tools):
-                warnings.append(f"role {name!r} ignored: tools must be a list of tool names")
-                continue
-            extra = sorted(set(tools) - tools_mod.BUILTIN_READ_ONLY_TOOLS)
+            extra = sorted(set(tools) - allowed)
             if extra:
-                warnings.append(
-                    f"role {name!r} ignored: {', '.join(extra)} is not a read-only tool "
-                    f"(allowed: {', '.join(sorted(tools_mod.BUILTIN_READ_ONLY_TOOLS))})")
+                need = [f"{t} needs write = [...]" for t in extra if t in WRITE_TOOLS]
+                need += [f"{t} needs commands = [...]" for t in extra if t in COMMAND_TOOLS]
+                other = [t for t in extra if t not in WRITE_TOOLS | COMMAND_TOOLS]
+                why = "; ".join(need + ([f"{', '.join(other)} cannot be given to a sub-agent "
+                                        f"(allowed: {', '.join(sorted(allowed))})"] if other else []))
+                warnings.append(f"role {name!r} ignored: {why}")
                 continue
         roles[name] = {"model": body.get("model", "").strip(),
                        "prompt": body.get("prompt", "").strip(),
                        "description": body.get("description", "").strip(),
-                       "tools": list(tools) if tools is not None else None}
+                       "tools": list(tools) if tools is not None else None,
+                       "write": write, "commands": commands}
     return roles, warnings
 
 

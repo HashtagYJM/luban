@@ -52,6 +52,20 @@ def _emit(text: str) -> None:
         sys.stdout.flush()
 
 
+def set_title(text: str) -> None:
+    """Name the terminal tab/window (OSC 2). VS Code shows it when
+    `terminal.integrated.tabs.title` includes `${sequence}`; Windows Terminal and most
+    others show it by default. Only on a TTY: a title sequence in a pipe is garbage."""
+    if _COLOR:
+        _emit(f"\033]2;{text}\007")
+
+
+def bell() -> None:
+    """The terminal bell, for a tab that just started waiting on the human."""
+    if _COLOR:
+        _emit("\a")
+
+
 def unified_diff_text(path: str, old: str, new: str) -> str:
     diff = difflib.unified_diff(
         old.splitlines(keepends=True),

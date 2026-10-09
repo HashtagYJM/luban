@@ -12,7 +12,7 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
 
-from luban import __version__, agent, config as config_mod, paths, tools, ui
+from luban import __version__, agent, config as config_mod, live, paths, tools, ui
 from luban import doctor as doctor_mod
 from luban import audit as audit_mod
 from luban import changelog
@@ -131,6 +131,7 @@ class Session:
     # improve; "auto" came from one of those and /compact may refresh it.
     title_source: str = "first_line"
     pending_context: list = field(default_factory=list)
+    _last_state: str = ""  # last published live state, for the bell on working → waiting
     # Skills loaded in this thread, in load order. The BODY lives in the message list and
     # dies with it; this is the record that the skill is still in force, so a fold or a
     # compact can restate it from code instead of hoping the summarizer kept it (E46).
@@ -184,6 +185,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         "-r <number|id|name> goes straight there.")
     p.add_argument("--all", action="store_true",
                    help="With --resume: list sessions from all folders.")
+    p.add_argument("--tidy", nargs="?", const=TIDY_DAYS, type=int, default=None,
+                   metavar="DAYS",
+                   help=f"Move sessions untouched for DAYS (default {TIDY_DAYS}) with their "
+                        "archives into ~/.luban/sessions/attic/, then exit. Nothing is deleted.")
     p.add_argument("--doctor", action="store_true",
                    help="Check Python, the luban home, config and the client adapter, "
                         "then exit. Offline unless --probe is given.")
@@ -228,6 +233,28 @@ def prompt_line(session: Session) -> str:
     return "\nyou (auto)> " if session.auto else "\nyou> "
 
 
+SESSIONS_RECENT_DAYS = 7   # /sessions shows this window by default; `old` shows the rest
+TIDY_DAYS = 30             # --tidy's default: untouched this long → the attic
+
+
+def set_state(session: Session, project_root: Path, state: str) -> None:
+    """Publish what this process is doing — to the live marker other sessions read, and
+    to the terminal tab's title, so a VS Code or Windows Terminal tab strip is the
+    overview: which luban is working and which one is waiting on you. State first in
+    the title, because a narrow tab truncates the end."""
+    project = Path(project_root).name
+    live.publish(session.session_id, str(project_root), state, session.title)
+    if state == "working":
+        icon = "●"
+    else:
+        notes = sessions_mod.pending_notes(session.session_id) if session.session_id else 0
+        icon = "✋" + (" ✉" if notes else "")
+    ui.set_title(f"{icon} {project}" + (f" · {session.title}" if session.title else ""))
+    if state in ("input", "approval") and getattr(session, "_last_state", "") == "working":
+        ui.bell()
+    session._last_state = state
+
+
 def build_tool_context(
     session: Session, project_root: Path, cfg: config_mod.Config | None = None,
     client=None,
@@ -235,7 +262,11 @@ def build_tool_context(
     def confirm(prompt: str) -> bool:
         if session.auto:
             return True
-        decision = ui.ask_confirm(prompt)
+        set_state(session, project_root, "approval")
+        try:
+            decision = ui.ask_confirm(prompt)
+        finally:
+            set_state(session, project_root, "working")
         if decision == "all":
             session.auto = True
             ui.print_text(auto_line(session) + "\n")
@@ -2054,6 +2085,32 @@ def _repaired_title(data: dict) -> str:
     return f"compacted: {repaired}"[:60] if title.startswith("compacted: ") else repaired
 
 
+def open_elsewhere(data: dict) -> str:
+    """Why this saved session must not be opened here, or "". Two processes on one id
+    each save the whole transcript, so the later save silently erases the other's turns;
+    the live marker is what makes the second open refuse instead."""
+    h = live.holder(data.get("id", ""))
+    if not h:
+        return ""
+    return (f'session {data["id"]} "{data.get("title", "")}" is already open in another '
+            f'terminal (pid {h.get("pid")}, {live.state_label(h)} since {h.get("since", "?")}). '
+            f"Opening it here too would make the two overwrite each other's turns. "
+            f"Start a fresh one with `luban`, or /sessions to pick another.")
+
+
+def latest_free(project: str) -> tuple[dict | None, int]:
+    """The newest saved session of this project that no other process has open, and
+    how many it skipped to get there."""
+    held = live.live(include_self=False)
+    skipped = 0
+    for h in sessions_mod.list_sessions(project):
+        if h["id"] in held:
+            skipped += 1
+            continue
+        return sessions_mod.load(h["id"]), skipped
+    return None, skipped
+
+
 def restore_session(session: Session, data: dict) -> None:
     # Repair any already-saved history that ends in an unanswered tool_use, so a
     # session closed mid-tool-call resumes cleanly instead of 400-crashing (E14).
@@ -2088,18 +2145,42 @@ def restore_session(session: Session, data: dict) -> None:
     _print_last_exchange(session.messages)
 
 
+# What /sessions last printed, and for which scope (a project path, or None for every
+# project): `/resume 2` means row 2 of THAT list, which may be a filtered one.
+_last_listing: dict = {"scope": object(), "heads": []}
+
+
+def _recent_or_hint(heads: list[dict], extra_keep: set[str] = frozenset()) -> list[dict]:
+    """The recent window of a list, saying how many it hid and where they went."""
+    keep = set(live.live()) | {k for k in extra_keep if k}
+    shown = sessions_mod.recent(heads, SESSIONS_RECENT_DAYS, keep)
+    if not shown:
+        return heads  # nothing recent: hiding everything would answer nothing
+    hidden = len(heads) - len(shown)
+    if hidden:
+        ui.print_text(f"({hidden} session(s) older than {SESSIONS_RECENT_DAYS} days hidden — "
+                      f"`/sessions old` or `luban -r <id or title>` reaches them; "
+                      f"`luban --tidy` moves {TIDY_DAYS}-day-old ones to the attic)\n")
+    return shown
+
+
 def _print_session_list(heads: list[dict], current_id: str = "",
-                        with_project: bool = False) -> None:
+                        with_project: bool = False, scope=object) -> None:
+    if scope is not object:
+        _last_listing.update(scope=scope, heads=list(heads))
+    running = live.live()
     steps: dict[str, dict] = {}  # project name -> {session id: (date, next step)}
     for i, h in enumerate(heads, 1):
         name = Path(h["project"]).name
         prefix = f"[{name}] " if with_project else ""
         marker = "  (current)" if h["id"] == current_id else ""
+        state = live.state_label(running.get(h["id"])) if h["id"] != current_id else ""
+        state = f"  {state}" if state else ""
         notes = sessions_mod.pending_notes(h["id"])
         waiting = f"  ✉ {notes} note(s) waiting" if notes else ""
         ui.print_text(
             f'{i:3}. {prefix}{h["id"]}  {h["updated"]}  {h["model"]}  '
-            f'"{h["title"]}"  ({h["message_count"]} msgs){marker}{waiting}\n'
+            f'"{h["title"]}"  ({h["message_count"]} msgs){marker}{state}{waiting}\n'
         )
         if name not in steps:
             steps[name] = memory_mod.session_steps(name)
@@ -2127,8 +2208,9 @@ def deliver_notes(session: Session) -> None:
 
 def resolve_or_report(ref: str, project: str | None) -> dict | None:
     """Shared by `-r <ref>` and `/resume <ref>` so they accept the same things."""
+    listed = _last_listing["heads"] if _last_listing["scope"] == project else None
     try:
-        return sessions_mod.resolve(ref, project)
+        return sessions_mod.resolve(ref, project, listed=listed)
     except sessions_mod.AmbiguousSession as exc:
         ui.print_text(f'"{ref}" matches {len(exc.matches)} sessions:\n')
         _print_session_list(exc.matches, with_project=True)
@@ -2148,7 +2230,9 @@ def pick_session(project: str, all_projects: bool, ref: str = "",
     if not heads:
         ui.print_text("no saved sessions found.\n")
         return None
-    _print_session_list(heads, with_project=all_projects)
+    heads = _recent_or_hint(heads)
+    _print_session_list(heads, with_project=all_projects,
+                        scope=None if all_projects else project)
     try:
         raw = input_fn("resume which? (number, name, Enter to cancel): ").strip()
     except (EOFError, KeyboardInterrupt):
@@ -2174,7 +2258,7 @@ COMMANDS = [
     ("/skill <name>", "Load a skill into context"),
     ("/compact", "Summarize a long conversation and keep going"),
     ("/reflect", "Tidy long-term memory (dedupe, prune, re-index)"),
-    ("/sessions [all]", "List saved sessions — this folder, or every folder"),
+    ("/sessions [all] [old]", "List sessions: live + last 7 days; all = every folder, old = everything"),
     ("/resume [n|id|name]", "Reopen the last session here, or a specific one"),
     ("/new [title]", "Save the current thread and start another"),
     ("/title [text]", "Show or rename the current session"),
@@ -2330,6 +2414,10 @@ def handle_command(line: str, session: Session, client=None, ctx=None, cfg=None)
                     "(/sessions to list, /resume <n|id> to pick one)\n"
                 )
                 return "handled"
+        refusal = open_elsewhere(data)
+        if refusal:
+            ui.print_text(refusal + "\n")
+            return "handled"
         if session.messages and data.get("id") != session.session_id:
             save_session(session)  # don't lose the thread you're currently in
         restore_session(session, data)
@@ -2385,13 +2473,17 @@ def handle_command(line: str, session: Session, client=None, ctx=None, cfg=None)
         ui.print_text(f"✓ model → {wanted}{tag(wanted)}\n")
         return "handled"
     if cmd == "/sessions":
-        every = arg.strip() in ("all", "--all")
+        words = set(arg.replace("--", "").split())
+        every, old = "all" in words, "old" in words
         heads = sessions_mod.list_sessions(None if every else (session.project or None))
         if not heads:
             ui.print_text("no saved sessions found.\n")
             return "handled"
+        if not old:
+            heads = _recent_or_hint(heads, extra_keep={session.session_id})
         # Numbered so you can pick one straight from this list with /resume <n>.
-        _print_session_list(heads, current_id=session.session_id, with_project=every)
+        _print_session_list(heads, current_id=session.session_id, with_project=every,
+                            scope=None if every else (session.project or None))
         ui.print_text(
             "resume one with: /resume <number|id|name>"
             + ("" if every else "   ·   /sessions all — every folder")
@@ -2478,6 +2570,13 @@ def main(argv: list[str] | None = None) -> None:
         return
     if ns.doctor:
         raise SystemExit(doctor_mod.run(probe=ns.probe, model=ns.model))
+    if ns.tidy is not None:
+        moved, archived, size = sessions_mod.tidy(ns.tidy, skip=set(live.live()))
+        attic = sessions_mod.SESSIONS_DIR / "attic"
+        ui.print_text(f"moved {moved} session(s) untouched for {ns.tidy}+ days, with "
+                      f"{archived} fold archive(s), {size / 1e6:.1f} MB, into {attic}/ — "
+                      f"nothing deleted; they no longer appear in /sessions.\n")
+        return
     if ns.sync_config:
         added = config_mod.sync_config()
         if added:
@@ -2540,13 +2639,19 @@ def main(argv: list[str] | None = None) -> None:
             ui.print_text(line + "\n")
     ctx = build_tool_context(session, project_root, cfg, client=client)
     if ns.cont:
-        data = sessions_mod.latest(str(project_root))
+        data, skipped = latest_free(str(project_root))
+        if skipped:
+            ui.print_text(f"{skipped} session(s) here are open in other terminals — "
+                          f"skipping them.\n")
         if data is None:
             ui.print_text("no previous session here — starting fresh.\n")
         else:
             restore_session(session, data)
     elif ns.resume is not None:  # bare -r is "" (falsy) — absent is None
         data = pick_session(str(project_root), ns.all, ref=ns.resume)
+        if data is not None and open_elsewhere(data):
+            ui.print_text(open_elsewhere(data) + "\nstarting fresh.\n")
+            data = None
         if data is not None:
             restore_session(session, data)
     else:
@@ -2556,7 +2661,9 @@ def main(argv: list[str] | None = None) -> None:
         recent = sessions_mod.latest(str(project_root))
         if recent is not None:
             if cfg.auto_continue:
-                restore_session(session, recent)
+                recent, _skipped = latest_free(str(project_root))
+                if recent is not None:
+                    restore_session(session, recent)
             else:
                 n = len(recent.get("messages", []))
                 title = recent.get("title") or "(untitled)"
@@ -2589,6 +2696,7 @@ def main(argv: list[str] | None = None) -> None:
     ui.print_text("/help lists commands · Ctrl-C stops a turn\n")
     fire_hooks(session, cfg, ctx, "session_start")
     while True:
+        set_state(session, project_root, "input")
         try:
             line = ui.read_prompt(prompt_line(session), input_fn=input).strip()
         except (EOFError, KeyboardInterrupt):
@@ -2619,6 +2727,7 @@ def main(argv: list[str] | None = None) -> None:
         # inside it is attributed to the session that made it (E46/E47), and -c/-r and
         # /new change which session that is.
         ctx.session_id = ensure_session_id(session)
+        set_state(session, project_root, "working")
         agent_config = build_agent_config(session, cfg, project_root)
         agent_config.between_calls = bound_turn(session, client, cfg, project_root)
         agent_config.after_tool = checkpoint_tool(session)
@@ -2679,6 +2788,7 @@ def main(argv: list[str] | None = None) -> None:
             fire_hooks(session, cfg, ctx, "stop")
             ui.print_text("\n")
     exit_journal(session, cfg, project_root)
+    live.clear()
     killed = tools.kill_all_jobs()
     if killed:
         # A background job outliving the session that started it is an orphaned process

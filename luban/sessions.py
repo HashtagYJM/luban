@@ -123,7 +123,7 @@ def latest(project: str, sessions_dir: Path | None = None) -> dict | None:
 
 
 def resolve(ref: str, project: str | None = None,
-            sessions_dir: Path | None = None) -> dict:
+            sessions_dir: Path | None = None, listed: list[dict] | None = None) -> dict:
     """Turn whatever the user typed into a session.
 
     Accepts a listing number, a full id, or any distinguishing fragment of an id
@@ -135,7 +135,9 @@ def resolve(ref: str, project: str | None = None,
     ref = ref.strip()
     if not ref:
         raise SessionNotFound(ref)
-    heads = list_sessions(project, sessions_dir)
+    # A number means a row of the list the user was just shown — which may be a
+    # filtered one — never a row of some list they never saw.
+    heads = listed if listed is not None else list_sessions(project, sessions_dir)
     if ref.isdigit():  # a number from the /sessions listing
         i = int(ref)
         if 1 <= i <= len(heads):
@@ -212,3 +214,44 @@ def take_notes(session_id: str, sessions_dir: Path | None = None) -> list[dict]:
             continue
     taking.unlink(missing_ok=True)
     return notes
+
+
+# ------------------------------------------------------------------------ tidy ----
+
+def _age_days(header: dict) -> float:
+    try:
+        return (datetime.now() - datetime.fromisoformat(header["updated"])).total_seconds() / 86400
+    except Exception:
+        return 0.0
+
+
+def recent(heads: list[dict], days: int, keep: set[str] = frozenset()) -> list[dict]:
+    """The sessions touched within `days`, plus any whose id is in `keep` (the live ones)."""
+    return [h for h in heads if h["id"] in keep or _age_days(h) <= days]
+
+
+def tidy(days: int, skip: set[str] = frozenset(),
+         sessions_dir: Path | None = None) -> tuple[int, int, int]:
+    """Move sessions untouched for `days`, with their notes and fold archives, into
+    `attic/YYYY-MM/` (the month they were last touched). Nothing is deleted: the raw
+    record stays readable; it just leaves every list. Returns (sessions, archives, bytes).
+    """
+    d = _dir(sessions_dir)
+    moved = archived = size = 0
+    for h in list_sessions(None, sessions_dir):
+        if h["id"] in skip or _age_days(h) <= days:
+            continue
+        month = (h.get("updated") or "0000-00")[:7]
+        dest = d / "attic" / month
+        dest.mkdir(parents=True, exist_ok=True)
+        files = [d / f"{h['id']}.json", d / f"{h['id']}.notes.jsonl",
+                 *archives(h["id"], sessions_dir)]
+        for f in files:
+            if not f.exists():
+                continue
+            size += f.stat().st_size
+            f.replace(dest / f.name)
+            if f.parent.name == "archive":
+                archived += 1
+        moved += 1
+    return moved, archived, size

@@ -11,7 +11,14 @@ below. Only user-facing behaviour earns a line here.
 
 ## Unreleased
 
-Nothing yet since v0.9.3.
+### The terminal tab says which luban needs you
+With several luban tabs open, finding the one that had stopped meant clicking through them. Each running luban now names its tab with its state — `●` while a turn runs, `✋` when it waits for you — and rings the bell when it starts waiting. `/sessions` shows the same state for threads open in other terminals. In VS Code, set `terminal.integrated.tabs.title` to `${sequence}` to show it.
+
+### Opening one thread in two terminals is refused
+Two terminals on the same thread each saved the whole transcript, so the later save silently erased the other's turns; `luban -c` in a second tab did exactly this. A thread open in another terminal can no longer be resumed — the refusal names the holder — and `luban -c` skips such threads and says so.
+
+### A short session list, and an attic for old threads
+`/sessions` listed every thread ever saved. It now shows live threads and those touched in the last 7 days, says how many older ones it hid, and `/sessions old` lists everything. New `luban --tidy [DAYS]` moves threads untouched for 30 days, with their notes and fold archives, into `~/.luban/sessions/attic/YYYY-MM/`; nothing is deleted.
 
 ## v0.9.3 — sessions leave each other notes; roles follow new model versions
 

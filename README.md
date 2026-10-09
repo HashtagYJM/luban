@@ -126,6 +126,7 @@ luban --no-stream           # if responses come back empty (some reasoning model
 luban --model <id>          # pick a model
 luban --version             # print the installed version and exit
 luban --doctor              # check the setup, offline; add --probe to test the connection
+luban --tidy                # move 30-day-old sessions and their archives to the attic
 ```
 
 A prompt can span lines: paste it, or type `"""` on its own line, write, and close
@@ -148,7 +149,7 @@ with `"""` again. The prompt reads `you (auto)>` while confirmations are off.
 | `/skill <name>` | Load a skill into context |
 | `/compact` | Summarize a long conversation and keep going |
 | `/reflect` | Tidy long-term memory (dedupe, prune, re-index) |
-| `/sessions [all]` | List saved sessions — this folder, or every folder |
+| `/sessions [all] [old]` | List sessions: live + last 7 days; all = every folder, old = everything |
 | `/resume [n\|id\|name]` | Reopen the last session here, or a specific one |
 | `/new [title]` | Save the current thread and start another |
 | `/title [text]` | Show or rename the current session |
@@ -198,6 +199,22 @@ its terminal. A session that isn't open gets it when you resume it. `/sessions` 
 how many notes are waiting, and under each thread the next step it last checkpointed.
 Use notes rather than the journal for this: the journal is re-sent on every call of
 every session for days and names no recipient.
+
+**Several terminals at once.** Each running luban names its terminal tab with its
+state — `● project · title` while a turn runs, `✋ project · title` when it is waiting
+for you (prompt or approval), `✋ ✉` when a note is also waiting — and rings the bell
+when it starts waiting. In VS Code, set `terminal.integrated.tabs.title` to
+`${sequence}` (and `terminal.integrated.enableBell` for the icon) so the tab list
+shows it; Windows Terminal shows it by default. `/sessions` marks the threads that are
+open in other terminals with the same state, and opening one of them again is refused:
+two terminals on one thread each save the whole transcript and silently erase each
+other's turns. `luban -c` skips threads that are open elsewhere and says so.
+
+**Keeping the list short.** `/sessions` shows threads that are live or were touched in
+the last 7 days and says how many older ones it hid; `/sessions old` lists everything.
+`luban --tidy` moves threads untouched for 30 days (`--tidy 90` for 90), with their
+notes and fold archives, into `~/.luban/sessions/attic/YYYY-MM/`. Nothing is deleted —
+they stay readable there — they just leave every list.
 
 `/resume` takes anything that identifies one session: its `/sessions` number, its
 full id, or a fragment of the title or id. If a fragment matches several, luban

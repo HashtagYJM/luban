@@ -9,7 +9,7 @@ see — it matches `## v<number>`. A release RENAMES that heading to its derived
 it never writes a version heading ahead of the release, and never edits the heading
 below. Only user-facing behaviour earns a line here.
 
-## Unreleased
+## v0.9.4 — the tab says which luban needs you, a writer sub-agent, a tidy session list
 
 ### The terminal tab says which luban needs you
 With several luban tabs open, finding the one that had stopped meant clicking through them. Each running luban now names its tab with its state — `●` while a turn runs, `✋` when it waits for you — and rings the bell when it starts waiting. `/sessions` shows the same state for threads open in other terminals. In VS Code, set `terminal.integrated.tabs.title` to `${sequence}` to show it.

@@ -6,6 +6,7 @@ import signal
 import subprocess
 import sys
 import threading
+import time
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Callable
@@ -613,7 +614,9 @@ def _spawn(command: str, cwd, merge_stderr: bool = False, *, stdin_pipe: bool = 
     )
 
 
-MAX_BACKGROUND_JOBS = 8  # a runaway loop must not fork-bomb the machine luban runs on
+MAX_BACKGROUND_JOBS = 8
+READ_OUTPUT_WAIT = 30.0      # seconds read_output waits for the job before answering
+READ_OUTPUT_WAIT_MAX = 120.0  # a runaway loop must not fork-bomb the machine luban runs on
 
 
 @dataclass
@@ -680,6 +683,18 @@ def _read_output(inp: dict, ctx: ToolContext) -> ToolResult:
         if job.proc.poll() is None:
             _kill_tree(job.proc)
         # Fall through: whatever it produced before the kill is still worth reporting.
+    else:
+        # Wait here rather than hand "still running" back: every such answer was a full
+        # model call carrying the whole window, and a chain of them is how one test run
+        # cost a dozen calls. The job keeps draining on its thread while this waits.
+        try:
+            wait = float(inp.get("wait_seconds", READ_OUTPUT_WAIT))
+        except (TypeError, ValueError):
+            wait = READ_OUTPUT_WAIT
+        wait = max(0.0, min(wait, READ_OUTPUT_WAIT_MAX))
+        deadline = time.monotonic() + wait
+        while job.proc.poll() is None and time.monotonic() < deadline:
+            time.sleep(min(0.25, max(0.0, deadline - time.monotonic())))
     text = "".join(job.buffer)
     fresh = text[job.read_to:]
     job.read_to = len(text)
@@ -1130,13 +1145,16 @@ TOOLS = [
         "name": "read_output",
         "description": "Read new output from a background command started with "
         "run_command(background=true), and whether it is still running or has exited. "
-        "Each call returns only what has arrived SINCE the last read. Set kill=true to "
+        "Each call returns only what has arrived SINCE the last read. It WAITS up to "
+        "wait_seconds (default 30) for the job to finish before answering, so one call "
+        "usually sees the end of a test run — do not poll in a loop. Set kill=true to "
         "terminate it (the last output is still returned).",
         "input_schema": {
             "type": "object",
             "properties": {
                 "handle": {"type": "string", "description": "The handle run_command returned, e.g. bg1"},
                 "kill": {"type": "boolean", "description": "Terminate the job's whole process tree."},
+                "wait_seconds": {"type": "number", "description": "How long to wait for the job to finish before answering (0-120, default 30)."},
             },
             "required": ["handle"],
         },

@@ -11,7 +11,17 @@ below. Only user-facing behaviour earns a line here.
 
 ## Unreleased
 
-Nothing yet since v0.9.4.
+### Stale tool output leaves the window before a fold is needed
+
+Every tool result stayed verbatim in the conversation until a fold, so on a tool-heavy turn most of what every call re-sent was output the model had already acted on. Once the window passes 40% of `warn_tokens`, luban now replaces each tool result older than the newest eight with a one-line stub naming the call and the archive file that holds the full text; the newest eight stay verbatim, and a loaded skill is never stubbed. No model call is involved, and it works on every provider — including `gpt-*`, where `context_editing` does nothing. Clearing is batched so a synced home takes one archive write per batch, not one per tool call. Folding still runs when the conversation itself grows past 70%.
+
+### A `gpt-*` session no longer re-reads all its past reasoning on every call
+
+luban replayed every reasoning item from every earlier turn on every call to a `gpt-*` model, and the model re-reads them as input; a long session measured about 40% heavier than the text in it, and the fold, which sizes by text, landed well above its target. Reasoning is now replayed only from the turn being answered, which is what Claude's API does by itself. What the model concluded stays in its text; how it reasoned in earlier turns is no longer re-sent.
+
+### `read_output` waits for the job instead of being polled
+
+Each `read_output` on a running job answered "still running" at once, and every such answer cost a full model call carrying the whole window. It now waits up to `wait_seconds` (default 30, at most 120) for the job to finish before answering, so one call usually sees the end of a test run. `wait_seconds = 0` keeps the old behaviour.
 
 ## v0.9.4 — the tab says which luban needs you, a writer sub-agent, a tidy session list
 

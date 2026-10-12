@@ -655,7 +655,13 @@ def test_the_window_is_bounded_between_tool_calls(monkeypatch, tmp_path):
         over_for = over_for + 1 if sends >= warn * cli.FOLD_TRIGGER else 0
         assert over_for <= 1, f"round {r}: the window stayed over the trigger for {over_for} calls"
         _pairs_intact(messages)
-    assert folds, "the run must have crossed the trigger and folded"
+    # Stale-result clearing now keeps a run like this under the trigger without a fold;
+    # the invariant is the bound, however it is met. Every cleared result names its archive.
+    stubs = [b["content"] for m in messages if isinstance(m["content"], list)
+             for b in m["content"] if b.get("type") == "tool_result"
+             and b["content"].startswith("[cleared ")]
+    assert folds or stubs, "the run must have crossed the trigger and been bounded"
+    assert all("~/.luban/sessions/archive/" in t for t in stubs)
     assert messages is s.messages, "the turn continues on the history the session holds"
 
 

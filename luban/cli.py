@@ -1519,6 +1519,15 @@ FOLD_MIN_TOKENS = 20_000  # folding invalidates the cached prefix; many small fo
 FOLD_RENOTIFY = 0.10  # of warn_tokens — how much more context has to arrive before being
                       # over the line is news again rather than the same standing fact
 FALLBACK_CHARS_PER_TOKEN = 2.9  # the measured density, used only where nothing can measure
+# Stale tool results are cleared BEFORE the fold is ever needed. A result is read once
+# and acted on; from then on it is dead weight re-sent on every call, and on a tool-heavy
+# turn it is most of the window. Claude Code and the server-side `context_editing` both
+# stub old results and keep the recent ones — luban now does the same on the client, so
+# it holds on every provider. Deterministic, no model call, full record archived first.
+CLEAR_TRIGGER = 0.40      # of warn_tokens — below this the window is cheap enough to leave
+CLEAR_KEEP_RESULTS = 8    # the newest tool-result messages stay verbatim: the working set
+CLEAR_MIN_CHARS = 30_000  # one archive per batch, not per call (the home may be synced)
+CLEAR_MIN_RESULT = 200    # a result this small is cheaper than its stub
 FOLD_BIG_RESULT = 0.10  # of warn_tokens — one tool result this large is not conversation,
                         # it is a document that landed in the window and crowds out the
                         # turns it was meant to serve
@@ -1737,6 +1746,80 @@ def shrink_oversized_results(messages: list, limit_chars: int, where: str,
     return freed
 
 
+def _tool_use_names(messages: list) -> dict:
+    """tool_use id -> 'name(first argument)' for naming a stub after what produced it."""
+    names: dict = {}
+    for msg in messages:
+        if msg.get("role") != "assistant" or not isinstance(msg.get("content"), list):
+            continue
+        for b in msg["content"]:
+            if isinstance(b, dict) and b.get("type") == "tool_use":
+                inp = b.get("input") or {}
+                arg = next((str(v) for v in inp.values() if isinstance(v, str)), "")
+                names[b.get("id")] = f"{b.get('name', '')}({arg[:80]})"
+    return names
+
+
+def _stale_results(messages: list, keep_results: int):
+    """(block, chars) for every clearable tool result outside the newest `keep_results`
+    tool-result messages. Skill bodies are never stale: they are instructions in force."""
+    holders = [m for m in messages
+               if m.get("role") == "user" and isinstance(m.get("content"), list)
+               and any(isinstance(b, dict) and b.get("type") == "tool_result"
+                       for b in m["content"])]
+    out = []
+    for msg in holders[:max(0, len(holders) - keep_results)]:
+        for b in msg["content"]:
+            body = b.get("content") if isinstance(b, dict) else None
+            if (b.get("type") != "tool_result" or not isinstance(body, str)
+                    or len(body) <= CLEAR_MIN_RESULT or body.startswith("[cleared ")
+                    or tools.skill_result_name(body)):
+                continue
+            out.append((b, len(body)))
+    return out
+
+
+def clear_stale_results(messages: list, where: str, keep_results: int = CLEAR_KEEP_RESULTS):
+    """Stub every stale tool result; returns (characters freed, results cleared). The
+    stub names the call so the model knows what it is missing, and the archive so it
+    can get it back with one read instead of re-running the tool."""
+    names = _tool_use_names(messages)
+    freed = n = 0
+    for block, size in _stale_results(messages, keep_results):
+        what = names.get(block.get("tool_use_id"), "tool call")
+        block["content"] = (f"[cleared {size:,} chars: result of {what} — already acted "
+                            f"on; verbatim in {where}, which read_file can open]")
+        freed += size - len(block["content"])
+        n += 1
+    return freed, n
+
+
+def maintain_clearing(session: Session, client, cfg: config_mod.Config,
+                      project_root: Path) -> None:
+    """Runs before the fold check on every call. Clears in batches so a synced home
+    takes one archive per CLEAR_MIN_CHARS of stale output, not one per tool call."""
+    if session.ledger.context_tokens < cfg.warn_tokens * CLEAR_TRIGGER:
+        return
+    stale = sum(size for _b, size in _stale_results(session.messages, CLEAR_KEEP_RESULTS))
+    if stale < CLEAR_MIN_CHARS:
+        return
+    ratio = chars_per_token(session, client, cfg, project_root)
+    try:
+        archived = archive_session(session)
+    except OSError as exc:
+        ui.print_text(f"  could not write the transcript archive ({exc}) — nothing "
+                      f"cleared; conversation unchanged.\n")
+        return
+    freed, n = clear_stale_results(session.messages, archived)
+    save_session(session)
+    projected = (standing_tokens(session, client, cfg, project_root)
+                 + int(_history_chars(session.messages) / ratio))
+    session.ledger.project_context(projected)
+    ui.print_text(f"  ✓ cleared ~{int(freed / ratio):,} tokens of stale tool output "
+                  f"({n} results; the newest {CLEAR_KEEP_RESULTS} stay verbatim). Full "
+                  f"results kept at {archived}.\n")
+
+
 def _has_oversized_result(messages: list, limit_chars: int) -> bool:
     """Whether shrink_oversized_results would change anything in `messages`."""
     return any(
@@ -1929,6 +2012,7 @@ def maintain_context(session: Session, client, cfg: config_mod.Config,
     """
     if client is None or not session.ledger.context_tokens:
         return
+    maintain_clearing(session, client, cfg, project_root)
     ctx_now = session.ledger.context_tokens
     if ctx_now < cfg.warn_tokens * FOLD_TRIGGER:
         session.fold_warned_at = 0   # back under; the next crossing is news again

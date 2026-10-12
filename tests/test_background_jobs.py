@@ -44,7 +44,8 @@ def test_background_returns_a_handle_without_waiting(tmp_path):
     assert time.monotonic() - started < 5      # it did NOT wait for the child
     assert "bg1" in out.content
     assert not out.is_error
-    assert tools._read_output({"handle": "bg1"}, ctx).content.count("still running") == 1
+    # wait_seconds=0: a read that must not block; the default waits for the job
+    assert tools._read_output({"handle": "bg1", "wait_seconds": 0}, ctx).content.count("still running") == 1
 
 
 def test_output_is_readable_while_it_runs_and_reads_are_incremental(tmp_path):

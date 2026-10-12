@@ -229,6 +229,47 @@ def for_provider(messages: list[dict], provider: str) -> list[dict]:
     return out if changed else messages
 
 
+def _typed_by_human(m: dict) -> bool:
+    if m.get("role") != "user":
+        return False
+    c = m.get("content")
+    if isinstance(c, str):
+        return True
+    return isinstance(c, list) and not any(
+        isinstance(b, dict) and b.get("type") == "tool_result" for b in c)
+
+
+def current_turn_reasoning_only(messages: list[dict], provider: str) -> list[dict]:
+    """Replay reasoning state only from the turn being answered.
+
+    Anthropic drops earlier turns' thinking from the context itself and does not count
+    it. OpenAI, driven stateless, re-reads every replayed reasoning item as input on
+    every call, and luban replayed all of them for the life of the session: on a long
+    `gpt-*` session the field measured the window ~40% heavier than the text in it. A
+    reasoning item is needed only while its own turn's tool loop is still running, so
+    items from before the last typed prompt are dropped here, at the send. What the
+    model concluded stays in its text; how it got there is what goes.
+    """
+    if provider != "openai":
+        return messages
+    last_human = max((i for i, m in enumerate(messages) if _typed_by_human(m)), default=-1)
+    out: list[dict] = []
+    changed = False
+    for i, m in enumerate(messages):
+        c = m.get("content")
+        if i >= last_human or m.get("role") != "assistant" or not isinstance(c, list):
+            out.append(m)
+            continue
+        kept = [b for b in c if not (isinstance(b, dict) and b.get("type") == "thinking")]
+        if len(kept) == len(c):
+            out.append(m)
+            continue
+        changed = True
+        if kept:
+            out.append({**m, "content": kept})
+    return out if changed else messages
+
+
 def for_send(messages: list[dict], provider: str) -> list[dict]:
     """Everything that must be true of a history about to be sent to `provider`.
 
@@ -236,4 +277,5 @@ def for_send(messages: list[dict], provider: str) -> list[dict]:
     client.stream_turn. The rules are enforced at the SEND for the reason this module
     exists — enumerating guards is a promise, enforcing at the send is a property.
     """
-    return for_provider(sanitize_history(messages), provider)
+    return current_turn_reasoning_only(for_provider(sanitize_history(messages), provider),
+                                       provider)

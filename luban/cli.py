@@ -256,6 +256,13 @@ def set_state(session: Session, project_root: Path, state: str) -> None:
     session._last_state = state
 
 
+# A writer's command runs in a shell (run_command uses shell=True), so a pattern matched
+# against the text bounds only the text: `pytest -q & del /s /q src` matches `pytest*`
+# and then runs both (E60). Refusing every character that lets cmd.exe or a POSIX shell
+# chain, redirect, pipe or substitute makes the matched text the whole command.
+_SHELL_META = frozenset("&|<>^;`$()\n\r")
+
+
 def writer_scope(spec: dict, project_root: Path, allow_out_of_tree: bool):
     """A writer child's boundary, enforced by the runtime like /reflect's: a write
     outside the role's `write` globs or a command outside its `commands` patterns is
@@ -273,6 +280,11 @@ def writer_scope(spec: dict, project_root: Path, allow_out_of_tree: bool):
             command = str(tool_input.get("command", "")).strip()
             if tool_input.get("background") is True:
                 return "a writer sub-agent may not start background commands"
+            meta = sorted({c for c in command if c in _SHELL_META})
+            if meta:
+                shown = " ".join(repr(c)[1:-1] for c in meta)
+                return (f"a writer sub-agent's command may not chain, pipe, redirect or "
+                        f"substitute (found {shown}); run one plain command")
             if not any(fnmatch.fnmatchcase(command, p) for p in commands):
                 return (f"the command is outside this role's allowed commands "
                         f"({', '.join(commands) or 'none'})")
@@ -283,8 +295,11 @@ def writer_scope(spec: dict, project_root: Path, allow_out_of_tree: bool):
         try:
             target = tools.resolve_tool_path(Path(project_root), path, writing=True,
                                              allow_out_of_tree=allow_out_of_tree)
-            rel = target.resolve().relative_to(Path(project_root).resolve()).as_posix()
         except Exception:
+            return ""  # the tool refuses it itself, with its own reason (E59)
+        try:
+            rel = target.resolve().relative_to(Path(project_root).resolve()).as_posix()
+        except ValueError:
             return f"{path} is outside the project, so outside this role's write scope"
         if not any(fnmatch.fnmatchcase(rel, p) for p in writes):
             return f"{path} is outside this role's write scope ({', '.join(writes) or 'none'})"
@@ -421,8 +436,13 @@ def build_tool_context(
 
             def after_tool(name, tool_input, out, *_rest) -> None:
                 run.calls += 1
-                if out.is_error or getattr(out, "outcome", "") == "declined":
+                outcome = getattr(out, "outcome", "")
+                if name == "run_command" and outcome == "timed_out":
+                    # It ran, and may have changed files before it was killed (E63).
+                    run.commands_run.append(f"{tool_input.get('command', '?')} (timed out)")
                     return
+                if out.is_error or outcome == "declined":
+                    return  # refused or failed: nothing happened
                 if name in config_mod.WRITE_TOOLS:
                     run.files_changed.append(str(tool_input.get("path", "?")))
                 elif name == "run_command":
@@ -432,6 +452,8 @@ def build_tool_context(
                 run.model, session.max_tokens, stream=False, platform=cfg.platform,
                 tools=read_only,
                 role_prompt=spec.get("prompt", ""),
+                grants=agent.SubagentGrants(write=tuple(spec.get("write") or ()),
+                                            commands=tuple(spec.get("commands") or ())),
                 # load_skill is read-only, so it IS offered — and its own description says
                 # the catalog is in the system prompt. Without this the tool could never
                 # fire and the sub-agent could not know what it was missing (E45). Dropping
@@ -445,6 +467,9 @@ def build_tool_context(
             )
             sub_ctx = tools.ToolContext(
                 project_root=Path(project_root),
+                # A child reads where its parent may (E62); a writer's writes are still
+                # bound to the project by writer_scope.
+                allow_out_of_tree=cfg.allow_out_of_tree_file_edits,
                 # A writer's prompts reach the parent's terminal under the child's label;
                 # auto mode answers them as it answers the parent's. A read-only child is
                 # never offered a write, so its confirm is a defensive no.

@@ -11,6 +11,12 @@ below. Only user-facing behaviour earns a line here.
 
 ## Unreleased
 
+### A writer's command can no longer smuggle a second command (E60)
+A writer role's `commands` patterns were matched against the text, but the command then ran in a shell, so `python -m pytest -q & del /s /q src` passed a `python -m pytest*` pattern and ran both. A writer's command containing `&`, `|`, `<`, `>`, `^`, `;`, `` ` ``, `$`, `(`, `)` or a newline is now refused and audited as out of scope; one plain command per call still runs.
+
+### Writer sub-agents are told what they may do (E61, E62, E59, E63)
+A writer was given the read-only prompt ("you cannot change anything, execute anything") and no Windows shell line; it now gets a prompt built from its grants, and any child that may run commands gets the platform line. Children now read out of the project wherever the parent may (`allow_out_of_tree_file_edits`); a writer's writes stay inside the project. A path the file tool itself refuses (such as a `.py` under the luban home) now reaches the child with the tool's own reason instead of "outside the project". A command that ran and timed out is listed in the writer's receipt as `(timed out)` instead of disappearing.
+
 ### Stale tool output leaves the window before a fold is needed
 
 Every tool result stayed verbatim in the conversation until a fold, so on a tool-heavy turn most of what every call re-sent was output the model had already acted on. Once the window passes 40% of `warn_tokens`, luban now replaces each tool result older than the newest eight with a one-line stub naming the call and the archive file that holds the full text; the newest eight stay verbatim, and a loaded skill is never stubbed. No model call is involved, and it works on every provider — including `gpt-*`, where `context_editing` does nothing. Clearing is batched so a synced home takes one archive write per batch, not one per tool call. Folding still runs when the conversation itself grows past 70%.

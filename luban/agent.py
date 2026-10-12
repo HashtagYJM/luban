@@ -56,6 +56,41 @@ SUBAGENT_SYSTEM_PROMPT = (
     "the caller cannot tell one from the other, and will act on it."
 )
 
+# A writer child got the read-only prompt above — "you cannot change anything, execute
+# anything" — while being offered edit_file and run_command (E61). The prompt is built
+# from what the role was actually granted, so it can never promise less or more.
+@dataclass(frozen=True)
+class SubagentGrants:
+    write: tuple = ()
+    commands: tuple = ()
+
+    @property
+    def writer(self) -> bool:
+        return bool(self.write or self.commands)
+
+
+def _writer_prompt(grants: "SubagentGrants") -> str:
+    can = []
+    if grants.write:
+        can.append("edit and write files whose project-relative path matches "
+                   + ", ".join(f"`{p}`" for p in grants.write))
+    if grants.commands:
+        can.append("run commands matching " + ", ".join(f"`{p}`" for p in grants.commands)
+                   + " — one plain command per call: chaining, pipes, redirection and "
+                   "substitution are refused")
+    return (
+        "You are a WRITER sub-agent inside Luban, dispatched by the main agent on one "
+        "self-contained task. You can search, read and recall, and you may "
+        + "; and ".join(can) + ". Anything outside that is refused by the runtime, so do "
+        "not work around a refusal; report it. You cannot dispatch a sub-agent of your "
+        "own. Every file you change and command you run is listed for the agent that "
+        "sent you. Paths are relative to the project root."
+        " Your LAST message is the entire deliverable: it is the only thing that reaches "
+        "the agent that sent you, and there is no later turn. Finish the task and reply "
+        "with what you changed, what you ran and its result, and anything left undone."
+    )
+
+
 _PLATFORM_LINE = {
     "windows": "The user is on Windows: use cmd.exe-compatible shell commands "
     "(e.g. `dir`, `type`, `del`) and Windows-style paths in run_command.",
@@ -68,7 +103,8 @@ def system_blocks(platform: str, skills: list[dict] | None = None, memory: str =
                   global_memory: str = "",
                   tool_guidance: list[tuple[str, str]] | None = None,
                   global_volatile: str = "", subagent: bool = False,
-                  role_prompt: str = "") -> tuple[str, str]:
+                  role_prompt: str = "",
+                  grants: "SubagentGrants | None" = None) -> tuple[str, str]:
     """The system prompt split into (stable, volatile), in prompt order.
 
     Prompt caching is a PREFIX match, so anything that changes invalidates every byte
@@ -78,20 +114,24 @@ def system_blocks(platform: str, skills: list[dict] | None = None, memory: str =
     end up behind the SECOND breakpoint, in the message tail; see with_cache_breakpoint.
     """
     return (system_prompt_for(platform, skills, memory, global_memory, tool_guidance,
-                              subagent=subagent, role_prompt=role_prompt),
+                              subagent=subagent, role_prompt=role_prompt, grants=grants),
             global_volatile)
 
 
 def system_prompt_for(platform: str, skills: list[dict] | None = None, memory: str = "",
                       global_memory: str = "",
                       tool_guidance: list[tuple[str, str]] | None = None,
-                      subagent: bool = False, role_prompt: str = "") -> str:
-    prompt = SUBAGENT_SYSTEM_PROMPT if subagent else SYSTEM_PROMPT
+                      subagent: bool = False, role_prompt: str = "",
+                      grants: "SubagentGrants | None" = None) -> str:
+    writer = bool(subagent and grants is not None and grants.writer)
+    prompt = (_writer_prompt(grants) if writer
+              else SUBAGENT_SYSTEM_PROMPT if subagent else SYSTEM_PROMPT)
     if subagent and role_prompt:
         # A named role's preamble: who this child is, on top of what every child is.
         prompt = f"{role_prompt}\n\n{prompt}"
-    # The platform line exists to shape run_command, which a sub-agent does not have.
-    line = None if subagent else _PLATFORM_LINE.get(platform)
+    # The platform line shapes run_command: a child gets it exactly when it may run one.
+    runs = (not subagent) or bool(grants is not None and grants.commands)
+    line = _PLATFORM_LINE.get(platform) if runs else None
     if line:
         prompt = f"{prompt}\n\n{line}"
     if global_memory:
@@ -136,6 +176,7 @@ class AgentConfig:
     # A nested read-only run: it gets its own job description, not the main agent's (E45).
     subagent: bool = False
     role_prompt: str = ""  # a named sub-agent role's preamble (config [roles.<name>].prompt)
+    grants: "SubagentGrants | None" = None  # a writer role's scope, for its prompt (E61)
     web_search: bool = False
     web_search_tool_type: str = "web_search_20250305"
     thinking: bool = False
@@ -300,7 +341,7 @@ def _run_model_turn(client, config, messages, on_text, on_thinking, on_retry=Non
     stable, volatile = system_blocks(
         config.platform, config.skills, config.memory, config.global_memory,
         config.tool_guidance, volatile_now, subagent=config.subagent,
-        role_prompt=config.role_prompt)
+        role_prompt=config.role_prompt, grants=config.grants)
     use_blocks = config.cache_prompt and probe["block_system"] is not False
 
     def _shape(cache: bool):

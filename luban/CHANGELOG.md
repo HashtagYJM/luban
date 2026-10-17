@@ -9,7 +9,7 @@ see — it matches `## v<number>`. A release RENAMES that heading to its derived
 it never writes a version heading ahead of the release, and never edits the heading
 below. Only user-facing behaviour earns a line here.
 
-## Unreleased
+## v0.9.5 — writer commands cannot chain; writers told what they may do; stale tool output cleared early
 
 ### A writer's command can no longer smuggle a second command (E60)
 A writer role's `commands` patterns were matched against the text, but the command then ran in a shell, so `python -m pytest -q & del /s /q src` passed a `python -m pytest*` pattern and ran both. A writer's command containing `&`, `|`, `<`, `>`, `^`, `;`, `` ` ``, `$`, `(`, `)` or a newline is now refused and audited as out of scope; one plain command per call still runs.

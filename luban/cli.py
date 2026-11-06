@@ -238,12 +238,23 @@ SESSIONS_RECENT_DAYS = 7   # /sessions shows this window by default; `old` shows
 TIDY_DAYS = 30             # --tidy's default: untouched this long → the attic
 
 
+def project_name_notice(project: str, project_root: Path) -> str:
+    """Warn when this project's name already belongs to another folder (E65)."""
+    other = memory_mod.checkpoint_folder(project)
+    if not other or Path(other) == Path(project_root):
+        return ""
+    return (f"⚠ another folder also goes by '{project}': {other}\n"
+            f"  The two share one continuity pointer, journal tag and session steps. Give "
+            f"this one its own name with a line in its LUBAN.md (or CLAUDE.md/AGENTS.md):\n"
+            f"    <!-- luban-project: {project}-2 -->")
+
+
 def set_state(session: Session, project_root: Path, state: str) -> None:
     """Publish what this process is doing — to the live marker other sessions read, and
     to the terminal tab's title, so a VS Code or Windows Terminal tab strip is the
     overview: which luban is working and which one is waiting on you. State first in
     the title, because a narrow tab truncates the end."""
-    project = Path(project_root).name
+    project = memory_mod.project_key(project_root)
     live.publish(session.session_id, str(project_root), state, session.title)
     if state == "working":
         icon = "●"
@@ -1386,7 +1397,8 @@ def flush_memory(session: Session, client, ctx, cfg: config_mod.Config) -> None:
     """
     if not cfg.memory_enabled or not session.messages:
         return
-    memory_mod.checkpoint(Path(ctx.project_root).name, "", session.session_id)
+    memory_mod.checkpoint(memory_mod.project_key(ctx.project_root), "", session.session_id,
+                          folder=str(Path(ctx.project_root).resolve()))
     if segment_journaled(session):
         return
     ui.print_text("(memory flush…)\n")
@@ -1451,13 +1463,33 @@ def reflect_session(session: Session, client, ctx, cfg: config_mod.Config,
         # The whole store goes in the PROMPT, not through recall: recall is capped at
         # RECALL_MAX, which would show the curator about a tenth of what it must curate.
         # This turn is isolated, so an ordinary turn never carries this payload.
-        agent.run_turn(client, config,
-                       [{"role": "user", "content": REFLECT_PROMPT + memory_mod.audit(
-                           _project_memory_usage(project_root or Path("."), cfg))}],
-                       ctx, ui.print_text, ui.print_thinking)
+        msgs = agent.run_turn(client, config,
+                              [{"role": "user", "content": REFLECT_PROMPT + memory_mod.audit(
+                                  _project_memory_usage(project_root or Path("."), cfg))}],
+                              ctx, ui.print_text, ui.print_thinking)
     except Exception as exc:
         ui.print_text(f"reflect failed ({exc}) — memory unchanged.\n")
+        return
     ui.print_text("\n")
+    # The run stays isolated, but its REPORT joins the conversation as a /reflect exchange:
+    # printed-only, the next turn had no record of what was proposed, so "do edits 1 and 2"
+    # was answered from the model's own earlier table instead (E64). Only the final text —
+    # the curator's tool calls and the store dump stay out of the live window.
+    report = ""
+    for m in reversed(msgs):
+        if m.get("role") == "assistant" and isinstance(m.get("content"), list):
+            report = "\n".join(b.get("text", "") for b in m["content"]
+                               if b.get("type") == "text").strip()
+            if report:
+                break
+    if report:
+        session.messages += [
+            {"role": "user", "content": "/reflect"},
+            {"role": "assistant", "content": [{"type": "text", "text":
+                "[/reflect report — memory changes above are already applied; numbered "
+                "Suggested edits are NOT applied]\n" + report}]},
+        ]
+        save_session(session)
 
 
 def exit_journal(session: Session, cfg: config_mod.Config, project_root: Path) -> None:
@@ -1469,8 +1501,9 @@ def exit_journal(session: Session, cfg: config_mod.Config, project_root: Path) -
     """
     if not cfg.memory_enabled or not session.messages:
         return
-    project = Path(project_root).name
-    memory_mod.checkpoint(project, "", session.session_id)
+    project = memory_mod.project_key(project_root)
+    memory_mod.checkpoint(project, "", session.session_id,
+                          folder=str(Path(project_root).resolve()))
     if segment_journaled(session):
         return
     memory_mod.journal_append(
@@ -2356,9 +2389,10 @@ def _print_session_list(heads: list[dict], current_id: str = "",
             f'{i:3}. {prefix}{h["id"]}  {h["updated"]}  {h["model"]}  '
             f'"{h["title"]}"  ({h["message_count"]} msgs){marker}{state}{waiting}\n'
         )
-        if name not in steps:
-            steps[name] = memory_mod.session_steps(name)
-        step = steps[name].get(h["id"])
+        key = memory_mod.project_key(h["project"]) if h["project"] else name
+        if key not in steps:
+            steps[key] = memory_mod.session_steps(key)
+        step = steps[key].get(h["id"])
         if step:
             ui.print_text(f"       next ({step[0]}): {step[1][:120]}\n")
 
@@ -2765,11 +2799,16 @@ def main(argv: list[str] | None = None) -> None:
             ui.print_text("config.toml is already up to date.\n")
         return
     project_root = Path(ns.dir).resolve()
-    memory_mod.set_project(project_root.name)  # tags journal writes, filters the window
     for notice in (home_notice(), stray_memory_notice()):
         if notice:
             ui.print_text(notice + "\n")
     cfg = config_mod.load_config()
+    project = memory_mod.project_key(project_root,
+                                     (cfg.memory_file,) if cfg.memory_file else None)
+    memory_mod.set_project(project)  # tags journal writes, filters the window
+    notice = project_name_notice(project, project_root) if cfg.memory_enabled else ""
+    if notice:
+        ui.print_text(notice + "\n")
     session = Session(
         model=resolve_model(ns.model, cfg),
         max_tokens=resolve_max_tokens(ns.max_tokens, cfg, ns.stream),

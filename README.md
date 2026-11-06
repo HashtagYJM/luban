@@ -362,6 +362,11 @@ Claude Code? It just works. Need luban-specific rules? Add a `LUBAN.md`; it wins
 Commit the file so teammates get it. Pin an exact file with `memory_file = "CLAUDE.md"`
 in config to skip the chain.
 
+The project's **name** — what its continuity pointer, journal entries and hook `project`
+match are keyed by — is its folder name. Two folders with the same name (two `_workspace`
+folders, say) would share one; luban warns at startup when it sees that. Give a project its
+own name with a line in that file, e.g. `<!-- luban-project: alpha -->`.
+
 ### Long-term memory
 
 Long-term memory follows *you* — it lives in your home directory and loads at the

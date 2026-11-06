@@ -24,7 +24,7 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
-from luban import paths
+from luban import memory as memory_mod, paths
 
 EVENTS = ("session_start", "user_prompt_submit", "post_tool_use", "stop")
 
@@ -123,6 +123,7 @@ def in_project(hook, project_root) -> bool:
     name = path.name
     text = path.as_posix()
     return (fnmatch.fnmatch(name, hook.project)
+            or fnmatch.fnmatch(memory_mod.project_key(path), hook.project)
             or fnmatch.fnmatch(text, hook.project)
             or fnmatch.fnmatch(text, f"*/{hook.project.lstrip('/')}"))
 
@@ -235,7 +236,7 @@ def payload(event: str, project_root, tool_name: str = "",
     output is already held to a tighter cap than a tool result for the same reason.
     """
     root = Path(project_root)
-    data = {"event": event, "project": root.name, "project_dir": str(root),
+    data = {"event": event, "project": memory_mod.project_key(root), "project_dir": str(root),
             "hooks_dir": str(hooks_dir())}
     if session_id:
         # Which THREAD this happened in. A project can have two sessions open at once, so

@@ -11,7 +11,11 @@ below. Only user-facing behaviour earns a line here.
 
 ## Unreleased
 
-Nothing yet since v0.9.5.
+### `/reflect`'s report stays in the conversation (E64)
+The report, with its numbered Suggested edits, was only printed, so a reply like "do 1 and 2" was answered from an unrelated earlier list. The report is now added to the session as a `/reflect` exchange, saved with the transcript, so the next turn can act on its items by number.
+
+### Two folders with the same name no longer share one project's memory (E65)
+A project's continuity pointer, journal tag, session steps and hook `project` were keyed by folder name, so two `_workspace` folders overwrote each other's next step. A project can now name itself with a line `<!-- luban-project: alpha -->` in its `LUBAN.md` (or `CLAUDE.md`/`AGENTS.md`), and luban warns at startup when another folder last used the same name.
 
 ## v0.9.5 — writer commands cannot chain; writers told what they may do; stale tool output cleared early
 

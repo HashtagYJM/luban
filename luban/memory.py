@@ -406,6 +406,37 @@ _ENTRY_START = re.compile(r"^\[\d{2}:\d{2}\]\s*(?:\[([^\]\n]+)\]\s*)?")
 _UNPARSEABLE_TAG = re.compile(r"^\[\d{2}:\d{2}\]\s*\[")
 
 
+# A project's IDENTITY — the key of its continuity pointer, its journal tag, its session
+# steps and its hooks' `project` — is its folder name unless its memory file declares one.
+# Folder names collide: two `_workspace` folders under different parents silently shared
+# one pointer and one journal tag, each exit overwriting the other's next step (E65). The
+# declaration lives in the project's own memory file because that is the file a project
+# already owns; a HTML comment keeps it out of the rendered page.
+PROJECT_MEMORY_FILES = ("LUBAN.md", "CLAUDE.md", "AGENTS.md")
+_DECLARED_RX = re.compile(r"^\s*(?:<!--\s*)?luban-project:\s*([^\s>]+)", re.M | re.I)
+_keys: dict[str, str] = {}
+
+
+def project_key(root, names: tuple[str, ...] | None = None) -> str:
+    """The project's declared `luban-project:` name, else its folder name. Read once per
+    folder per process: the first memory file that exists is the one that counts, as for
+    the project memory itself."""
+    path = Path(root).resolve()
+    if str(path) not in _keys:
+        key = path.name
+        for name in names or PROJECT_MEMORY_FILES:
+            try:
+                text = (path / name).read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            m = _DECLARED_RX.search(text)
+            if m and m.group(1).strip("-"):
+                key = m.group(1).strip("-")
+            break
+        _keys[str(path)] = key
+    return _keys[str(path)]
+
+
 def set_project(name: str) -> None:
     """Name the project journal entries are tagged with and the window filtered to.
 
@@ -994,6 +1025,7 @@ CHECKPOINT_PREFIX = "active-"
 _STATUS_RX = re.compile(r"^status \((\d{4}-\d\d-\d\d)(?:, session (\S+))?\): (.+)$", re.M)
 _ALSO_RX = re.compile(r"^also \((\d{4}-\d\d-\d\d)(?:, session (\S+))?\): (.+)$", re.M)
 _TRANSCRIPT_RX = re.compile(r"^transcript: ~/\.luban/sessions/(\S+)\.json$", re.M)
+_FOLDER_RX = re.compile(r"^folder: (.+)$", re.M)
 _KEPT_STATUSES = 2
 
 
@@ -1029,6 +1061,12 @@ def session_steps(project: str) -> dict[str, tuple[str, str]]:
             if w}
 
 
+def checkpoint_folder(project: str) -> str:
+    """The folder that last wrote this project's pointer, or "" for an older pointer."""
+    m = _FOLDER_RX.search(read_fact(checkpoint_slug(project)) or "")
+    return m.group(1).strip() if m else ""
+
+
 def checkpoint_writer(project: str) -> str:
     """The session that wrote this project's current status, or "" if unattributed."""
     entries = _status_entries(read_fact(checkpoint_slug(project)) or "")
@@ -1036,7 +1074,7 @@ def checkpoint_writer(project: str) -> str:
 
 
 def checkpoint(project: str, status: str = "", session_id: str = "",
-               writer: str = "") -> str:
+               writer: str = "", folder: str = "") -> str:
     """Write or refresh this project's continuity pointer.
 
     Called with a status by the model, and with none by luban at /compact and at exit —
@@ -1065,7 +1103,11 @@ def checkpoint(project: str, status: str = "", session_id: str = "",
     if not session_id:
         m = _TRANSCRIPT_RX.search(old)
         session_id = m.group(1) if m else ""
-    lines = [f"project: {project}", f"last session: {today}"]
+    if not folder:
+        m = _FOLDER_RX.search(old)
+        folder = m.group(1) if m else ""
+    lines = [f"project: {project}"] + ([f"folder: {folder}"] if folder else []) + [
+        f"last session: {today}"]
     if session_id:
         lines.append(f"transcript: ~/.luban/sessions/{session_id}.json")
     if entries:

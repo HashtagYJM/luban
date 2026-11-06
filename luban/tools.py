@@ -859,7 +859,7 @@ def _checkpoint(inp: dict, ctx: ToolContext) -> ToolResult:
     status = " ".join(inp.get("status", "").split())
     if not status:
         return ToolResult("Empty checkpoint status.", is_error=True)
-    project = Path(ctx.project_root).name
+    project = memory_mod.project_key(ctx.project_root)
     ctx.render_command(f"checkpoint[{project}] = {status}")
     if not ctx.confirm("Update the continuity pointer?"):
         return ToolResult("User declined the checkpoint.")
@@ -868,7 +868,8 @@ def _checkpoint(inp: dict, ctx: ToolContext) -> ToolResult:
     # workstream's outstanding next step — which used to happen silently, in both
     # directions, with neither session told (E47).
     displaced = memory_mod.checkpoint_writer(project)
-    memory_mod.checkpoint(project, status, writer=ctx.session_id)
+    memory_mod.checkpoint(project, status, writer=ctx.session_id,
+                          folder=str(Path(ctx.project_root).resolve()))
     msg = f"Checkpoint saved — [{memory_mod.checkpoint_slug(project)}] now reads: {status}"
     if displaced and ctx.session_id and displaced != ctx.session_id:
         msg += (
@@ -887,7 +888,7 @@ def _journal(inp: dict, ctx: ToolContext) -> ToolResult:
     ctx.render_command(f"journal += {text}")
     if not ctx.confirm("Append to journal?"):
         return ToolResult("User declined the journal entry.")
-    memory_mod.journal_append(text, project=Path(ctx.project_root).name)
+    memory_mod.journal_append(text, project=memory_mod.project_key(ctx.project_root))
     limit = memory_mod.journal_entry_limit()
     if len(text) <= limit:
         return ToolResult("Journal updated.")
@@ -916,7 +917,7 @@ def _note_to_session(inp: dict, ctx: ToolContext) -> ToolResult:
         return ToolResult("User declined the note.")
     try:
         sessions_mod.send_note(target, text, sender=ctx.session_id,
-                               project=Path(ctx.project_root).name)
+                               project=memory_mod.project_key(ctx.project_root))
     except sessions_mod.SessionNotFound:
         return ToolResult(f"No saved session {target!r}. List them with the sessions tool "
                           f"(all=true for other projects) and pass an exact id. A session "

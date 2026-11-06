@@ -9,7 +9,7 @@ see — it matches `## v<number>`. A release RENAMES that heading to its derived
 it never writes a version heading ahead of the release, and never edits the heading
 below. Only user-facing behaviour earns a line here.
 
-## Unreleased
+## v0.9.6 — /reflect report kept in the conversation; same-named project folders kept apart
 
 ### `/reflect`'s report stays in the conversation (E64)
 The report, with its numbered Suggested edits, was only printed, so a reply like "do 1 and 2" was answered from an unrelated earlier list. The report is now added to the session as a `/reflect` exchange, saved with the transcript, so the next turn can act on its items by number.
